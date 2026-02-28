@@ -1,5 +1,6 @@
 ﻿import { createServer } from "http";
 import { Server } from "socket.io";
+import { BASE_VOID_PACK } from "./src/game/content/packs/base-void/pack.js";
 
 function parseCorsOrigins(rawValue) {
   const value = String(rawValue ?? "").trim();
@@ -44,8 +45,31 @@ async function probeExistingServer(port) {
   }
 }
 
-const DEFAULT_ROOM_CODE = "GLOBAL";
+const ROOM_CODE_PREFIX = "OX";
+const ROOM_CODE_RANDOM_LENGTH = 5;
 const MAX_ROOM_PLAYERS = 50;
+const MAX_ACTIVE_ROOMS = 24;
+
+const SERVER_TICK_RATE = 20;
+const SERVER_TICK_INTERVAL_MS = Math.max(30, Math.trunc(1000 / SERVER_TICK_RATE));
+const SERVER_DELTA_HEARTBEAT_TICKS = 20;
+
+const AOI_NEAR_RADIUS = 42;
+const AOI_MID_RADIUS = 82;
+const AOI_FAR_RADIUS = 128;
+const AOI_MID_CADENCE = 2;
+const AOI_FAR_CADENCE = 4;
+const AOI_EDGE_CADENCE = 8;
+
+const DELTA_POS_SCALE = 100;
+const DELTA_ROT_SCALE = 1000;
+
+const SERVER_MAX_MOVE_SPEED = 17.5;
+const SERVER_MAX_VERTICAL_SPEED = 24;
+const SERVER_MAX_ACCELERATION = 46;
+const SERVER_MOVEMENT_MARGIN = 0.4;
+const SERVER_MAX_TELEPORT_DISTANCE = 18;
+const SERVER_CORRECTION_MIN_DISTANCE = 0.08;
 
 const QUIZ_DEFAULT_LOCK_SECONDS = 15;
 const QUIZ_MIN_LOCK_SECONDS = 3;
@@ -53,8 +77,11 @@ const QUIZ_MAX_LOCK_SECONDS = 60;
 const QUIZ_MAX_QUESTIONS = 50;
 const QUIZ_TEXT_MAX_LENGTH = 180;
 const QUIZ_AUTO_NEXT_DELAY_MS = 3200;
-const QUIZ_ZONE_O_MAX_X = -4;
-const QUIZ_ZONE_X_MIN_X = 4;
+const QUIZ_AUTO_START_DELAY_MS = 12000;
+const QUIZ_AUTO_RESTART_DELAY_MS = 9000;
+const QUIZ_AUTO_START_MIN_PLAYERS = 1;
+const QUIZ_ZONE_EDGE_MARGIN = 0.5;
+const QUIZ_ZONE_CENTER_MARGIN = 0.8;
 
 const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
   Object.freeze({
@@ -109,6 +136,36 @@ const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
   })
 ]);
 
+const QUIZ_ARENA_CONFIG = BASE_VOID_PACK?.world?.oxArena ?? {};
+
+function readZoneBounds(zoneConfig, fallbackCenterX) {
+  const width = Math.max(8, Number(zoneConfig?.width) || 20);
+  const depth = Math.max(8, Number(zoneConfig?.depth) || 20);
+  const centerX = Number.isFinite(Number(zoneConfig?.centerX))
+    ? Number(zoneConfig.centerX)
+    : fallbackCenterX;
+  const centerZ = Number.isFinite(Number(zoneConfig?.centerZ)) ? Number(zoneConfig.centerZ) : 0;
+  const halfW = width * 0.5;
+  const halfD = depth * 0.5;
+  return {
+    centerX,
+    centerZ,
+    width,
+    depth,
+    minX: centerX - halfW,
+    maxX: centerX + halfW,
+    minZ: centerZ - halfD,
+    maxZ: centerZ + halfD
+  };
+}
+
+const QUIZ_O_ZONE = readZoneBounds(QUIZ_ARENA_CONFIG?.oZone, -17);
+const QUIZ_X_ZONE = readZoneBounds(QUIZ_ARENA_CONFIG?.xZone, 17);
+const QUIZ_DIVIDER_WIDTH = Math.max(0.6, Number(QUIZ_ARENA_CONFIG?.dividerWidth) || 1.3);
+const QUIZ_ACTIVE_MIN_Z = Math.min(QUIZ_O_ZONE.minZ, QUIZ_X_ZONE.minZ);
+const QUIZ_ACTIVE_MAX_Z = Math.max(QUIZ_O_ZONE.maxZ, QUIZ_X_ZONE.maxZ);
+const QUIZ_CENTER_DEAD_BAND = QUIZ_DIVIDER_WIDTH * 0.5 + QUIZ_ZONE_CENTER_MARGIN;
+
 const rooms = new Map();
 let playerCount = 0;
 
@@ -116,6 +173,9 @@ function createQuizState() {
   return {
     active: false,
     phase: "idle",
+    autoMode: true,
+    autoStartsAt: 0,
+    autoStartTimer: null,
     hostId: null,
     startedAt: 0,
     endedAt: 0,
@@ -131,27 +191,94 @@ function createQuizState() {
   };
 }
 
-function createPersistentRoom() {
+function createRoom(code, persistent = false) {
   return {
-    code: DEFAULT_ROOM_CODE,
+    code,
     hostId: null,
     players: new Map(),
-    persistent: true,
+    persistent,
     createdAt: Date.now(),
-    quiz: createQuizState()
+    quiz: createQuizState(),
+    tick: 0
   };
 }
 
-function getDefaultRoom() {
-  let room = rooms.get(DEFAULT_ROOM_CODE);
-  if (!room) {
-    room = createPersistentRoom();
-    rooms.set(DEFAULT_ROOM_CODE, room);
+function sanitizeRoomCode(rawCode) {
+  const value = String(rawCode ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, "")
+    .slice(0, 24);
+  return value || null;
+}
+
+function createRoomCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    let suffix = "";
+    for (let i = 0; i < ROOM_CODE_RANDOM_LENGTH; i += 1) {
+      suffix += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+    }
+    const code = `${ROOM_CODE_PREFIX}-${suffix}`;
+    if (!rooms.has(code)) {
+      return code;
+    }
   }
+  return `${ROOM_CODE_PREFIX}-${Date.now().toString(36).toUpperCase()}`;
+}
+
+function createMatchRoom(requestedCode = null, persistent = false) {
+  const normalized = sanitizeRoomCode(requestedCode);
+  const code = normalized && !rooms.has(normalized) ? normalized : createRoomCode();
+  const room = createRoom(code, persistent);
+  rooms.set(room.code, room);
   return room;
 }
 
-getDefaultRoom();
+function getRoom(code) {
+  const normalized = sanitizeRoomCode(code);
+  if (!normalized) {
+    return null;
+  }
+  return rooms.get(normalized) ?? null;
+}
+
+function isRoomJoinable(room) {
+  if (!room) {
+    return false;
+  }
+  pruneRoomPlayers(room);
+  return room.players.size < MAX_ROOM_PLAYERS;
+}
+
+function findJoinableRoom(preferredCode = null) {
+  const preferred = preferredCode ? getRoom(preferredCode) : null;
+  if (preferred && isRoomJoinable(preferred)) {
+    return preferred;
+  }
+
+  const candidates = [];
+  for (const room of rooms.values()) {
+    if (!room || room.players.size >= MAX_ROOM_PLAYERS) {
+      continue;
+    }
+    candidates.push(room);
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  candidates.sort((left, right) => {
+    const deltaPlayers = right.players.size - left.players.size;
+    if (deltaPlayers !== 0) {
+      return deltaPlayers;
+    }
+    return left.createdAt - right.createdAt;
+  });
+
+  return candidates[0];
+}
 
 function getRoomQuiz(room) {
   if (!room || typeof room !== "object") {
@@ -188,6 +315,306 @@ function sanitizePlayerState(raw = {}) {
     pitch: clampNumber(raw.pitch, -1.55, 1.55, 0),
     updatedAt: Date.now()
   };
+}
+
+function createPlayerNetState(initialState = sanitizePlayerState()) {
+  return {
+    lastAcceptedAt: Date.now(),
+    velocity: { x: 0, y: 0, z: 0 },
+    rejectedMoves: 0,
+    lastCorrectionAt: 0,
+    state: {
+      x: Number(initialState.x) || 0,
+      y: Number(initialState.y) || 1.75,
+      z: Number(initialState.z) || 0
+    }
+  };
+}
+
+function ensurePlayerNetState(player) {
+  if (!player || typeof player !== "object") {
+    return createPlayerNetState();
+  }
+  if (!player.net || typeof player.net !== "object") {
+    player.net = createPlayerNetState(player.state);
+  }
+  return player.net;
+}
+
+function normalizeVec3Magnitude(x, y, z, maxLength) {
+  const length = Math.hypot(x, y, z);
+  if (!Number.isFinite(length) || length <= maxLength || maxLength <= 0) {
+    return { x, y, z, clamped: false };
+  }
+  const ratio = maxLength / length;
+  return {
+    x: x * ratio,
+    y: y * ratio,
+    z: z * ratio,
+    clamped: true
+  };
+}
+
+function applyAuthoritativeMovement(player, proposedState) {
+  const net = ensurePlayerNetState(player);
+  const now = Date.now();
+  const previousState = player?.state ?? sanitizePlayerState();
+
+  const elapsedMs = Math.max(1, now - Number(net.lastAcceptedAt || now));
+  const dt = Math.max(1 / 120, Math.min(0.25, elapsedMs / 1000));
+
+  let dx = Number(proposedState.x) - Number(previousState.x);
+  let dy = Number(proposedState.y) - Number(previousState.y);
+  let dz = Number(proposedState.z) - Number(previousState.z);
+  let clamped = false;
+
+  const horizontalDistance = Math.hypot(dx, dz);
+  const allowedHorizontalDistance =
+    SERVER_MOVEMENT_MARGIN + SERVER_MAX_MOVE_SPEED * dt + 0.5 * SERVER_MAX_ACCELERATION * dt * dt;
+
+  if (horizontalDistance > allowedHorizontalDistance) {
+    const ratio = allowedHorizontalDistance / Math.max(horizontalDistance, 0.0001);
+    dx *= ratio;
+    dz *= ratio;
+    clamped = true;
+  }
+
+  const allowedVerticalDistance = SERVER_MOVEMENT_MARGIN + SERVER_MAX_VERTICAL_SPEED * dt;
+  if (Math.abs(dy) > allowedVerticalDistance) {
+    dy = Math.sign(dy) * allowedVerticalDistance;
+    clamped = true;
+  }
+
+  const constrained = normalizeVec3Magnitude(dx, dy, dz, SERVER_MAX_TELEPORT_DISTANCE);
+  if (constrained.clamped) {
+    dx = constrained.x;
+    dy = constrained.y;
+    dz = constrained.z;
+    clamped = true;
+  }
+
+  const candidateVelocity = {
+    x: dx / dt,
+    y: dy / dt,
+    z: dz / dt
+  };
+
+  const accelX = candidateVelocity.x - Number(net.velocity?.x || 0);
+  const accelY = candidateVelocity.y - Number(net.velocity?.y || 0);
+  const accelZ = candidateVelocity.z - Number(net.velocity?.z || 0);
+  const accelMagnitude = Math.hypot(accelX, accelY, accelZ) / dt;
+  const maxAllowedAccel = SERVER_MAX_ACCELERATION * 1.8;
+  if (accelMagnitude > maxAllowedAccel) {
+    const ratio = maxAllowedAccel / Math.max(accelMagnitude, 0.0001);
+    candidateVelocity.x = Number(net.velocity?.x || 0) + accelX * ratio;
+    candidateVelocity.y = Number(net.velocity?.y || 0) + accelY * ratio;
+    candidateVelocity.z = Number(net.velocity?.z || 0) + accelZ * ratio;
+    dx = candidateVelocity.x * dt;
+    dy = candidateVelocity.y * dt;
+    dz = candidateVelocity.z * dt;
+    clamped = true;
+  }
+
+  const nextState = {
+    x: Number((Number(previousState.x) + dx).toFixed(3)),
+    y: Number(Math.max(0, Number(previousState.y) + dy).toFixed(3)),
+    z: Number((Number(previousState.z) + dz).toFixed(3)),
+    yaw: clampNumber(proposedState.yaw, -Math.PI, Math.PI, Number(previousState.yaw) || 0),
+    pitch: clampNumber(proposedState.pitch, -1.55, 1.55, Number(previousState.pitch) || 0),
+    updatedAt: now
+  };
+
+  net.lastAcceptedAt = now;
+  net.velocity = {
+    x: (nextState.x - Number(previousState.x)) / dt,
+    y: (nextState.y - Number(previousState.y)) / dt,
+    z: (nextState.z - Number(previousState.z)) / dt
+  };
+  net.state = {
+    x: nextState.x,
+    y: nextState.y,
+    z: nextState.z
+  };
+  net.rejectedMoves = clamped ? Number(net.rejectedMoves || 0) + 1 : Math.max(0, Number(net.rejectedMoves || 0) - 0.25);
+
+  const correctionDistance = Math.hypot(
+    nextState.x - Number(proposedState.x),
+    nextState.y - Number(proposedState.y),
+    nextState.z - Number(proposedState.z)
+  );
+
+  player.state = nextState;
+  return {
+    nextState,
+    clamped,
+    correctionDistance
+  };
+}
+
+function quantizePosition(value) {
+  return Math.round((Number(value) || 0) * DELTA_POS_SCALE);
+}
+
+function quantizeRotation(value) {
+  return Math.round((Number(value) || 0) * DELTA_ROT_SCALE);
+}
+
+function getSocketDeltaCache(socket, roomCode) {
+  if (!socket) {
+    return null;
+  }
+  if (!socket.data.deltaCache || typeof socket.data.deltaCache !== "object") {
+    socket.data.deltaCache = new Map();
+  }
+  if (!socket.data.deltaCache.has(roomCode)) {
+    socket.data.deltaCache.set(roomCode, new Map());
+  }
+  return socket.data.deltaCache.get(roomCode);
+}
+
+function clearSocketDeltaCache(socket, roomCode = null) {
+  if (!socket?.data?.deltaCache || typeof socket.data.deltaCache?.clear !== "function") {
+    return;
+  }
+  if (!roomCode) {
+    socket.data.deltaCache.clear();
+    return;
+  }
+  socket.data.deltaCache.delete(roomCode);
+}
+
+function resolveAoiCadence(distanceSq) {
+  const nearSq = AOI_NEAR_RADIUS * AOI_NEAR_RADIUS;
+  const midSq = AOI_MID_RADIUS * AOI_MID_RADIUS;
+  const farSq = AOI_FAR_RADIUS * AOI_FAR_RADIUS;
+  if (distanceSq <= nearSq) {
+    return 1;
+  }
+  if (distanceSq <= midSq) {
+    return AOI_MID_CADENCE;
+  }
+  if (distanceSq <= farSq) {
+    return AOI_FAR_CADENCE;
+  }
+  return AOI_EDGE_CADENCE;
+}
+
+function buildPackedRemoteState(player) {
+  const state = player?.state ?? {};
+  return {
+    id: player?.id ?? null,
+    n: player?.name ?? "PLAYER",
+    a: player?.alive === false ? 0 : 1,
+    px: quantizePosition(state.x),
+    py: quantizePosition(state.y),
+    pz: quantizePosition(state.z),
+    yaw: quantizeRotation(state.yaw),
+    pitch: quantizeRotation(state.pitch)
+  };
+}
+
+function emitRoomDeltaSnapshot(room) {
+  if (!room || room.players.size <= 1) {
+    return;
+  }
+
+  room.tick = Number(room.tick || 0) + 1;
+  const players = Array.from(room.players.values());
+
+  for (const receiver of players) {
+    const socket = io?.sockets?.sockets?.get(receiver.id);
+    if (!socket) {
+      continue;
+    }
+
+    const cache = getSocketDeltaCache(socket, room.code);
+    if (!cache) {
+      continue;
+    }
+
+    const updates = [];
+    const removals = [];
+    const receiverState = receiver?.state ?? sanitizePlayerState();
+
+    for (const remote of players) {
+      if (!remote || remote.id === receiver.id) {
+        continue;
+      }
+
+      const remoteState = remote.state ?? sanitizePlayerState();
+      const dx = Number(remoteState.x) - Number(receiverState.x);
+      const dz = Number(remoteState.z) - Number(receiverState.z);
+      const distanceSq = dx * dx + dz * dz;
+      const cadence = resolveAoiCadence(distanceSq);
+
+      const cached = cache.get(remote.id) ?? null;
+      const isHeartbeatDue =
+        cached && room.tick - Number(cached.lastTick || 0) >= SERVER_DELTA_HEARTBEAT_TICKS;
+      if (cached && !isHeartbeatDue && cadence > 1 && room.tick % cadence !== 0) {
+        continue;
+      }
+
+      const packed = buildPackedRemoteState(remote);
+      const changed =
+        !cached ||
+        cached.px !== packed.px ||
+        cached.py !== packed.py ||
+        cached.pz !== packed.pz ||
+        cached.yaw !== packed.yaw ||
+        cached.pitch !== packed.pitch ||
+        cached.n !== packed.n ||
+        cached.a !== packed.a;
+
+      if (!changed && !isHeartbeatDue) {
+        continue;
+      }
+
+      const delta = { id: packed.id };
+      if (!cached || cached.n !== packed.n) {
+        delta.n = packed.n;
+      }
+      if (!cached || cached.a !== packed.a) {
+        delta.a = packed.a;
+      }
+      if (!cached || cached.px !== packed.px || cached.py !== packed.py || cached.pz !== packed.pz) {
+        delta.p = [packed.px, packed.py, packed.pz];
+      }
+      if (!cached || cached.yaw !== packed.yaw || cached.pitch !== packed.pitch) {
+        delta.r = [packed.yaw, packed.pitch];
+      }
+      updates.push(delta);
+      cache.set(remote.id, {
+        ...packed,
+        lastTick: room.tick
+      });
+    }
+
+    for (const cachedId of Array.from(cache.keys())) {
+      if (!room.players.has(cachedId)) {
+        cache.delete(cachedId);
+        removals.push(cachedId);
+      }
+    }
+
+    if (updates.length > 0 || removals.length > 0) {
+      socket.emit("player:delta", {
+        room: room.code,
+        tick: room.tick,
+        updates,
+        removes: removals
+      });
+    }
+  }
+}
+
+function tickRooms() {
+  for (const room of rooms.values()) {
+    pruneRoomPlayers(room);
+    if (!room || room.players.size === 0) {
+      continue;
+    }
+    emitRoomDeltaSnapshot(room);
+  }
 }
 
 function normalizeQuizAnswer(rawValue) {
@@ -254,18 +681,71 @@ function sanitizeQuizQuestions(rawQuestions) {
   return questions;
 }
 
+function isInsideQuizZone(bounds, x, z) {
+  const marginX = Math.min(QUIZ_ZONE_EDGE_MARGIN, bounds.width * 0.2);
+  const marginZ = Math.min(QUIZ_ZONE_EDGE_MARGIN, bounds.depth * 0.2);
+  return (
+    x >= bounds.minX + marginX &&
+    x <= bounds.maxX - marginX &&
+    z >= bounds.minZ + marginZ &&
+    z <= bounds.maxZ - marginZ
+  );
+}
+
 function resolveQuizChoiceFromState(state) {
   const x = Number(state?.x);
-  if (!Number.isFinite(x)) {
-    return null;
+  const z = Number(state?.z);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) {
+    return {
+      choice: null,
+      reason: "invalid-position",
+      x: Number.isFinite(x) ? Number(x.toFixed(3)) : null,
+      z: Number.isFinite(z) ? Number(z.toFixed(3)) : null
+    };
   }
-  if (x <= QUIZ_ZONE_O_MAX_X) {
-    return "O";
+
+  const inO = isInsideQuizZone(QUIZ_O_ZONE, x, z);
+  const inX = isInsideQuizZone(QUIZ_X_ZONE, x, z);
+  if (inO && !inX) {
+    return {
+      choice: "O",
+      reason: "zone-o",
+      x: Number(x.toFixed(3)),
+      z: Number(z.toFixed(3))
+    };
   }
-  if (x >= QUIZ_ZONE_X_MIN_X) {
-    return "X";
+  if (inX && !inO) {
+    return {
+      choice: "X",
+      reason: "zone-x",
+      x: Number(x.toFixed(3)),
+      z: Number(z.toFixed(3))
+    };
   }
-  return null;
+
+  if (Math.abs(x) <= QUIZ_CENTER_DEAD_BAND) {
+    return {
+      choice: null,
+      reason: "center-line",
+      x: Number(x.toFixed(3)),
+      z: Number(z.toFixed(3))
+    };
+  }
+  if (z < QUIZ_ACTIVE_MIN_Z || z > QUIZ_ACTIVE_MAX_Z) {
+    return {
+      choice: null,
+      reason: "out-of-lane",
+      x: Number(x.toFixed(3)),
+      z: Number(z.toFixed(3))
+    };
+  }
+
+  return {
+    choice: null,
+    reason: "off-zone",
+    x: Number(x.toFixed(3)),
+    z: Number(z.toFixed(3))
+  };
 }
 
 function initializePlayerForQuiz(player, resetScore = true) {
@@ -280,12 +760,25 @@ function initializePlayerForQuiz(player, resetScore = true) {
   }
   player.alive = true;
   player.lastChoice = null;
+  player.lastChoiceReason = null;
+}
+
+function clearQuizAutoStartTimer(quiz) {
+  if (!quiz || typeof quiz !== "object") {
+    return;
+  }
+  if (quiz.autoStartTimer) {
+    clearTimeout(quiz.autoStartTimer);
+    quiz.autoStartTimer = null;
+  }
+  quiz.autoStartsAt = 0;
 }
 
 function clearQuizLockTimer(quiz) {
   if (!quiz || typeof quiz !== "object") {
     return;
   }
+  clearQuizAutoStartTimer(quiz);
   if (quiz.lockTimer) {
     clearTimeout(quiz.lockTimer);
     quiz.lockTimer = null;
@@ -301,6 +794,8 @@ function resetQuizState(room) {
   clearQuizLockTimer(quiz);
   quiz.active = false;
   quiz.phase = "idle";
+  quiz.autoMode = true;
+  quiz.autoStartsAt = 0;
   quiz.hostId = room?.hostId ?? null;
   quiz.startedAt = 0;
   quiz.endedAt = 0;
@@ -324,22 +819,35 @@ function serializeRoom(room) {
       state: player.state ?? null,
       score: Number.isFinite(Number(player.score)) ? Math.max(0, Math.trunc(Number(player.score))) : 0,
       alive: Boolean(player.alive),
-      lastChoice: player.lastChoice ?? null
+      lastChoice: player.lastChoice ?? null,
+      lastChoiceReason: player.lastChoiceReason ?? null
     }))
   };
 }
 
 function summarizeRooms() {
-  const room = getDefaultRoom();
-  pruneRoomPlayers(room);
-  return [
-    {
+  const summary = [];
+  for (const room of rooms.values()) {
+    pruneRoomPlayers(room);
+    summary.push({
       code: room.code,
       count: room.players.size,
       capacity: MAX_ROOM_PLAYERS,
-      hostName: room.players.get(room.hostId)?.name ?? "AUTO"
+      hostName: room.players.get(room.hostId)?.name ?? "AUTO",
+      quizActive: Boolean(room.quiz?.active),
+      createdAt: Number(room.createdAt || 0)
+    });
+  }
+
+  summary.sort((left, right) => {
+    const playersDelta = right.count - left.count;
+    if (playersDelta !== 0) {
+      return playersDelta;
     }
-  ];
+    return left.createdAt - right.createdAt;
+  });
+
+  return summary;
 }
 
 function emitRoomList(target = io) {
@@ -375,7 +883,8 @@ function buildQuizLeaderboard(room) {
       name: player?.name,
       score,
       alive: Boolean(player?.alive),
-      lastChoice: player?.lastChoice ?? null
+      lastChoice: player?.lastChoice ?? null,
+      lastChoiceReason: player?.lastChoiceReason ?? null
     };
   });
 
@@ -412,6 +921,8 @@ function emitQuizScore(room, reason = "update", targetSocket = null) {
     reason,
     active: Boolean(quiz.active),
     phase: String(quiz.phase ?? "idle"),
+    autoMode: quiz.autoMode !== false,
+    autoStartsAt: Number(quiz.autoStartsAt ?? 0),
     hostId: quiz.hostId ?? room.hostId ?? null,
     questionIndex: Math.max(0, Number(quiz.questionIndex) + 1),
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
@@ -433,6 +944,7 @@ function buildQuizStartPayload(quiz) {
   return {
     startedAt: Number(quiz.startedAt ?? Date.now()),
     hostId: quiz.hostId ?? null,
+    autoMode: quiz.autoMode !== false,
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
     lockSeconds: sanitizeQuizLockSeconds(quiz.lockSeconds)
   };
@@ -478,8 +990,19 @@ function emitQuizSnapshot(socket, room) {
   }
 
   const quiz = getRoomQuiz(room);
-  if (!quiz.active && quiz.phase !== "ended") {
+  const hasAutoCountdown = Number(quiz.autoStartsAt) > Date.now();
+  if (!quiz.active && quiz.phase !== "ended" && !hasAutoCountdown) {
     return;
+  }
+
+  if (hasAutoCountdown) {
+    socket.emit("quiz:auto-countdown", {
+      autoMode: quiz.autoMode !== false,
+      startsAt: Number(quiz.autoStartsAt),
+      delayMs: Math.max(0, Number(quiz.autoStartsAt) - Date.now()),
+      players: room.players.size,
+      minPlayers: QUIZ_AUTO_START_MIN_PLAYERS
+    });
   }
 
   if (quiz.startedAt > 0) {
@@ -502,6 +1025,79 @@ function emitQuizSnapshot(socket, room) {
   if (quiz.phase === "ended") {
     socket.emit("quiz:end", buildQuizEndPayload(room, "snapshot"));
   }
+}
+
+function scheduleAutoQuizStart(
+  room,
+  {
+    delayMs = QUIZ_AUTO_START_DELAY_MS,
+    reason = "auto",
+    minPlayers = QUIZ_AUTO_START_MIN_PLAYERS
+  } = {}
+) {
+  if (!room) {
+    return;
+  }
+
+  const quiz = getRoomQuiz(room);
+  if (quiz.autoMode === false) {
+    return;
+  }
+  if (quiz.active) {
+    return;
+  }
+  if (room.players.size < minPlayers) {
+    clearQuizAutoStartTimer(quiz);
+    return;
+  }
+  if (quiz.autoStartTimer) {
+    return;
+  }
+
+  const safeDelay = Math.max(2000, Math.trunc(Number(delayMs) || QUIZ_AUTO_START_DELAY_MS));
+  quiz.autoStartsAt = Date.now() + safeDelay;
+
+  io.to(room.code).emit("quiz:auto-countdown", {
+    autoMode: quiz.autoMode !== false,
+    startsAt: quiz.autoStartsAt,
+    delayMs: safeDelay,
+    reason,
+    players: room.players.size,
+    minPlayers
+  });
+  emitQuizScore(room, "auto-countdown");
+
+  quiz.autoStartTimer = setTimeout(() => {
+    quiz.autoStartTimer = null;
+    const currentRoom = rooms.get(room.code);
+    if (!currentRoom) {
+      return;
+    }
+    const currentQuiz = getRoomQuiz(currentRoom);
+    currentQuiz.autoStartsAt = 0;
+    if (currentQuiz.autoMode === false || currentQuiz.active) {
+      return;
+    }
+    if (currentRoom.players.size < minPlayers) {
+      return;
+    }
+
+    const hostId =
+      currentRoom.hostId && currentRoom.players.has(currentRoom.hostId)
+        ? currentRoom.hostId
+        : currentRoom.players.keys().next().value ?? null;
+    if (!currentQuiz.hostId || !currentRoom.players.has(currentQuiz.hostId)) {
+      currentQuiz.hostId = hostId;
+    }
+
+    const started = startQuiz(currentRoom, currentQuiz.hostId ?? hostId, {
+      lockSeconds: currentQuiz.lockSeconds,
+      autoMode: true
+    });
+    if (!started?.ok) {
+      scheduleAutoQuizStart(currentRoom, { delayMs: QUIZ_AUTO_START_DELAY_MS, reason: "auto-retry" });
+    }
+  }, safeDelay);
 }
 
 function scheduleQuizLock(room, lockSeconds) {
@@ -535,6 +1131,12 @@ function finishQuiz(room, reason = "finished") {
   const payload = buildQuizEndPayload(room, reason);
   io.to(room.code).emit("quiz:end", payload);
   emitQuizScore(room, "end");
+  if (quiz.autoMode !== false) {
+    scheduleAutoQuizStart(room, {
+      delayMs: QUIZ_AUTO_RESTART_DELAY_MS,
+      reason: "auto-restart"
+    });
+  }
 }
 
 function evaluateQuizQuestion(room) {
@@ -563,21 +1165,30 @@ function evaluateQuizQuestion(room) {
 
   const correctPlayerIds = [];
   const eliminatedPlayerIds = [];
+  const eliminatedPlayers = [];
 
   for (const player of room.players.values()) {
     if (!player || !player.alive) {
       continue;
     }
 
-    const choice = resolveQuizChoiceFromState(player.state);
-    player.lastChoice = choice;
+    const judge = resolveQuizChoiceFromState(player.state);
+    player.lastChoice = judge.choice;
+    player.lastChoiceReason = judge.reason;
 
-    if (choice === question.answer) {
+    if (judge.choice === question.answer) {
       player.score = Number.isFinite(Number(player.score)) ? Math.max(0, Math.trunc(Number(player.score))) + 1 : 1;
       correctPlayerIds.push(player.id);
     } else {
       player.alive = false;
       eliminatedPlayerIds.push(player.id);
+      eliminatedPlayers.push({
+        id: player.id,
+        choice: judge.choice,
+        reason: judge.reason,
+        x: judge.x,
+        z: judge.z
+      });
     }
   }
 
@@ -590,12 +1201,12 @@ function evaluateQuizQuestion(room) {
     lockedAt,
     survivorCount,
     correctPlayerIds,
-    eliminatedPlayerIds
+    eliminatedPlayerIds,
+    eliminatedPlayers
   };
 
   quiz.lastResult = resultPayload;
   io.to(room.code).emit("quiz:result", resultPayload);
-  emitQuizScore(room, "result");
 
   if (survivorCount <= 1) {
     finishQuiz(room, survivorCount === 1 ? "winner" : "no-survivor");
@@ -608,6 +1219,7 @@ function evaluateQuizQuestion(room) {
   }
 
   quiz.phase = "waiting-next";
+  emitQuizScore(room, "result");
   scheduleQuizNextQuestion(room);
 }
 
@@ -691,10 +1303,19 @@ function startQuiz(room, hostSocketId, payload = {}) {
 
   const questions = sanitizeQuizQuestions(payload.questions);
   const lockSeconds = sanitizeQuizLockSeconds(payload.lockSeconds);
+  const autoMode = payload.autoMode !== false;
+  const resolvedHostId =
+    hostSocketId && room.players.has(hostSocketId)
+      ? hostSocketId
+      : room.hostId && room.players.has(room.hostId)
+        ? room.hostId
+        : room.players.keys().next().value ?? null;
 
   quiz.active = true;
   quiz.phase = "idle";
-  quiz.hostId = hostSocketId;
+  quiz.autoMode = autoMode;
+  quiz.autoStartsAt = 0;
+  quiz.hostId = resolvedHostId;
   quiz.startedAt = Date.now();
   quiz.endedAt = 0;
   quiz.questionIndex = -1;
@@ -731,21 +1352,23 @@ function reconcileQuizAfterRosterChange(room, reason = "roster-change") {
   }
 
   const quiz = getRoomQuiz(room);
-  if (!quiz.active && quiz.phase !== "ended") {
-    return;
-  }
-
   if (room.players.size === 0) {
     resetQuizState(room);
     return;
   }
 
   if (!quiz.hostId || !room.players.has(quiz.hostId)) {
-    quiz.hostId = room.hostId ?? null;
+    quiz.hostId = room.hostId ?? room.players.keys().next().value ?? null;
   }
 
   if (!quiz.active) {
     emitQuizScore(room, reason);
+    if (quiz.autoMode !== false) {
+      scheduleAutoQuizStart(room, {
+        delayMs: QUIZ_AUTO_START_DELAY_MS,
+        reason: `${reason}-auto`
+      });
+    }
     return;
   }
 
@@ -774,6 +1397,10 @@ function pruneRoomPlayers(room) {
   if (changed) {
     updateHost(room);
     reconcileQuizAfterRosterChange(room, "prune");
+    if (!room.persistent && room.players.size === 0) {
+      resetQuizState(room);
+      rooms.delete(room.code);
+    }
   }
   return changed;
 }
@@ -793,6 +1420,7 @@ function leaveCurrentRoom(socket) {
   const room = rooms.get(roomCode);
   socket.leave(roomCode);
   socket.data.roomCode = null;
+  clearSocketDeltaCache(socket, roomCode);
 
   if (!room) {
     emitRoomList();
@@ -805,15 +1433,35 @@ function leaveCurrentRoom(socket) {
   reconcileQuizAfterRosterChange(room, "leave");
 
   if (!room.persistent && room.players.size === 0) {
+    resetQuizState(room);
     rooms.delete(room.code);
   }
 
-  emitRoomUpdate(room);
+  if (room.players.size > 0) {
+    emitRoomUpdate(room);
+  }
   emitRoomList();
 }
 
-function joinDefaultRoom(socket, nameOverride = null) {
-  const room = getDefaultRoom();
+function pickOrCreateRoomForQuickJoin(preferredCode = null) {
+  const candidate = findJoinableRoom(preferredCode);
+  if (candidate) {
+    return candidate;
+  }
+  if (rooms.size >= MAX_ACTIVE_ROOMS) {
+    return null;
+  }
+  return createMatchRoom();
+}
+
+function joinRoom(socket, room, nameOverride = null) {
+  if (!room) {
+    return {
+      ok: false,
+      error: "no available room"
+    };
+  }
+
   pruneRoomPlayers(room);
 
   const name = sanitizeName(nameOverride ?? socket.data.playerName);
@@ -822,6 +1470,14 @@ function joinDefaultRoom(socket, nameOverride = null) {
   if (socket.data.roomCode === room.code && room.players.has(socket.id)) {
     const existing = room.players.get(socket.id);
     existing.name = name;
+    ensurePlayerNetState(existing);
+    const quiz = getRoomQuiz(room);
+    if (!quiz.active && quiz.autoMode !== false) {
+      scheduleAutoQuizStart(room, {
+        delayMs: QUIZ_AUTO_START_DELAY_MS,
+        reason: "rejoin-auto"
+      });
+    }
     emitRoomUpdate(room);
     emitQuizSnapshot(socket, room);
     return { ok: true, room: serializeRoom(room) };
@@ -832,20 +1488,23 @@ function joinDefaultRoom(socket, nameOverride = null) {
   if (room.players.size >= MAX_ROOM_PLAYERS) {
     return {
       ok: false,
-      error: `GLOBAL room is full (${MAX_ROOM_PLAYERS})`
+      error: `${room.code} room is full (${MAX_ROOM_PLAYERS})`
     };
   }
 
   const quiz = getRoomQuiz(room);
   const joinAsAlive = !quiz.active;
+  const initialState = sanitizePlayerState();
 
   room.players.set(socket.id, {
     id: socket.id,
     name,
-    state: sanitizePlayerState(),
+    state: initialState,
     score: 0,
     alive: joinAsAlive,
-    lastChoice: null
+    lastChoice: null,
+    lastChoiceReason: null,
+    net: createPlayerNetState(initialState)
   });
 
   updateHost(room);
@@ -861,6 +1520,11 @@ function joinDefaultRoom(socket, nameOverride = null) {
   emitQuizSnapshot(socket, room);
   if (quiz.active || quiz.phase === "ended") {
     emitQuizScore(room, "join");
+  } else if (quiz.autoMode !== false) {
+    scheduleAutoQuizStart(room, {
+      delayMs: QUIZ_AUTO_START_DELAY_MS,
+      reason: "join-auto"
+    });
   }
 
   return { ok: true, room: serializeRoom(room) };
@@ -868,22 +1532,39 @@ function joinDefaultRoom(socket, nameOverride = null) {
 
 const httpServer = createServer((req, res) => {
   if (req.url === "/health") {
-    const globalRoom = getDefaultRoom();
-    const quiz = getRoomQuiz(globalRoom);
+    const roomsSummary = summarizeRooms();
+    const totalPlayers = roomsSummary.reduce((sum, room) => sum + Number(room.count || 0), 0);
+    const activeQuizRooms = roomsSummary.filter((room) => room.quizActive).length;
+    const topRoom = roomsSummary[0] ?? null;
+    const topRoomQuiz = topRoom ? getRoomQuiz(getRoom(topRoom.code)) : null;
     writeJson(res, 200, {
       ok: true,
       service: "reclaim-fps-chat",
-      rooms: rooms.size,
+      rooms: roomsSummary.length,
       online: playerCount,
-      globalPlayers: globalRoom.players.size,
-      globalCapacity: MAX_ROOM_PLAYERS,
-      quiz: {
-        active: Boolean(quiz.active),
-        phase: quiz.phase,
-        questionIndex: Math.max(0, Number(quiz.questionIndex) + 1),
-        totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
-        survivors: countQuizSurvivors(globalRoom)
-      },
+      totalPlayers,
+      activeQuizRooms,
+      capacityPerRoom: MAX_ROOM_PLAYERS,
+      maxActiveRooms: MAX_ACTIVE_ROOMS,
+      tickRate: SERVER_TICK_RATE,
+      topRoom: topRoom
+        ? {
+            code: topRoom.code,
+            players: topRoom.count,
+            capacity: topRoom.capacity,
+            hostName: topRoom.hostName,
+            quiz: topRoomQuiz
+              ? {
+                  active: Boolean(topRoomQuiz.active),
+                  phase: topRoomQuiz.phase,
+                  autoMode: topRoomQuiz.autoMode !== false,
+                  autoStartsAt: Number(topRoomQuiz.autoStartsAt ?? 0),
+                  questionIndex: Math.max(0, Number(topRoomQuiz.questionIndex) + 1),
+                  totalQuestions: Math.max(0, Number(topRoomQuiz.totalQuestions) || 0)
+                }
+              : null
+          }
+        : null,
       now: Date.now()
     });
     return;
@@ -893,8 +1574,10 @@ const httpServer = createServer((req, res) => {
     writeJson(res, 200, {
       ok: true,
       message: "Emptines realtime sync server is running",
-      room: DEFAULT_ROOM_CODE,
-      capacity: MAX_ROOM_PLAYERS,
+      roomPrefix: ROOM_CODE_PREFIX,
+      capacityPerRoom: MAX_ROOM_PLAYERS,
+      maxActiveRooms: MAX_ACTIVE_ROOMS,
+      tickRate: SERVER_TICK_RATE,
       health: "/health"
     });
     return;
@@ -916,14 +1599,23 @@ const io = new Server(httpServer, {
   pingTimeout: 5000
 });
 
+const roomTickInterval = setInterval(() => {
+  tickRooms();
+}, SERVER_TICK_INTERVAL_MS);
+roomTickInterval.unref?.();
+
 io.on("connection", (socket) => {
   playerCount += 1;
   socket.data.playerName = `PLAYER_${Math.floor(Math.random() * 9000 + 1000)}`;
   socket.data.roomCode = null;
+  socket.data.deltaCache = new Map();
 
   console.log(`[+] player connected (${playerCount}) ${socket.id}`);
 
-  joinDefaultRoom(socket);
+  const initialRoom = pickOrCreateRoomForQuickJoin();
+  if (initialRoom) {
+    joinRoom(socket, initialRoom);
+  }
   emitRoomList(socket);
 
   socket.on("chat:send", ({ name, text }) => {
@@ -966,14 +1658,23 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const nextState = sanitizePlayerState(payload);
-    player.state = nextState;
-
-    socket.to(room.code).emit("player:sync", {
-      id: player.id,
-      name: player.name,
-      state: nextState
-    });
+    const sanitized = sanitizePlayerState(payload);
+    const movementResult = applyAuthoritativeMovement(player, sanitized);
+    if (
+      movementResult.clamped &&
+      movementResult.correctionDistance >= SERVER_CORRECTION_MIN_DISTANCE
+    ) {
+      const now = Date.now();
+      const net = ensurePlayerNetState(player);
+      const cooldownElapsed = now - Number(net.lastCorrectionAt || 0);
+      if (cooldownElapsed >= 90) {
+        net.lastCorrectionAt = now;
+        socket.emit("player:correct", {
+          state: movementResult.nextState,
+          reason: "server-authoritative"
+        });
+      }
+    }
   });
 
   socket.on("quiz:start", (payload = {}, ackFn) => {
@@ -989,7 +1690,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const started = startQuiz(room, socket.id, payload);
+    const started = startQuiz(room, socket.id, { ...payload, autoMode: true });
     ack(ackFn, started);
   });
 
@@ -1052,6 +1753,7 @@ io.on("connection", (socket) => {
       return;
     }
 
+    quiz.autoMode = true;
     finishQuiz(room, "stopped-by-host");
     ack(ackFn, { ok: true });
   });
@@ -1070,6 +1772,8 @@ io.on("connection", (socket) => {
       quiz: {
         active: Boolean(quiz.active),
         phase: quiz.phase,
+        autoMode: quiz.autoMode !== false,
+        autoStartsAt: Number(quiz.autoStartsAt ?? 0),
         hostId: quiz.hostId ?? room.hostId ?? null,
         questionIndex: Math.max(0, Number(quiz.questionIndex) + 1),
         totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
@@ -1090,23 +1794,51 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:quick-join", (payload = {}, ackFn) => {
-    ack(ackFn, joinDefaultRoom(socket, payload.name));
+    const preferredCode = sanitizeRoomCode(payload.roomCode ?? payload.code);
+    const room = pickOrCreateRoomForQuickJoin(preferredCode);
+    if (!room) {
+      ack(ackFn, { ok: false, error: "no room capacity available" });
+      return;
+    }
+    ack(ackFn, joinRoom(socket, room, payload.name));
   });
 
   socket.on("room:create", (payload = {}, ackFn) => {
-    ack(ackFn, joinDefaultRoom(socket, payload.name));
+    if (rooms.size >= MAX_ACTIVE_ROOMS) {
+      ack(ackFn, { ok: false, error: "room limit reached" });
+      return;
+    }
+    const requestedCode = sanitizeRoomCode(payload.code ?? payload.roomCode);
+    if (requestedCode && rooms.has(requestedCode)) {
+      ack(ackFn, { ok: false, error: "room already exists" });
+      return;
+    }
+    const room = createMatchRoom(requestedCode);
+    ack(ackFn, joinRoom(socket, room, payload.name));
   });
 
   socket.on("room:join", (payload = {}, ackFn) => {
-    ack(ackFn, joinDefaultRoom(socket, payload.name));
+    const code = sanitizeRoomCode(payload.code ?? payload.roomCode);
+    if (!code) {
+      ack(ackFn, { ok: false, error: "room code required" });
+      return;
+    }
+    const room = getRoom(code);
+    if (!room) {
+      ack(ackFn, { ok: false, error: "room not found" });
+      return;
+    }
+    ack(ackFn, joinRoom(socket, room, payload.name));
   });
 
   socket.on("room:leave", (ackFn) => {
-    ack(ackFn, joinDefaultRoom(socket));
+    leaveCurrentRoom(socket);
+    ack(ackFn, { ok: true, room: null });
   });
 
   socket.on("disconnecting", () => {
     leaveCurrentRoom(socket);
+    clearSocketDeltaCache(socket);
   });
 
   socket.on("disconnect", () => {
@@ -1137,5 +1869,7 @@ httpServer.on("error", (error) => {
 
 httpServer.listen(PORT, () => {
   console.log(`Chat server running on http://localhost:${PORT}`);
-  console.log(`Persistent room: ${DEFAULT_ROOM_CODE} (capacity ${MAX_ROOM_PLAYERS})`);
+  console.log(
+    `Match rooms enabled (${ROOM_CODE_PREFIX}-xxxxx, capacity ${MAX_ROOM_PLAYERS}, max rooms ${MAX_ACTIVE_ROOMS})`
+  );
 });
