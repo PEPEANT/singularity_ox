@@ -1,0 +1,4 @@
+﻿Tabler pencil icon
+- Source: https://github.com/tabler/tabler-icons/blob/master/icons/outline/pencil.svg
+- License: MIT
+- Copyright: Tabler

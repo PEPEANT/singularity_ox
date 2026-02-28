@@ -1,0 +1,7 @@
+OpenGameArt - Basic Sound Effects Pack
+Source: https://opengameart.org/content/basic-sound-effects
+License: CC0 1.0 (Public Domain)
+
+Included files in this project:
+- assets/audio/weapons/gunshot_0.mp3
+- assets/audio/weapons/gun_reload_lock_or_click_sound.mp3

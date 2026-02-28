@@ -1,0 +1,12 @@
+﻿CC0 Texture Attribution Note
+
+Source asset: ambientCG Grass001
+Download page: https://ambientcg.com/view?id=Grass001
+License: CC0 1.0 Universal
+License URL: https://docs.ambientcg.com/license/
+
+Files in this folder were derived from Grass001_1K-JPG.zip:
+- grass_color.jpg
+- grass_normal_gl.jpg
+- grass_roughness.jpg
+- grass_ao.jpg

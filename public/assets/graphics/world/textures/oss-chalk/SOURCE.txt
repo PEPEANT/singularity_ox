@@ -1,0 +1,3 @@
+﻿Chalk stamp texture
+- Source: https://github.com/mrdoob/three.js/blob/dev/examples/textures/sprites/disc.png
+- License: MIT (three.js)

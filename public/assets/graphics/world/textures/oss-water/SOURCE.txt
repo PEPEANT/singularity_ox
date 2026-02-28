@@ -1,0 +1,6 @@
+﻿Open-source Water Normal Map
+
+File: waternormals.jpg
+Source: https://github.com/mrdoob/three.js/blob/dev/examples/textures/waternormals.jpg
+License: MIT (three.js)
+License URL: https://github.com/mrdoob/three.js/blob/dev/LICENSE

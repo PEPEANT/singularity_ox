@@ -1,0 +1,12 @@
+﻿CC0 Texture Attribution Note
+
+Source asset: ambientCG Ground055S
+Download page: https://ambientcg.com/view?id=Ground055S
+License: CC0 1.0 Universal
+License URL: https://docs.ambientcg.com/license/
+
+Files in this folder were derived from Ground055S_1K-JPG.zip:
+- sand_color.jpg
+- sand_normal_gl.jpg
+- sand_roughness.jpg
+- sand_ao.jpg

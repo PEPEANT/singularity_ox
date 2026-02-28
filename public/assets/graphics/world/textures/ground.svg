@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#75bc63"/>
+      <stop offset="1" stop-color="#4f9a4a"/>
+    </linearGradient>
+    <pattern id="grain" width="32" height="32" patternUnits="userSpaceOnUse">
+      <rect width="32" height="32" fill="none"/>
+      <path d="M2 7L6 5L10 9L8 12L3 11Z" fill="#9dd889" fill-opacity="0.26"/>
+      <path d="M18 4L22 2L27 6L24 11L19 9Z" fill="#7ac46a" fill-opacity="0.3"/>
+      <path d="M6 21L11 18L15 22L10 27L5 25Z" fill="#5ea954" fill-opacity="0.34"/>
+      <path d="M20 18L25 16L30 20L27 27L21 24Z" fill="#8bcf76" fill-opacity="0.25"/>
+      <circle cx="14" cy="13" r="1.6" fill="#3f7f3e" fill-opacity="0.22"/>
+      <circle cx="28" cy="29" r="1.2" fill="#4c9146" fill-opacity="0.28"/>
+    </pattern>
+  </defs>
+  <rect width="256" height="256" fill="url(#base)"/>
+  <rect width="256" height="256" fill="url(#grain)"/>
+</svg>

@@ -1,0 +1,36 @@
+{
+  "name": "reclaim-fps",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:all": "node scripts/dev-all.mjs",
+    "dev:client": "vite",
+    "dev:server": "node server.js",
+    "prod:build": "npm run build",
+    "prod:start": "npm run build && npx pm2 start ecosystem.config.cjs --env production",
+    "prod:restart": "npx pm2 restart ecosystem.config.cjs --env production --update-env",
+    "prod:stop": "npx pm2 delete reclaim-fps-client reclaim-fps-chat",
+    "prod:status": "npx pm2 status",
+    "prod:logs": "npx pm2 logs --lines 120",
+    "prod:save": "npx pm2 save",
+    "doctor": "node scripts/doctor.mjs",
+    "audit:world": "node scripts/world-audit.mjs",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "node scripts/verify.mjs",
+    "check:smoke": "node scripts/verify.mjs --skip-build"
+  },
+  "dependencies": {
+    "events": "^3.3.0",
+    "simplex-noise": "^4.0.3",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "three": "^0.180.0",
+    "voxel": "^0.5.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}

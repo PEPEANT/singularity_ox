@@ -1,0 +1,525 @@
+:root {
+  color-scheme: only light;
+  --hud-text: #f3f8ff;
+  --hud-border: rgba(188, 213, 238, 0.56);
+  --hud-bg: rgba(14, 25, 38, 0.6);
+  --accent-bright: #9ff4ff;
+  --accent-danger: #ff7d7d;
+  --panel-bg: rgba(7, 20, 33, 0.86);
+  --panel-border: rgba(138, 178, 212, 0.62);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.hidden {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(155, 197, 255, 0.18), transparent 44%),
+    radial-gradient(circle at 86% 84%, rgba(128, 167, 225, 0.14), transparent 50%),
+    #081523;
+  color: var(--hud-text);
+}
+
+#app,
+canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+#hud-ui {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 36;
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+  padding: 10px 12px;
+  border: 1px solid var(--hud-border);
+  border-radius: 11px;
+  background: var(--hud-bg);
+  backdrop-filter: blur(5px);
+}
+
+.hud-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font: 700 0.69rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+}
+
+.hud-key {
+  color: rgba(173, 212, 246, 0.9);
+}
+
+#hub-flow-ui {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  z-index: 34;
+  transform: translateX(-50%);
+  width: min(92vw, 560px);
+  pointer-events: none;
+}
+
+#hub-billboard {
+  display: grid;
+  gap: 6px;
+  padding: 14px 18px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background:
+    linear-gradient(140deg, rgba(30, 58, 89, 0.72), rgba(8, 19, 30, 0.9)),
+    radial-gradient(circle at 18% 10%, rgba(153, 220, 255, 0.2), transparent 42%);
+  box-shadow:
+    0 0 0 1px rgba(117, 162, 196, 0.18),
+    0 10px 26px rgba(3, 10, 16, 0.44);
+  backdrop-filter: blur(6px);
+}
+
+.hub-kicker {
+  margin: 0;
+  color: #9ed7ff;
+  font: 700 0.67rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.2em;
+}
+
+#hub-phase-title {
+  margin: 0;
+  font: 700 1.22rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  color: #ecf8ff;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+#hub-phase-subtitle {
+  margin: 0;
+  color: #c3ddf4;
+  font: 600 0.82rem/1.3 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+#nickname-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 22% 20%, rgba(99, 188, 248, 0.2), transparent 48%),
+    linear-gradient(180deg, rgba(4, 10, 17, 0.76), rgba(4, 10, 17, 0.9));
+}
+
+#nickname-form {
+  width: min(92vw, 460px);
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid rgba(145, 191, 228, 0.68);
+  border-radius: 14px;
+  background: var(--panel-bg);
+  box-shadow: 0 16px 38px rgba(2, 8, 14, 0.5);
+}
+
+#nickname-title {
+  margin: 0;
+  color: #ebf8ff;
+  font: 700 1.06rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.nickname-copy {
+  margin: 0;
+  color: #b6d7f2;
+  font: 600 0.84rem/1.35 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+#nickname-form label {
+  color: #bce5ff;
+  font: 700 0.68rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+#nickname-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(167, 213, 247, 0.7);
+  border-radius: 9px;
+  background: rgba(11, 28, 44, 0.94);
+  color: #edf7ff;
+  font: 700 0.91rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  outline: none;
+}
+
+#nickname-input::placeholder {
+  color: rgba(182, 215, 242, 0.62);
+}
+
+#nickname-input:focus {
+  border-color: rgba(191, 228, 255, 0.98);
+  box-shadow: 0 0 0 2px rgba(145, 195, 232, 0.25);
+}
+
+#nickname-error {
+  margin: 0;
+  color: #ffbcbc;
+  font: 700 0.75rem/1.3 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+#nickname-submit {
+  height: 42px;
+  border: 1px solid rgba(179, 220, 250, 0.82);
+  border-radius: 9px;
+  background: linear-gradient(140deg, rgba(20, 53, 83, 0.95), rgba(9, 22, 35, 0.98));
+  color: #e8f7ff;
+  font: 700 0.8rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+#nickname-submit:hover {
+  border-color: rgba(198, 231, 255, 0.95);
+}
+
+#portal-transition {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  background: rgba(2, 7, 13, 0.96);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 460ms ease;
+}
+
+#portal-transition.on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.portal-loader {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 4px solid rgba(189, 226, 255, 0.26);
+  border-top-color: rgba(232, 247, 255, 0.96);
+  animation: portal-spin 880ms linear infinite;
+}
+
+@keyframes portal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+#portal-transition-text {
+  margin: 0;
+  color: #e8f7ff;
+  font: 700 0.86rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+#boundary-warning {
+  position: fixed;
+  left: 50%;
+  bottom: 18vh;
+  z-index: 88;
+  min-width: min(92vw, 360px);
+  max-width: min(92vw, 520px);
+  padding: 11px 14px;
+  border: 1px solid rgba(255, 169, 169, 0.7);
+  border-radius: 10px;
+  background: rgba(44, 10, 14, 0.84);
+  color: #ffe5e5;
+  font: 700 0.79rem/1.4 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+  text-align: center;
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition: opacity 180ms ease, transform 180ms ease;
+  pointer-events: none;
+  box-shadow: 0 10px 24px rgba(8, 2, 3, 0.35);
+}
+
+#boundary-warning.on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+#tool-ui {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  z-index: 35;
+  transform: translateX(-50%);
+  display: grid;
+  gap: 8px;
+  min-width: 320px;
+  justify-items: center;
+  pointer-events: auto;
+}
+
+#tool-hotbar {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.tool-slot {
+  min-width: 110px;
+  height: 44px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(170, 201, 233, 0.56);
+  border-radius: 10px;
+  background: rgba(10, 23, 37, 0.8);
+  color: #d8edff;
+  font: 700 0.73rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  backdrop-filter: blur(5px);
+}
+
+.tool-slot img {
+  width: 16px;
+  height: 16px;
+  opacity: 0.9;
+  filter: invert(87%) sepia(20%) saturate(466%) hue-rotate(178deg) brightness(102%) contrast(98%);
+}
+
+.tool-slot.active {
+  border-color: rgba(201, 226, 250, 0.92);
+  box-shadow: 0 0 0 2px rgba(141, 181, 220, 0.24);
+  background: rgba(16, 38, 58, 0.9);
+}
+
+.tool-key {
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(174, 205, 234, 0.48);
+  border-radius: 5px;
+  font-size: 0.64rem;
+  color: #9ec8ed;
+}
+
+#chalk-colors {
+  display: flex;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(168, 197, 225, 0.52);
+  border-radius: 999px;
+  background: rgba(9, 20, 31, 0.84);
+  backdrop-filter: blur(5px);
+}
+
+.chalk-color {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid rgba(198, 219, 241, 0.68);
+  background: var(--swatch, #f5f7ff);
+  cursor: pointer;
+}
+
+.chalk-color.active {
+  box-shadow:
+    0 0 0 2px rgba(225, 240, 255, 0.92),
+    0 0 0 5px rgba(124, 172, 216, 0.35);
+}
+
+#chat-ui {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 25;
+  display: grid;
+  gap: 8px;
+  align-items: stretch;
+  padding: 8px;
+  width: min(66vw, 380px);
+  border: 1px solid rgba(179, 208, 236, 0.62);
+  border-radius: 10px;
+  background: rgba(10, 21, 34, 0.82);
+  backdrop-filter: blur(5px);
+}
+
+#chat-log {
+  height: 132px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid rgba(174, 206, 237, 0.5);
+  border-radius: 8px;
+  background: rgba(11, 25, 41, 0.9);
+  font: 600 0.74rem/1.35 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+  scrollbar-width: thin;
+}
+
+#chat-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chat-line {
+  margin: 0 0 6px;
+  color: #ddeeff;
+  word-break: break-word;
+}
+
+.chat-line:last-child {
+  margin-bottom: 0;
+}
+
+.chat-line.self {
+  color: #ffffff;
+}
+
+.chat-line.system {
+  color: #c0daef;
+  font-style: italic;
+}
+
+.chat-name {
+  color: #a7cdf1;
+  margin-right: 6px;
+}
+
+#chat-input {
+  flex: 1;
+  width: 100%;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid rgba(177, 210, 240, 0.64);
+  border-radius: 8px;
+  background: rgba(12, 28, 44, 0.92);
+  color: #edf6ff;
+  font: 600 0.85rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  outline: none;
+}
+
+#chat-input::placeholder {
+  color: rgba(193, 221, 245, 0.76);
+}
+
+#chat-input:focus {
+  border-color: rgba(196, 225, 250, 0.98);
+  box-shadow: 0 0 0 2px rgba(149, 187, 228, 0.26);
+}
+
+#boot-error {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  text-align: center;
+  background: rgba(6, 10, 16, 0.9);
+  color: #ffd9d9;
+  font-size: 0.95rem;
+}
+
+@media (max-width: 640px) {
+  #hud-ui {
+    top: 8px;
+    left: 8px;
+    min-width: 150px;
+    padding: 8px 9px;
+    gap: 4px;
+  }
+
+  .hud-row {
+    font-size: 0.64rem;
+  }
+
+  #hub-flow-ui {
+    top: 8px;
+    width: calc(100vw - 14px);
+  }
+
+  #hub-billboard {
+    padding: 11px 12px;
+    gap: 4px;
+  }
+
+  #hub-phase-title {
+    font-size: 0.95rem;
+  }
+
+  #hub-phase-subtitle {
+    font-size: 0.73rem;
+  }
+
+  #nickname-form {
+    padding: 14px;
+  }
+
+  #tool-ui {
+    min-width: 0;
+    width: calc(100vw - 20px);
+    bottom: 10px;
+    gap: 6px;
+  }
+
+  #tool-hotbar {
+    width: 100%;
+  }
+
+  .tool-slot {
+    flex: 1;
+    min-width: 0;
+  }
+
+  #chalk-colors {
+    gap: 6px;
+    padding: 6px 8px;
+  }
+
+  #chat-ui {
+    left: 10px;
+    right: 10px;
+    bottom: 110px;
+    width: auto;
+  }
+
+  #chat-log {
+    height: 110px;
+  }
+
+  #chat-input {
+    font-size: 0.8rem;
+  }
+}
