@@ -66,6 +66,16 @@ async function waitFor(fn, timeoutMs = 6000, stepMs = 30) {
   throw new Error("Timed out waiting for condition");
 }
 
+function emitAck(socket, event, payload = undefined) {
+  return new Promise((resolve) => {
+    if (payload === undefined) {
+      socket.emit(event, (response = {}) => resolve(response));
+      return;
+    }
+    socket.emit(event, payload, (response = {}) => resolve(response));
+  });
+}
+
 async function checkSyntax() {
   const files = [
     "src/main.js",
@@ -169,6 +179,62 @@ async function checkSocketServer() {
 
     await waitFor(() => receivedSync, 5000);
     await waitFor(() => roomPlayerCount >= 2, 5000);
+
+    let quizStart = 0;
+    let quizQuestion = 0;
+    let quizLock = 0;
+    let quizResult = 0;
+    let quizEnd = 0;
+    let lastQuizScore = null;
+
+    c1.on("quiz:start", () => {
+      quizStart += 1;
+    });
+    c1.on("quiz:question", () => {
+      quizQuestion += 1;
+    });
+    c1.on("quiz:lock", () => {
+      quizLock += 1;
+    });
+    c1.on("quiz:result", () => {
+      quizResult += 1;
+    });
+    c1.on("quiz:end", () => {
+      quizEnd += 1;
+    });
+    c1.on("quiz:score", (payload = {}) => {
+      lastQuizScore = payload;
+    });
+
+    // Keep both players on O-zone so they survive to the next question.
+    c1.emit("player:sync", { x: -10, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+    c2.emit("player:sync", { x: -12, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+
+    let quizStartAck = await emitAck(c1, "quiz:start", {
+      lockSeconds: 2,
+      questions: [
+        { id: "VERIFY_Q1", text: "verify 1", answer: "O" },
+        { id: "VERIFY_Q2", text: "verify 2", answer: "O" }
+      ]
+    });
+    if (!quizStartAck?.ok) {
+      quizStartAck = await emitAck(c2, "quiz:start", {
+        lockSeconds: 2,
+        questions: [
+          { id: "VERIFY_Q1", text: "verify 1", answer: "O" },
+          { id: "VERIFY_Q2", text: "verify 2", answer: "O" }
+        ]
+      });
+    }
+    assert(quizStartAck?.ok === true, `quiz:start failed: ${JSON.stringify(quizStartAck)}`);
+
+    await waitFor(() => quizEnd >= 1 && quizResult >= 2, 16000);
+    assert(quizStart >= 1, "quiz:start event was not received");
+    assert(quizQuestion >= 2, "quiz:question did not progress through all questions");
+    assert(quizLock >= 2, "quiz:lock did not fire for each question");
+    assert(quizResult >= 2, "quiz:result did not fire for each question");
+    assert(lastQuizScore && Array.isArray(lastQuizScore.leaderboard), "quiz:score payload is missing leaderboard");
+    assert(lastQuizScore.leaderboard.length >= 2, "quiz:score leaderboard should include both clients");
 
     c2.disconnect();
     c1.emit("room:list");

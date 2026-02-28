@@ -3831,8 +3831,13 @@ export class GameRuntime {
   }
 
   handleQuizScore(payload = {}) {
-    this.quizState.active = Boolean(payload.active) || this.quizState.active;
-    this.quizState.phase = String(payload.phase ?? this.quizState.phase ?? "idle");
+    const hasOwn = (key) => Object.prototype.hasOwnProperty.call(payload, key);
+    if (hasOwn("active")) {
+      this.quizState.active = Boolean(payload.active);
+    }
+    if (hasOwn("phase")) {
+      this.quizState.phase = String(payload.phase ?? "idle");
+    }
     this.quizState.hostId = payload.hostId ?? this.quizState.hostId;
     this.quizState.questionIndex = Math.max(
       this.quizState.questionIndex,
@@ -3847,6 +3852,15 @@ export class GameRuntime {
 
     const myId = String(this.localPlayerId ?? "");
     const leaderboard = Array.isArray(payload.leaderboard) ? payload.leaderboard : [];
+    const aliveById = new Map();
+    for (const entry of leaderboard) {
+      const id = String(entry?.id ?? "");
+      if (!id) {
+        continue;
+      }
+      aliveById.set(id, entry?.alive !== false);
+    }
+
     const me = leaderboard.find((entry) => String(entry?.id ?? "") === myId) ?? null;
     if (me) {
       this.quizState.myScore = Math.max(0, Math.trunc(Number(me.score) || 0));
@@ -3856,6 +3870,13 @@ export class GameRuntime {
         this.keys.clear();
       }
       this.localQuizAlive = nextAlive;
+    }
+
+    for (const [remoteId, remote] of this.remotePlayers) {
+      if (!aliveById.has(remoteId)) {
+        continue;
+      }
+      this.setRemoteAliveVisual(remote, aliveById.get(remoteId));
     }
 
     this.syncQuizBillboard();
