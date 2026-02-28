@@ -118,6 +118,8 @@ export class GameRuntime {
     this.boundaryGroup = null;
     this.floatingArenaGroup = null;
     this.centerBillboardGroup = null;
+    this.oxArenaGroup = null;
+    this.oxArenaTextures = [];
     this.centerBillboardCanvas = null;
     this.centerBillboardContext = null;
     this.centerBillboardTexture = null;
@@ -203,6 +205,12 @@ export class GameRuntime {
     this.lastLocalChatEchoAt = 0;
     this.toolUiEl = document.getElementById("tool-ui");
     this.chatUiEl = document.getElementById("chat-ui");
+    this.quizControlsEl = document.getElementById("quiz-controls");
+    this.quizStartBtnEl = document.getElementById("quiz-start-btn");
+    this.quizStopBtnEl = document.getElementById("quiz-stop-btn");
+    this.quizNextBtnEl = document.getElementById("quiz-next-btn");
+    this.quizLockBtnEl = document.getElementById("quiz-lock-btn");
+    this.quizControlsNoteEl = document.getElementById("quiz-controls-note");
     this.hubFlowUiEl = document.getElementById("hub-flow-ui");
     this.hubPhaseTitleEl = document.getElementById("hub-phase-title");
     this.hubPhaseSubtitleEl = document.getElementById("hub-phase-subtitle");
@@ -321,6 +329,7 @@ export class GameRuntime {
     this.camera.position.copy(this.playerPosition);
     this.lastSafePosition.copy(this.playerPosition);
     this.syncGameplayUiForFlow();
+    this.updateQuizControlUi();
 
     this.hud.update({
       status: this.getStatusText(),
@@ -453,6 +462,7 @@ export class GameRuntime {
     this.setupBoundaryWalls(world.boundary);
     this.setupFloatingArena(world.floatingArena, world.ground);
     this.setupCenterBillboard(world.centerBillboard);
+    this.setupOxArenaVisuals(world.oxArena);
     this.setupChalkLayer(world.chalk);
     this.setupBeachLayer(world.beach, world.ocean);
     this.setupOceanLayer(world.ocean);
@@ -1138,7 +1148,8 @@ export class GameRuntime {
 
   syncGameplayUiForFlow() {
     const gameplayEnabled = !this.hubFlowEnabled || this.flowStage === "city_live";
-    this.toolUiEl?.classList.toggle("hidden", !gameplayEnabled);
+    const chalkEnabled = Boolean(this.worldContent?.chalk?.enabled);
+    this.toolUiEl?.classList.toggle("hidden", !gameplayEnabled || !chalkEnabled);
     this.chatUiEl?.classList.toggle("hidden", !gameplayEnabled);
     if (!gameplayEnabled) {
       this.setChatOpen(false);
@@ -2354,6 +2365,153 @@ export class GameRuntime {
     }
   }
 
+  clearOxArenaVisuals() {
+    if (this.oxArenaGroup) {
+      this.scene.remove(this.oxArenaGroup);
+      disposeMeshTree(this.oxArenaGroup);
+      this.oxArenaGroup = null;
+    }
+    for (const texture of this.oxArenaTextures) {
+      texture?.dispose?.();
+    }
+    this.oxArenaTextures.length = 0;
+  }
+
+  createArenaTextMesh(text, options = {}) {
+    const width = Math.max(6, Number(options.width) || 18);
+    const height = Math.max(6, Number(options.height) || 18);
+    const fontSize = Math.max(24, Number(options.fontSize) || 236);
+    const textColor = options.textColor ?? "#f5f9ff";
+    const strokeColor = options.strokeColor ?? "rgba(12, 22, 34, 0.7)";
+    const shadowColor = options.shadowColor ?? "rgba(5, 8, 13, 0.5)";
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 1024;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return null;
+    }
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = `800 ${fontSize}px 'Bahnschrift'`;
+    context.fillStyle = textColor;
+    context.strokeStyle = strokeColor;
+    context.lineWidth = Math.max(10, fontSize * 0.08);
+    context.shadowColor = shadowColor;
+    context.shadowBlur = Math.max(8, fontSize * 0.09);
+    context.shadowOffsetY = Math.max(4, fontSize * 0.04);
+    context.strokeText(String(text ?? "").slice(0, 24), canvas.width * 0.5, canvas.height * 0.5);
+    context.fillText(String(text ?? "").slice(0, 24), canvas.width * 0.5, canvas.height * 0.5);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    this.oxArenaTextures.push(texture);
+
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height),
+      new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        depthWrite: false,
+        depthTest: true
+      })
+    );
+    mesh.renderOrder = 9;
+    return mesh;
+  }
+
+  setupOxArenaVisuals(config = {}) {
+    this.clearOxArenaVisuals();
+    if (!config?.enabled) {
+      return;
+    }
+
+    const group = new THREE.Group();
+    const textY = Math.max(0.04, Number(config.textY) || 0.08);
+
+    const createZonePlate = (zoneConfig = {}, fallbackCenterX = 0) => {
+      const width = Math.max(20, Number(zoneConfig.width) || 62);
+      const depth = Math.max(30, Number(zoneConfig.depth) || 110);
+      const centerX = Number.isFinite(Number(zoneConfig.centerX)) ? Number(zoneConfig.centerX) : fallbackCenterX;
+      const centerZ = Number.isFinite(Number(zoneConfig.centerZ)) ? Number(zoneConfig.centerZ) : 0;
+
+      const plate = new THREE.Mesh(
+        new THREE.PlaneGeometry(width, depth),
+        new THREE.MeshStandardMaterial({
+          color: zoneConfig.color ?? 0x3f586f,
+          roughness: 0.84,
+          metalness: 0.08,
+          emissive: zoneConfig.emissive ?? 0x1f2d3b,
+          emissiveIntensity: 0.2,
+          transparent: true,
+          opacity: 0.92
+        })
+      );
+      plate.rotation.x = -Math.PI / 2;
+      plate.position.set(centerX, 0.034, centerZ);
+      plate.receiveShadow = true;
+      plate.renderOrder = 8;
+      group.add(plate);
+      return { plate, centerX, centerZ, width, depth };
+    };
+
+    const oZone = createZonePlate(config.oZone, -34);
+    const xZone = createZonePlate(config.xZone, 34);
+
+    const dividerWidth = Math.max(0.8, Number(config.dividerWidth) || 2.2);
+    const dividerDepth = Math.max(Math.max(oZone.depth, xZone.depth), Number(config.dividerDepth) || 112);
+    const dividerHeight = Math.max(0.08, Number(config.dividerHeight) || 0.22);
+    const divider = new THREE.Mesh(
+      new THREE.BoxGeometry(dividerWidth, dividerHeight, dividerDepth),
+      new THREE.MeshStandardMaterial({
+        color: config.dividerColor ?? 0x1f252d,
+        roughness: 0.64,
+        metalness: 0.28,
+        emissive: 0x0f1319,
+        emissiveIntensity: 0.18
+      })
+    );
+    divider.position.set(0, dividerHeight * 0.5 + 0.025, 0);
+    divider.castShadow = !this.mobileEnabled;
+    divider.receiveShadow = true;
+    group.add(divider);
+
+    const oLetter = this.createArenaTextMesh("O", {
+      width: Math.max(10, oZone.width * 0.56),
+      height: Math.max(10, oZone.width * 0.56),
+      fontSize: 520,
+      textColor: "#e9fff5",
+      strokeColor: "rgba(14, 59, 38, 0.9)"
+    });
+    if (oLetter) {
+      oLetter.rotation.x = -Math.PI / 2;
+      oLetter.position.set(oZone.centerX, textY, oZone.centerZ);
+      group.add(oLetter);
+    }
+
+    const xLetter = this.createArenaTextMesh("X", {
+      width: Math.max(10, xZone.width * 0.56),
+      height: Math.max(10, xZone.width * 0.56),
+      fontSize: 520,
+      textColor: "#ffeef0",
+      strokeColor: "rgba(78, 20, 26, 0.9)"
+    });
+    if (xLetter) {
+      xLetter.rotation.x = -Math.PI / 2;
+      xLetter.position.set(xZone.centerX, textY, xZone.centerZ);
+      group.add(xLetter);
+    }
+
+    this.oxArenaGroup = group;
+    this.scene.add(this.oxArenaGroup);
+  }
+
   clearChalkLayer() {
     if (this.chalkLayer) {
       this.scene.remove(this.chalkLayer);
@@ -3104,6 +3262,19 @@ export class GameRuntime {
         this.setChalkColor(String(button.dataset.color || this.selectedChalkColor));
       });
     }
+
+    this.quizStartBtnEl?.addEventListener("click", () => {
+      this.requestQuizStart();
+    });
+    this.quizStopBtnEl?.addEventListener("click", () => {
+      this.requestQuizStop();
+    });
+    this.quizNextBtnEl?.addEventListener("click", () => {
+      this.requestQuizNext();
+    });
+    this.quizLockBtnEl?.addEventListener("click", () => {
+      this.requestQuizLock();
+    });
   }
 
   resolveUiElements() {
@@ -3112,6 +3283,24 @@ export class GameRuntime {
     }
     if (!this.chatUiEl) {
       this.chatUiEl = document.getElementById("chat-ui");
+    }
+    if (!this.quizControlsEl) {
+      this.quizControlsEl = document.getElementById("quiz-controls");
+    }
+    if (!this.quizStartBtnEl) {
+      this.quizStartBtnEl = document.getElementById("quiz-start-btn");
+    }
+    if (!this.quizStopBtnEl) {
+      this.quizStopBtnEl = document.getElementById("quiz-stop-btn");
+    }
+    if (!this.quizNextBtnEl) {
+      this.quizNextBtnEl = document.getElementById("quiz-next-btn");
+    }
+    if (!this.quizLockBtnEl) {
+      this.quizLockBtnEl = document.getElementById("quiz-lock-btn");
+    }
+    if (!this.quizControlsNoteEl) {
+      this.quizControlsNoteEl = document.getElementById("quiz-controls-note");
     }
     if (!this.hubFlowUiEl) {
       this.hubFlowUiEl = document.getElementById("hub-flow-ui");
@@ -3311,6 +3500,7 @@ export class GameRuntime {
       this.localPlayerId = socket.id;
       this.hud.setStatus(this.getStatusText());
       this.syncPlayerNameIfConnected();
+      this.updateQuizControlUi();
     });
 
     socket.on("disconnect", () => {
@@ -3320,11 +3510,13 @@ export class GameRuntime {
       this.resetQuizStateLocal();
       this.hud.setStatus(this.getStatusText());
       this.hud.setPlayers(1);
+      this.updateQuizControlUi();
     });
 
     socket.on("connect_error", () => {
       this.networkConnected = false;
       this.hud.setStatus(this.getStatusText());
+      this.updateQuizControlUi();
     });
 
     socket.on("room:update", (room) => {
@@ -3408,6 +3600,7 @@ export class GameRuntime {
 
   handleRoomUpdate(room) {
     const players = Array.isArray(room?.players) ? room.players : [];
+    this.quizState.hostId = room?.hostId ?? this.quizState.hostId;
     const seen = new Set();
 
     for (const player of players) {
@@ -3437,6 +3630,7 @@ export class GameRuntime {
 
     const localPlayer = this.networkConnected ? 1 : 0;
     this.hud.setPlayers(this.remotePlayers.size + localPlayer);
+    this.updateQuizControlUi();
   }
 
   handleRemoteSync(payload) {
@@ -3736,6 +3930,7 @@ export class GameRuntime {
       lines: ["WAITING FOR HOST"],
       footer: "MAX 50 PLAYERS"
     });
+    this.updateQuizControlUi();
   }
 
   handleQuizStart(payload = {}) {
@@ -3763,6 +3958,7 @@ export class GameRuntime {
       footer: "QUESTION LOADING..."
     });
     this.hud.setStatus(this.getStatusText());
+    this.updateQuizControlUi();
   }
 
   handleQuizQuestion(payload = {}) {
@@ -3785,6 +3981,7 @@ export class GameRuntime {
     );
     this.syncQuizBillboard(true);
     this.hud.setStatus(this.getStatusText());
+    this.updateQuizControlUi();
   }
 
   handleQuizLock(payload = {}) {
@@ -3803,6 +4000,7 @@ export class GameRuntime {
       footer: "WAIT RESULT"
     });
     this.hud.setStatus(this.getStatusText());
+    this.updateQuizControlUi();
   }
 
   handleQuizResult(payload = {}) {
@@ -3828,6 +4026,7 @@ export class GameRuntime {
       footer: "NEXT QUESTION SOON"
     });
     this.hud.setStatus(this.getStatusText());
+    this.updateQuizControlUi();
   }
 
   handleQuizScore(payload = {}) {
@@ -3881,6 +4080,7 @@ export class GameRuntime {
 
     this.syncQuizBillboard();
     this.hud.setStatus(this.getStatusText());
+    this.updateQuizControlUi();
   }
 
   handleQuizEnd(payload = {}) {
@@ -3906,6 +4106,7 @@ export class GameRuntime {
       footer: "WAITING NEXT START"
     });
     this.hud.setStatus(this.getStatusText());
+    this.updateQuizControlUi();
   }
 
   syncQuizBillboard(force = false) {
@@ -3972,6 +4173,88 @@ export class GameRuntime {
       return `${status} | quiz start`;
     }
     return `${status} | quiz ${this.quizState.phase}`;
+  }
+
+  isLocalHost() {
+    const hostId = String(this.quizState.hostId ?? "");
+    const myId = String(this.localPlayerId ?? "");
+    return Boolean(hostId && myId && hostId === myId);
+  }
+
+  updateQuizControlUi() {
+    this.resolveUiElements();
+    const isHost = this.isLocalHost();
+    const connected = Boolean(this.networkConnected && this.socket);
+    const show = connected && isHost;
+    this.quizControlsEl?.classList.toggle("hidden", !show);
+    if (!show) {
+      return;
+    }
+
+    const phase = String(this.quizState.phase ?? "idle");
+    const active = Boolean(this.quizState.active);
+    this.quizStartBtnEl && (this.quizStartBtnEl.disabled = active);
+    this.quizStopBtnEl && (this.quizStopBtnEl.disabled = !active);
+    this.quizNextBtnEl && (this.quizNextBtnEl.disabled = !active || phase !== "waiting-next");
+    this.quizLockBtnEl && (this.quizLockBtnEl.disabled = !active || phase !== "question");
+
+    if (this.quizControlsNoteEl) {
+      this.quizControlsNoteEl.textContent = active
+        ? `Phase: ${phase} | Q${Math.max(0, this.quizState.questionIndex)}/${Math.max(0, this.quizState.totalQuestions)}`
+        : "Ready. Press START to run OX quiz.";
+    }
+  }
+
+  requestQuizStart() {
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "Cannot start quiz while offline.", "system");
+      return;
+    }
+    this.socket.emit("quiz:start", { lockSeconds: 15 }, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("SYSTEM", `Start failed: ${String(response?.error ?? "unknown")}`, "system");
+        return;
+      }
+      this.appendChatLine("SYSTEM", "Quiz started by host.", "system");
+    });
+  }
+
+  requestQuizStop() {
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "Cannot stop quiz while offline.", "system");
+      return;
+    }
+    this.socket.emit("quiz:stop", {}, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("SYSTEM", `Stop failed: ${String(response?.error ?? "unknown")}`, "system");
+        return;
+      }
+      this.appendChatLine("SYSTEM", "Quiz stopped by host.", "system");
+    });
+  }
+
+  requestQuizNext() {
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "Cannot move next while offline.", "system");
+      return;
+    }
+    this.socket.emit("quiz:next", {}, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("SYSTEM", `Next failed: ${String(response?.error ?? "unknown")}`, "system");
+      }
+    });
+  }
+
+  requestQuizLock() {
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "Cannot lock while offline.", "system");
+      return;
+    }
+    this.socket.emit("quiz:force-lock", (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("SYSTEM", `Lock failed: ${String(response?.error ?? "unknown")}`, "system");
+      }
+    });
   }
 
   appendChatLine(name, text, type = "remote") {
@@ -4373,6 +4656,7 @@ export class GameRuntime {
     this.setupBoundaryWalls(this.worldContent.boundary);
     this.setupFloatingArena(this.worldContent.floatingArena, this.worldContent.ground);
     this.setupCenterBillboard(this.worldContent.centerBillboard);
+    this.setupOxArenaVisuals(this.worldContent.oxArena);
     this.setupBeachLayer(this.worldContent.beach, this.worldContent.ocean);
     this.setupOceanLayer(this.worldContent.ocean);
     this.setupHubFlowWorld();

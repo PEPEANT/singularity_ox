@@ -115,8 +115,30 @@ export const BASE_VOID_PACK = {
       position: [0, 0, 0],
       lines: ["OX QUIZ 10", "MAX 50 PLAYERS"]
     },
-    chalk: {
+    oxArena: {
       enabled: true,
+      dividerWidth: 2.2,
+      dividerDepth: 118,
+      dividerHeight: 0.24,
+      dividerColor: 0x1f252d,
+      oZone: {
+        centerX: -34,
+        width: 62,
+        depth: 112,
+        color: 0x2e8f62,
+        emissive: 0x104f36
+      },
+      xZone: {
+        centerX: 34,
+        width: 62,
+        depth: 112,
+        color: 0x9b3840,
+        emissive: 0x5b1b20
+      },
+      textY: 0.09
+    },
+    chalk: {
+      enabled: false,
       maxMarks: 2800,
       minDistance: 0.17,
       markSizeMin: 0.14,
@@ -187,7 +209,7 @@ export const BASE_VOID_PACK = {
       }
     },
     hubFlow: {
-      enabled: true,
+      enabled: false,
       introSeconds: 4.8,
       bridge: {
         approachSpawn: [0, GAME_CONSTANTS.PLAYER_HEIGHT, -98],

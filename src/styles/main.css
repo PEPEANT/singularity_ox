@@ -67,6 +67,55 @@ canvas {
   color: rgba(173, 212, 246, 0.9);
 }
 
+.quiz-controls-head {
+  margin-bottom: 2px;
+  color: #caf0ff;
+  font: 800 0.64rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.16em;
+}
+
+#quiz-controls {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  z-index: 38;
+  display: grid;
+  gap: 6px;
+  min-width: 210px;
+  padding: 10px 11px;
+  border: 1px solid rgba(172, 213, 246, 0.62);
+  border-radius: 11px;
+  background: rgba(10, 23, 37, 0.76);
+  backdrop-filter: blur(5px);
+}
+
+.quiz-controls-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+#quiz-controls button {
+  height: 34px;
+  border: 1px solid rgba(170, 211, 243, 0.7);
+  border-radius: 8px;
+  background: rgba(16, 36, 56, 0.94);
+  color: #e7f5ff;
+  font: 800 0.68rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+#quiz-controls button:hover {
+  border-color: rgba(210, 235, 255, 0.92);
+}
+
+#quiz-controls-note {
+  color: rgba(196, 225, 248, 0.84);
+  font: 700 0.61rem/1.25 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+}
+
 #hub-flow-ui {
   position: fixed;
   top: 14px;
@@ -468,6 +517,20 @@ canvas {
   #hub-flow-ui {
     top: 8px;
     width: calc(100vw - 14px);
+  }
+
+  #quiz-controls {
+    top: auto;
+    bottom: 14px;
+    right: 10px;
+    min-width: 175px;
+    padding: 8px;
+    gap: 5px;
+  }
+
+  #quiz-controls button {
+    height: 32px;
+    font-size: 0.63rem;
   }
 
   #hub-billboard {

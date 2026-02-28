@@ -1,24 +1,24 @@
-<!doctype html>
-<html lang="ko">
+﻿<!doctype html>
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Emptines</title>
+    <title>Singularity OX</title>
   </head>
   <body>
     <div id="app"></div>
 
-    <div id="hud-ui" aria-label="상태">
+    <div id="hud-ui" aria-label="status hud">
       <div class="hud-row">
-        <span class="hud-key">네트</span>
-        <span id="hud-status">부팅</span>
+        <span class="hud-key">STATUS</span>
+        <span id="hud-status">offline</span>
       </div>
       <div class="hud-row">
-        <span class="hud-key">인원</span>
+        <span class="hud-key">PLAYERS</span>
         <span id="hud-players">0</span>
       </div>
       <div class="hud-row">
-        <span class="hud-key">좌표</span>
+        <span class="hud-key">POS</span>
         <span id="hud-position">0, 0</span>
       </div>
       <div class="hud-row">
@@ -27,53 +27,66 @@
       </div>
     </div>
 
-    <div id="hub-flow-ui" aria-live="polite">
+    <div id="quiz-controls" class="hidden" aria-label="quiz controls">
+      <div class="quiz-controls-head">HOST CONTROLS</div>
+      <div class="quiz-controls-row">
+        <button id="quiz-start-btn" type="button">START</button>
+        <button id="quiz-stop-btn" type="button">STOP</button>
+      </div>
+      <div class="quiz-controls-row">
+        <button id="quiz-next-btn" type="button">NEXT</button>
+        <button id="quiz-lock-btn" type="button">LOCK</button>
+      </div>
+      <div id="quiz-controls-note">Only room host can control quiz.</div>
+    </div>
+
+    <div id="hub-flow-ui" class="hidden" aria-live="polite">
       <div id="hub-billboard">
-        <p class="hub-kicker">RECLAIM 허브</p>
-        <h1 id="hub-phase-title">다리 검문소</h1>
-        <p id="hub-phase-subtitle">도시 입장을 위해 호출명을 설정하세요.</p>
+        <p class="hub-kicker">ENTRY</p>
+        <h1 id="hub-phase-title">Waiting</h1>
+        <p id="hub-phase-subtitle">Preparing session...</p>
       </div>
     </div>
 
     <div id="nickname-gate" class="hidden" aria-modal="true" role="dialog" aria-labelledby="nickname-title">
       <form id="nickname-form" novalidate>
-        <h2 id="nickname-title">다리 출입 터미널</h2>
-        <p class="nickname-copy">도시 진입 전에 호출명을 설정하세요.</p>
-        <label for="nickname-input">호출명</label>
+        <h2 id="nickname-title">Set Nickname</h2>
+        <p class="nickname-copy">Enter nickname to continue.</p>
+        <label for="nickname-input">Nickname</label>
         <input
           id="nickname-input"
           type="text"
           maxlength="16"
-          placeholder="플레이어_2049"
+          placeholder="PLAYER_2049"
           autocomplete="nickname"
         />
         <p id="nickname-error" class="hidden" aria-live="polite"></p>
-        <button id="nickname-submit" type="submit">도시 입장</button>
+        <button id="nickname-submit" type="submit">Confirm</button>
       </form>
     </div>
 
-    <div id="tool-ui" aria-label="도구">
+    <div id="tool-ui" aria-label="tools">
       <div id="tool-hotbar">
-        <button class="tool-slot active" data-tool="move" type="button" title="이동 (B)">
+        <button class="tool-slot active" data-tool="move" type="button" title="Move (B)">
           <span class="tool-key">B</span>
-          <span class="tool-label">이동</span>
+          <span class="tool-label">Move</span>
         </button>
-        <button class="tool-slot" data-tool="chalk" type="button" title="분필 도구">
+        <button class="tool-slot" data-tool="chalk" type="button" title="Chalk">
           <img src="/assets/graphics/ui/oss-icons/tabler-pencil.svg" alt="" />
-          <span class="tool-label">분필</span>
+          <span class="tool-label">Chalk</span>
         </button>
       </div>
-      <div id="chalk-colors" class="hidden" aria-label="분필 색상"></div>
+      <div id="chalk-colors" class="hidden" aria-label="chalk colors"></div>
     </div>
 
-    <div id="chat-ui" aria-label="채팅">
+    <div id="chat-ui" aria-label="chat">
       <div id="chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
       <div id="chat-controls" class="hidden">
         <input
           id="chat-input"
           type="text"
           maxlength="120"
-          placeholder="메시지를 입력하고 Enter를 누르세요"
+          placeholder="Press Enter to send"
           autocomplete="off"
         />
       </div>
@@ -81,11 +94,11 @@
 
     <div id="portal-transition" aria-hidden="true">
       <div class="portal-loader"></div>
-      <p id="portal-transition-text">포탈 동기화 중...</p>
+      <p id="portal-transition-text">Transferring...</p>
     </div>
 
     <div id="boundary-warning" aria-live="assertive">
-      맵 경계를 벗어나셨습니다.
+      You are out of arena boundary.
     </div>
 
     <script type="module" src="/src/main.js"></script>
