@@ -7,7 +7,9 @@
     "dev": "vite",
     "dev:all": "node scripts/dev-all.mjs",
     "dev:client": "vite",
-    "dev:server": "node server.js",
+    "dev:server": "node gateway.js",
+    "dev:worker": "node server.js",
+    "dev:gateway": "node gateway.js",
     "prod:build": "npm run build",
     "prod:start": "npm run build && npx pm2 start ecosystem.config.cjs --env production",
     "prod:restart": "npx pm2 restart ecosystem.config.cjs --env production --update-env",
@@ -20,7 +22,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "node scripts/verify.mjs",
-    "check:smoke": "node scripts/verify.mjs --skip-build"
+    "check:smoke": "node scripts/verify.mjs --skip-build",
+    "check:gateway": "node scripts/verify-gateway.mjs",
+    "check:scaleout": "node scripts/verify-scaleout.mjs",
+    "check:load50": "node scripts/loadtest-50.mjs"
   },
   "dependencies": {
     "events": "^3.3.0",

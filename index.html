@@ -1,24 +1,24 @@
 ﻿<!doctype html>
-<html lang="en">
+<html lang="ko">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Singularity OX</title>
+    <title>특이점 OX 퀴즈</title>
   </head>
   <body>
     <div id="app"></div>
 
-    <div id="hud-ui" aria-label="status hud">
+    <div id="hud-ui" aria-label="상태 정보">
       <div class="hud-row">
-        <span class="hud-key">STATUS</span>
-        <span id="hud-status">offline</span>
+        <span class="hud-key">상태</span>
+        <span id="hud-status">오프라인</span>
       </div>
       <div class="hud-row">
-        <span class="hud-key">PLAYERS</span>
+        <span class="hud-key">인원</span>
         <span id="hud-players">0</span>
       </div>
       <div class="hud-row">
-        <span class="hud-key">POS</span>
+        <span class="hud-key">위치</span>
         <span id="hud-position">0, 0</span>
       </div>
       <div class="hud-row">
@@ -27,66 +27,132 @@
       </div>
     </div>
 
-    <div id="quiz-controls" class="hidden" aria-label="quiz controls">
-      <div class="quiz-controls-head">HOST CONTROLS</div>
+    <div id="player-roster-panel" class="hidden" aria-live="polite" aria-label="현재 인원">
+      <div class="roster-head">
+        <span id="roster-title">현재 인원</span>
+        <span id="roster-count">0명</span>
+      </div>
+      <p id="roster-subtitle">Tab 키를 누르면 인원판이 열립니다.</p>
+      <div id="roster-list"></div>
+    </div>
+
+    <div id="quiz-controls" class="hidden" aria-label="퀴즈 제어">
+      <div class="quiz-controls-head">진행자 제어</div>
       <div class="quiz-controls-row">
-        <button id="quiz-start-btn" type="button">START</button>
-        <button id="quiz-stop-btn" type="button">STOP</button>
+        <button id="quiz-host-btn" class="quiz-host-btn" type="button">호스팅</button>
       </div>
       <div class="quiz-controls-row">
-        <button id="quiz-next-btn" type="button">NEXT</button>
-        <button id="quiz-lock-btn" type="button">LOCK</button>
+        <button id="quiz-start-btn" type="button">시작</button>
+        <button id="quiz-stop-btn" type="button">중지</button>
       </div>
-      <div id="quiz-controls-note">Only room host can control quiz.</div>
+      <div class="quiz-controls-row">
+        <button id="portal-open-btn" type="button">포탈 열기</button>
+        <button id="portal-admit-btn" type="button">입장 시작</button>
+      </div>
+      <div class="quiz-controls-row">
+        <button id="quiz-next-btn" type="button">다음</button>
+        <button id="quiz-lock-btn" type="button">잠금</button>
+      </div>
+      <div class="quiz-controls-row portal-controls-row">
+        <input id="portal-target-input" type="url" placeholder="https://포탈-이동-링크" />
+        <button id="portal-target-save-btn" type="button">포탈 링크 저장</button>
+      </div>
+      <div id="quiz-controls-note">방장이 퀴즈를 제어할 수 있습니다.</div>
     </div>
 
     <div id="hub-flow-ui" class="hidden" aria-live="polite">
       <div id="hub-billboard">
-        <p class="hub-kicker">ENTRY</p>
-        <h1 id="hub-phase-title">Waiting</h1>
-        <p id="hub-phase-subtitle">Preparing session...</p>
+        <p class="hub-kicker">입장</p>
+        <h1 id="hub-phase-title">대기 중</h1>
+        <p id="hub-phase-subtitle">세션 준비 중...</p>
       </div>
+    </div>
+
+    <div id="lobby-screen" class="hidden" aria-modal="true" role="dialog" aria-labelledby="lobby-title">
+      <form id="lobby-form" novalidate>
+        <p class="lobby-kicker">SINGULARITY OX</p>
+        <h2 id="lobby-title">대기실</h2>
+        <p id="lobby-status">서버에 연결 중...</p>
+        <div id="lobby-stats">
+          <div class="lobby-stat">
+            <span class="lobby-stat-key">활성 방</span>
+            <span id="lobby-room-count">0</span>
+          </div>
+          <div class="lobby-stat">
+            <span class="lobby-stat-key">대기 인원</span>
+            <span id="lobby-player-count">0</span>
+          </div>
+        </div>
+        <p id="lobby-top-room">현재 방 정보를 불러오는 중...</p>
+        <label for="lobby-name-input">닉네임</label>
+        <input
+          id="lobby-name-input"
+          type="text"
+          maxlength="16"
+          placeholder="플레이어_2049"
+          autocomplete="nickname"
+        />
+        <button id="lobby-join-btn" type="submit">입장하기</button>
+      </form>
     </div>
 
     <div id="nickname-gate" class="hidden" aria-modal="true" role="dialog" aria-labelledby="nickname-title">
       <form id="nickname-form" novalidate>
-        <h2 id="nickname-title">Set Nickname</h2>
-        <p class="nickname-copy">Enter nickname to continue.</p>
-        <label for="nickname-input">Nickname</label>
+        <h2 id="nickname-title">닉네임 설정</h2>
+        <p class="nickname-copy">계속하려면 닉네임을 입력하세요.</p>
+        <label for="nickname-input">닉네임</label>
         <input
           id="nickname-input"
           type="text"
           maxlength="16"
-          placeholder="PLAYER_2049"
+          placeholder="플레이어_2049"
           autocomplete="nickname"
         />
         <p id="nickname-error" class="hidden" aria-live="polite"></p>
-        <button id="nickname-submit" type="submit">Confirm</button>
+        <button id="nickname-submit" type="submit">확인</button>
       </form>
     </div>
 
-    <div id="tool-ui" aria-label="tools">
+    <div id="tool-ui" aria-label="도구">
       <div id="tool-hotbar">
-        <button class="tool-slot active" data-tool="move" type="button" title="Move (B)">
+        <button class="tool-slot active" data-tool="move" type="button" title="이동 (B)">
           <span class="tool-key">B</span>
-          <span class="tool-label">Move</span>
+          <span class="tool-label">이동</span>
         </button>
-        <button class="tool-slot" data-tool="chalk" type="button" title="Chalk">
+        <button class="tool-slot" data-tool="chalk" type="button" title="분필">
           <img src="/assets/graphics/ui/oss-icons/tabler-pencil.svg" alt="" />
-          <span class="tool-label">Chalk</span>
+          <span class="tool-label">분필</span>
         </button>
       </div>
-      <div id="chalk-colors" class="hidden" aria-label="chalk colors"></div>
+      <div id="chalk-colors" class="hidden" aria-label="분필 색상"></div>
     </div>
 
-    <div id="chat-ui" aria-label="chat">
+    <div id="mobile-controls" class="hidden" aria-label="모바일 컨트롤">
+      <div id="mobile-move-pad" aria-label="이동 패드">
+        <button class="mobile-move-btn up" type="button" data-key="KeyW">▲</button>
+        <button class="mobile-move-btn left" type="button" data-key="KeyA">◀</button>
+        <button class="mobile-move-btn right" type="button" data-key="KeyD">▶</button>
+        <button class="mobile-move-btn down" type="button" data-key="KeyS">▼</button>
+      </div>
+      <div id="mobile-action-pad" aria-label="액션 패드">
+        <button id="mobile-jump-btn" type="button">점프</button>
+        <button id="mobile-run-btn" type="button">질주</button>
+        <button id="mobile-roster-btn" type="button">인원</button>
+      </div>
+    </div>
+
+    <div id="mobile-look-pad" class="hidden" aria-hidden="true">
+      시점 드래그
+    </div>
+
+    <div id="chat-ui" aria-label="채팅">
       <div id="chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
       <div id="chat-controls" class="hidden">
         <input
           id="chat-input"
           type="text"
           maxlength="120"
-          placeholder="Press Enter to send"
+          placeholder="엔터로 전송"
           autocomplete="off"
         />
       </div>
@@ -94,11 +160,26 @@
 
     <div id="portal-transition" aria-hidden="true">
       <div class="portal-loader"></div>
-      <p id="portal-transition-text">Transferring...</p>
+      <p id="portal-transition-text">이동 중...</p>
     </div>
 
     <div id="boundary-warning" aria-live="assertive">
-      You are out of arena boundary.
+      경기장 경계를 벗어났습니다.
+    </div>
+
+    <div id="round-overlay" aria-live="polite" aria-hidden="true">
+      <canvas id="round-overlay-canvas"></canvas>
+      <div id="round-overlay-panel">
+        <h2 id="round-overlay-title">게임이 종료되었습니다</h2>
+        <p id="round-overlay-subtitle"></p>
+      </div>
+    </div>
+
+    <div id="entry-wait-overlay" class="hidden" aria-live="polite" aria-hidden="true">
+      <div id="entry-wait-panel">
+        <h2>입장 대기 중</h2>
+        <p id="entry-wait-text">방장이 입장 시작을 누를 때까지 대기하세요.</p>
+      </div>
     </div>
 
     <script type="module" src="/src/main.js"></script>

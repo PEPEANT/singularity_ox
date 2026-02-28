@@ -1,4 +1,4 @@
-import "./styles/main.css";
+﻿import "./styles/main.css";
 import { createGame } from "./game/index.js";
 
 function supportsWebGL() {
@@ -23,7 +23,7 @@ function showBootError(message) {
 
 function boot() {
   if (!supportsWebGL()) {
-    showBootError("이 브라우저에서는 WebGL을 사용할 수 없습니다.");
+    showBootError("브라우저에서 WebGL을 사용할 수 없습니다.");
     return;
   }
 

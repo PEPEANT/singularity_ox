@@ -17,7 +17,7 @@ module.exports = {
     },
     {
       name: "reclaim-fps-chat",
-      script: "server.js",
+      script: "gateway.js",
       cwd: __dirname,
       exec_mode: "fork",
       autorestart: true,

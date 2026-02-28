@@ -162,6 +162,18 @@ async function checkSocketServer() {
         receivedSync = true;
       }
     });
+    c2.on("player:delta", (payload = {}) => {
+      const updates = Array.isArray(payload?.updates) ? payload.updates : [];
+      for (const update of updates) {
+        if (String(update?.id ?? "") !== String(c1.id ?? "")) {
+          continue;
+        }
+        if (Array.isArray(update?.p) && update.p.length >= 3) {
+          receivedSync = true;
+          return;
+        }
+      }
+    });
 
     c1.on("room:list", (rooms) => {
       const first = Array.isArray(rooms) ? rooms[0] : null;

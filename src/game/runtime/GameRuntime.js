@@ -33,26 +33,59 @@ function parseSeconds(raw, fallback, min = 0.1) {
 }
 
 const NPC_GREETING_VIDEO_URL = new URL("../../../mp4/grok-video.webm", import.meta.url).href;
+const MEGA_AD_VIDEO_URL = new URL("../../../mp4/YTDown0.mp4", import.meta.url).href;
+const CENTER_BILLBOARD_BASE_WIDTH = 1024;
+const CENTER_BILLBOARD_BASE_HEIGHT = 512;
+const DYNAMIC_RESOLUTION_SETTINGS = Object.freeze({
+  sampleWindowSeconds: 1.05,
+  downshiftFps: 45,
+  upshiftFps: 62,
+  downshiftStep: 0.1,
+  upshiftStep: 0.05,
+  downshiftCooldownSeconds: 1.2,
+  upshiftCooldownSeconds: 2,
+  idleCooldownSeconds: 0.6,
+  ratioEpsilon: 0.03,
+  stableSamplesRequired: 2
+});
+const ROUND_OVERLAY_SETTINGS = Object.freeze({
+  prepareDurationSeconds: 3.2,
+  endDurationSeconds: 6.6,
+  fireworkSpawnIntervalSeconds: 0.26,
+  fireworkParticleCountMin: 30,
+  fireworkParticleCountMax: 44
+});
+const MOBILE_RUNTIME_SETTINGS = Object.freeze({
+  maxPixelRatio: 1.35,
+  minNetworkSyncInterval: 0.08,
+  lookSensitivityX: 0.0046,
+  lookSensitivityY: 0.004
+});
 
 export class GameRuntime {
   constructor(mount, options = {}) {
     this.mount = mount;
     this.clock = new THREE.Clock();
     this.mobileEnabled = isLikelyTouchDevice();
+    this.mobileModeLocked = this.mobileEnabled;
     this.hud = new HUD();
 
     this.contentPack = options.contentPack ?? getContentPack(options.contentPackId);
     this.worldContent = this.contentPack.world;
     this.handContent = this.contentPack.hands;
     this.networkContent = this.contentPack.network;
-    this.networkSyncInterval =
+    this.baseNetworkSyncInterval =
       Number(this.networkContent.syncInterval) || GAME_CONSTANTS.REMOTE_SYNC_INTERVAL;
+    this.networkSyncInterval = this.mobileEnabled
+      ? Math.max(this.baseNetworkSyncInterval, MOBILE_RUNTIME_SETTINGS.minNetworkSyncInterval)
+      : this.baseNetworkSyncInterval;
     this.remoteLerpSpeed =
       Number(this.networkContent.remoteLerpSpeed) || GAME_CONSTANTS.REMOTE_LERP_SPEED;
     this.remoteStaleTimeoutMs =
       Number(this.networkContent.staleTimeoutMs) || GAME_CONSTANTS.REMOTE_STALE_TIMEOUT_MS;
 
-    const initialPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const initialPixelRatioCap = this.mobileEnabled ? MOBILE_RUNTIME_SETTINGS.maxPixelRatio : 2;
+    const initialPixelRatio = Math.min(window.devicePixelRatio || 1, initialPixelRatioCap);
     this.maxPixelRatio = initialPixelRatio;
     this.currentPixelRatio = initialPixelRatio;
 
@@ -82,7 +115,8 @@ export class GameRuntime {
     const rendererExposure = Number(this.worldContent?.postProcessing?.exposure);
     this.renderer.toneMappingExposure = Number.isFinite(rendererExposure) ? rendererExposure : 1.08;
     this.renderer.shadowMap.enabled = !this.mobileEnabled;
-    this.renderer.shadowMap.autoUpdate = !this.mobileEnabled;
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = !this.mobileEnabled;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.textureLoader = new THREE.TextureLoader();
@@ -117,14 +151,19 @@ export class GameRuntime {
     this.groundUnderside = null;
     this.boundaryGroup = null;
     this.floatingArenaGroup = null;
+    this.spectatorStandsGroup = null;
     this.centerBillboardGroup = null;
+    this.megaAdScreenGroup = null;
     this.oxArenaGroup = null;
     this.oxArenaTextures = [];
+    this.worldDecorTextures = [];
     this.centerBillboardCanvas = null;
     this.centerBillboardContext = null;
     this.centerBillboardTexture = null;
     this.centerBillboardLastSignature = "";
     this.centerBillboardLastCountdown = null;
+    this.megaAdVideoEl = null;
+    this.megaAdVideoTexture = null;
     this.chalkLayer = null;
     this.chalkStampGeometry = null;
     this.chalkStampTexture = null;
@@ -157,7 +196,9 @@ export class GameRuntime {
         : GAME_CONSTANTS.DYNAMIC_RESOLUTION.desktopMinRatio,
       sampleTime: 0,
       frameCount: 0,
-      cooldown: 0
+      cooldown: 0,
+      downshiftSamples: 0,
+      upshiftSamples: 0
     };
 
     this.fpsState = {
@@ -166,22 +207,39 @@ export class GameRuntime {
       fps: 0
     };
     this.hudRefreshClock = 0;
+    this.quizBillboardRefreshClock = 0;
+    this.shadowRefreshClock = 0;
 
     this.socket = null;
     this.socketEndpoint = null;
+    this.socketAuth = null;
+    this.socketRole = "worker";
+    this.redirectInFlight = false;
     this.networkConnected = false;
     this.localPlayerId = null;
     this.queryParams =
       typeof window !== "undefined"
         ? new URLSearchParams(window.location.search)
         : new URLSearchParams();
-    this.localPlayerName = this.formatPlayerName(this.queryParams.get("name") ?? "PLAYER");
+    this.ownerAccessKey = String(
+      this.queryParams.get("owner") ??
+        this.queryParams.get("owner_key") ??
+        this.queryParams.get("hostKey") ??
+        this.queryParams.get("host_key") ??
+        ""
+    ).trim();
+    this.ownerAccessEnabled = this.ownerAccessKey.length > 0;
+    this.localPlayerName = this.formatPlayerName(this.queryParams.get("name") ?? "플레이어");
     this.pendingPlayerNameSync = false;
     this.remotePlayers = new Map();
     this.remoteSyncClock = 0;
+    this.localSyncSeq = 0;
     this.quizState = {
       active: false,
       phase: "idle",
+      autoMode: false,
+      autoStartsAt: 0,
+      prepareEndsAt: 0,
       hostId: null,
       questionIndex: 0,
       totalQuestions: 0,
@@ -191,6 +249,41 @@ export class GameRuntime {
       myScore: 0
     };
     this.localQuizAlive = true;
+    this.localSpectatorMode = false;
+    this.localEliminationDrop = {
+      active: false,
+      elapsed: 0,
+      velocityY: 0
+    };
+    this.spectatorFollowId = null;
+    this.spectatorFollowIndex = -1;
+    this.spectatorFollowOffset = new THREE.Vector3(0, 2.5, 6.8);
+    const arenaBackWall = this.worldContent?.oxArena?.backWall ?? {};
+    const arenaBackWallCenterX = Number.isFinite(Number(arenaBackWall?.centerX))
+      ? Number(arenaBackWall.centerX)
+      : 0;
+    const arenaBackWallCenterY = Number.isFinite(Number(arenaBackWall?.centerY))
+      ? Number(arenaBackWall.centerY)
+      : 8.8;
+    const arenaBackWallHeight = Math.max(6, Number(arenaBackWall?.height) || 16);
+    const arenaBackWallCenterZ = Number.isFinite(Number(arenaBackWall?.centerZ))
+      ? Number(arenaBackWall.centerZ)
+      : -32;
+    this.spectatorSpawn = new THREE.Vector3(
+      arenaBackWallCenterX,
+      arenaBackWallCenterY + arenaBackWallHeight * 0.58,
+      arenaBackWallCenterZ + 6.2
+    );
+    this.oxTrapdoors = {
+      o: null,
+      x: null
+    };
+    this.oxTrapdoorAnim = {
+      active: false,
+      loserSide: null,
+      elapsed: 0,
+      duration: 1
+    };
     this.chatBubbleLifetimeMs = 4200;
     this.chatLogMaxEntries = RUNTIME_TUNING.CHAT_LOG_MAX_ENTRIES;
     this.chatLogEl = document.getElementById("chat-log");
@@ -206,11 +299,16 @@ export class GameRuntime {
     this.toolUiEl = document.getElementById("tool-ui");
     this.chatUiEl = document.getElementById("chat-ui");
     this.quizControlsEl = document.getElementById("quiz-controls");
+    this.quizHostBtnEl = document.getElementById("quiz-host-btn");
     this.quizStartBtnEl = document.getElementById("quiz-start-btn");
     this.quizStopBtnEl = document.getElementById("quiz-stop-btn");
+    this.portalLobbyOpenBtnEl = document.getElementById("portal-open-btn");
+    this.portalLobbyStartBtnEl = document.getElementById("portal-admit-btn");
     this.quizNextBtnEl = document.getElementById("quiz-next-btn");
     this.quizLockBtnEl = document.getElementById("quiz-lock-btn");
     this.quizControlsNoteEl = document.getElementById("quiz-controls-note");
+    this.portalTargetInputEl = document.getElementById("portal-target-input");
+    this.portalTargetSaveBtnEl = document.getElementById("portal-target-save-btn");
     this.hubFlowUiEl = document.getElementById("hub-flow-ui");
     this.hubPhaseTitleEl = document.getElementById("hub-phase-title");
     this.hubPhaseSubtitleEl = document.getElementById("hub-phase-subtitle");
@@ -218,15 +316,69 @@ export class GameRuntime {
     this.nicknameFormEl = document.getElementById("nickname-form");
     this.nicknameInputEl = document.getElementById("nickname-input");
     this.nicknameErrorEl = document.getElementById("nickname-error");
+    this.lobbyScreenEl = document.getElementById("lobby-screen");
+    this.lobbyFormEl = document.getElementById("lobby-form");
+    this.lobbyNameInputEl = document.getElementById("lobby-name-input");
+    this.lobbyJoinBtnEl = document.getElementById("lobby-join-btn");
+    this.lobbyStatusEl = document.getElementById("lobby-status");
+    this.lobbyRoomCountEl = document.getElementById("lobby-room-count");
+    this.lobbyPlayerCountEl = document.getElementById("lobby-player-count");
+    this.lobbyTopRoomEl = document.getElementById("lobby-top-room");
     this.portalTransitionEl = document.getElementById("portal-transition");
     this.portalTransitionTextEl = document.getElementById("portal-transition-text");
     this.boundaryWarningEl = document.getElementById("boundary-warning");
+    this.roundOverlayEl = document.getElementById("round-overlay");
+    this.roundOverlayCanvasEl = document.getElementById("round-overlay-canvas");
+    this.roundOverlayTitleEl = document.getElementById("round-overlay-title");
+    this.roundOverlaySubtitleEl = document.getElementById("round-overlay-subtitle");
+    this.entryWaitOverlayEl = document.getElementById("entry-wait-overlay");
+    this.entryWaitTextEl = document.getElementById("entry-wait-text");
+    this.playerRosterPanelEl = document.getElementById("player-roster-panel");
+    this.rosterCountEl = document.getElementById("roster-count");
+    this.rosterSubtitleEl = document.getElementById("roster-subtitle");
+    this.rosterListEl = document.getElementById("roster-list");
+    this.mobileControlsEl = document.getElementById("mobile-controls");
+    this.mobileMoveButtons = Array.from(document.querySelectorAll(".mobile-move-btn[data-key]"));
+    this.mobileJumpBtnEl = document.getElementById("mobile-jump-btn");
+    this.mobileRunBtnEl = document.getElementById("mobile-run-btn");
+    this.mobileRosterBtnEl = document.getElementById("mobile-roster-btn");
+    this.mobileLookPadEl = document.getElementById("mobile-look-pad");
+    this.roundOverlayCtx = this.roundOverlayCanvasEl?.getContext?.("2d") ?? null;
+    this.roundOverlayVisible = false;
+    this.roundOverlayFireworks = false;
+    this.roundOverlayTimer = 0;
+    this.roundOverlaySpawnClock = 0;
+    this.roundOverlayParticles = [];
+    this.roomRoster = [];
+    this.rosterVisibleByTab = false;
+    this.rosterPinned = false;
+    this.localAdmissionWaiting = false;
+    this.entryGateState = {
+      portalOpen: false,
+      waitingPlayers: 0,
+      admittedPlayers: 0,
+      openedAt: 0,
+      lastAdmissionAt: 0,
+      admissionStartsAt: 0,
+      admissionInProgress: false
+    };
+    this.mobileHeldKeys = new Set();
+    this.mobileLookPointerId = null;
+    this.mobileLookLastX = 0;
+    this.mobileLookLastY = 0;
+    this.mobileEventsBound = false;
+    this.mobileHoldResetters = [];
 
     const hubFlowConfig = this.worldContent?.hubFlow ?? {};
     const bridgeConfig = hubFlowConfig?.bridge ?? {};
     const cityConfig = hubFlowConfig?.city ?? {};
     const portalConfig = hubFlowConfig?.portal ?? {};
     this.hubFlowEnabled = Boolean(hubFlowConfig?.enabled);
+    this.lobbyEnabled = !this.hubFlowEnabled;
+    this.lobbyVisible = false;
+    this.lobbyNameConfirmed = false;
+    this.lobbyJoinInFlight = false;
+    this.lobbyLastRooms = [];
     this.flowStage = this.hubFlowEnabled ? "bridge_approach" : "city_live";
     this.flowClock = 0;
     this.hubIntroDuration = parseSeconds(hubFlowConfig?.introSeconds, 4.8, 0.8);
@@ -307,7 +459,7 @@ export class GameRuntime {
       return;
     }
     if (!this.mount) {
-      throw new Error("Game mount element not found (#app).");
+      throw new Error("게임 마운트 요소를 찾을 수 없습니다 (#app).");
     }
 
     this._initialized = true;
@@ -316,12 +468,17 @@ export class GameRuntime {
     this.resolveUiElements();
     this.setupToolState();
     this.setChatOpen(false);
+    this.applyPortalTarget(this.portalTargetUrl, { announce: false });
+    this.refreshRosterPanel();
+    this.syncRosterVisibility();
+    this.updateMobileControlUi();
 
     this.setupWorld();
     this.setupHubFlowWorld();
     this.setupPostProcessing();
     this.bindEvents();
     this.bindHubFlowUiEvents();
+    this.setupLobbyUi();
     this.connectNetwork();
 
     this.camera.rotation.order = "YXZ";
@@ -461,7 +618,9 @@ export class GameRuntime {
 
     this.setupBoundaryWalls(world.boundary);
     this.setupFloatingArena(world.floatingArena, world.ground);
+    this.setupSpectatorStands(world.spectatorStands, world.boundary);
     this.setupCenterBillboard(world.centerBillboard);
+    this.setupMegaAdScreen(world.megaAdScreen);
     this.setupOxArenaVisuals(world.oxArena);
     this.setupChalkLayer(world.chalk);
     this.setupBeachLayer(world.beach, world.ocean);
@@ -1083,6 +1242,109 @@ export class GameRuntime {
     });
   }
 
+  setupLobbyUi() {
+    if (!this.lobbyEnabled) {
+      return;
+    }
+
+    this.showLobbyScreen("닉네임을 입력한 뒤 입장 버튼을 눌러주세요.");
+    if (this.lobbyNameInputEl) {
+      const suggestedName =
+        /^PLAYER(?:_\d+)?$/i.test(this.localPlayerName) || /^플레이어(?:_\d+)?$/i.test(this.localPlayerName)
+          ? ""
+          : this.localPlayerName;
+      this.lobbyNameInputEl.value = suggestedName;
+      window.setTimeout(() => {
+        this.lobbyNameInputEl?.focus();
+        this.lobbyNameInputEl?.select();
+      }, 20);
+    }
+  }
+
+  isLobbyBlockingGameplay() {
+    return Boolean(this.lobbyEnabled && this.lobbyVisible);
+  }
+
+  showLobbyScreen(statusText = "") {
+    if (!this.lobbyEnabled || !this.lobbyScreenEl) {
+      return;
+    }
+    this.lobbyVisible = true;
+    this.lobbyScreenEl.classList.remove("hidden");
+    if (this.lobbyJoinBtnEl) {
+      this.lobbyJoinBtnEl.disabled = this.lobbyJoinInFlight;
+    }
+    this.setLobbyStatus(statusText || "닉네임 입력 후 입장하세요.");
+    this.syncGameplayUiForFlow();
+    this.updateQuizControlUi();
+  }
+
+  hideLobbyScreen() {
+    if (!this.lobbyEnabled || !this.lobbyScreenEl) {
+      return;
+    }
+    this.lobbyVisible = false;
+    this.lobbyScreenEl.classList.add("hidden");
+    this.setLobbyStatus("");
+    this.syncGameplayUiForFlow();
+    this.updateQuizControlUi();
+  }
+
+  setLobbyStatus(text, isError = false) {
+    if (!this.lobbyStatusEl) {
+      return;
+    }
+    const message = String(text ?? "").trim();
+    this.lobbyStatusEl.textContent = message || "닉네임 입력 후 입장하세요.";
+    this.lobbyStatusEl.classList.toggle("error", Boolean(isError));
+  }
+
+  handleLobbyRoomList(payload) {
+    if (!this.lobbyEnabled) {
+      return;
+    }
+    const rooms = Array.isArray(payload) ? payload : [];
+    this.lobbyLastRooms = rooms;
+    const totalPlayers = rooms.reduce((sum, room) => sum + Math.max(0, Math.trunc(Number(room?.count) || 0)), 0);
+    if (this.lobbyRoomCountEl) {
+      this.lobbyRoomCountEl.textContent = String(rooms.length);
+    }
+    if (this.lobbyPlayerCountEl) {
+      this.lobbyPlayerCountEl.textContent = String(totalPlayers);
+    }
+    if (this.lobbyTopRoomEl) {
+      const topRoom = rooms
+        .slice()
+        .sort((left, right) => Math.max(0, Number(right?.count) || 0) - Math.max(0, Number(left?.count) || 0))[0];
+      if (topRoom) {
+        const code = String(topRoom?.code ?? "OX");
+        const count = Math.max(0, Math.trunc(Number(topRoom?.count) || 0));
+        const capacity = Math.max(1, Math.trunc(Number(topRoom?.capacity) || 50));
+        this.lobbyTopRoomEl.textContent = `대표 방 ${code} · ${count}/${capacity}`;
+      } else {
+        this.lobbyTopRoomEl.textContent = "현재 빈 방에서 시작됩니다.";
+      }
+    }
+  }
+
+  requestLobbyJoin() {
+    if (!this.lobbyEnabled) {
+      return;
+    }
+
+    const rawName = String(this.lobbyNameInputEl?.value ?? this.localPlayerName ?? "").trim();
+    if (rawName.length < 2) {
+      this.setLobbyStatus("닉네임은 최소 2자 이상이어야 합니다.", true);
+      return;
+    }
+
+    this.localPlayerName = this.formatPlayerName(rawName);
+    this.lobbyNameConfirmed = true;
+    this.pendingPlayerNameSync = true;
+    this.setLobbyStatus("매치 서버 연결을 준비하는 중...");
+    this.syncPlayerNameIfConnected();
+  }
+
   showNicknameGate() {
     if (!this.nicknameGateEl) {
       return;
@@ -1148,12 +1410,68 @@ export class GameRuntime {
 
   syncGameplayUiForFlow() {
     const gameplayEnabled = !this.hubFlowEnabled || this.flowStage === "city_live";
+    const lobbyBlocked = this.isLobbyBlockingGameplay();
+    const admissionBlocked = this.localAdmissionWaiting;
     const chalkEnabled = Boolean(this.worldContent?.chalk?.enabled);
-    this.toolUiEl?.classList.toggle("hidden", !gameplayEnabled || !chalkEnabled);
-    this.chatUiEl?.classList.toggle("hidden", !gameplayEnabled);
-    if (!gameplayEnabled) {
+    this.toolUiEl?.classList.toggle(
+      "hidden",
+      !gameplayEnabled || !chalkEnabled || lobbyBlocked || admissionBlocked
+    );
+    this.chatUiEl?.classList.toggle("hidden", !gameplayEnabled || lobbyBlocked || admissionBlocked);
+    if (!gameplayEnabled || lobbyBlocked || admissionBlocked) {
       this.setChatOpen(false);
     }
+    this.updateEntryWaitOverlay();
+    this.updateMobileControlUi();
+  }
+
+  updateEntryWaitOverlay() {
+    const shouldShow = Boolean(this.localAdmissionWaiting && !this.isLobbyBlockingGameplay());
+    this.entryWaitOverlayEl?.classList.toggle("hidden", !shouldShow);
+    this.entryWaitOverlayEl?.setAttribute("aria-hidden", shouldShow ? "false" : "true");
+    if (this.entryWaitTextEl) {
+      const waiting = Math.max(0, Math.trunc(Number(this.entryGateState?.waitingPlayers) || 0));
+      const countdownSeconds = this.getAdmissionCountdownSeconds();
+      const admissionInProgress =
+        this.entryGateState?.admissionInProgress === true || countdownSeconds > 0;
+      let nextText;
+      if (admissionInProgress) {
+        nextText =
+          countdownSeconds > 0
+            ? `입장 카운트다운 ${countdownSeconds}초... 곧 경기장으로 이동합니다.`
+            : "입장 처리 중입니다. 잠시만 기다려주세요.";
+      } else if (this.entryGateState?.portalOpen) {
+        nextText =
+          waiting > 0
+            ? `포탈 대기실입니다. 방장이 입장 시작을 누르면 모두 입장합니다. (대기 ${waiting}명)`
+            : "포탈 대기실입니다. 방장이 입장 시작을 누르면 모두 입장합니다.";
+      } else {
+        nextText = "입장 대기 중입니다. 진행자의 포탈 열기/입장 시작을 기다려주세요.";
+      }
+      if (this.entryWaitTextEl.textContent !== nextText) {
+        this.entryWaitTextEl.textContent = nextText;
+      }
+    }
+    if (shouldShow && document.pointerLockElement === this.renderer?.domElement) {
+      document.exitPointerLock?.();
+    }
+  }
+
+  getAdmissionCountdownMs(nowMs = Date.now()) {
+    const startsAt = Math.max(0, Math.trunc(Number(this.entryGateState?.admissionStartsAt) || 0));
+    if (startsAt <= 0) {
+      return 0;
+    }
+    const now = Math.max(0, Math.trunc(Number(nowMs) || Date.now()));
+    return Math.max(0, startsAt - now);
+  }
+
+  getAdmissionCountdownSeconds(nowMs = Date.now()) {
+    const remainMs = this.getAdmissionCountdownMs(nowMs);
+    if (remainMs <= 0) {
+      return 0;
+    }
+    return Math.max(1, Math.ceil(remainMs / 1000));
   }
 
   setMirrorGateVisible(visible) {
@@ -1235,7 +1553,7 @@ export class GameRuntime {
         () => {
           this.npcGreetingPlayed = true;
         },
-        () => Promise.reject(new Error("play failed"))
+        () => Promise.reject(new Error("재생 실패"))
       );
 
     video.currentTime = 0;
@@ -1332,7 +1650,13 @@ export class GameRuntime {
   }
 
   canMovePlayer() {
-    if (this.quizState.active && !this.localQuizAlive) {
+    if (this.isLobbyBlockingGameplay()) {
+      return false;
+    }
+    if (this.localAdmissionWaiting) {
+      return false;
+    }
+    if (this.quizState.active && !this.localQuizAlive && !this.localSpectatorMode) {
       return false;
     }
     if (!this.hubFlowEnabled) {
@@ -1346,11 +1670,222 @@ export class GameRuntime {
   }
 
   canUseGameplayControls() {
-    return !this.hubFlowEnabled || this.flowStage === "city_live";
+    return (
+      !this.isLobbyBlockingGameplay() &&
+      !this.localAdmissionWaiting &&
+      (!this.hubFlowEnabled || this.flowStage === "city_live")
+    );
   }
 
   canUsePointerLock() {
     return this.canMovePlayer() && !this.portalTransitioning;
+  }
+
+  startLocalEliminationDrop(reasonLabel = "오답 구역") {
+    if (this.localSpectatorMode || this.localEliminationDrop.active) {
+      return;
+    }
+    this.localEliminationDrop.active = true;
+    this.localEliminationDrop.elapsed = 0;
+    this.localEliminationDrop.velocityY = -1.4;
+    this.spectatorFollowId = null;
+    this.spectatorFollowIndex = -1;
+    this.verticalVelocity = -1.4;
+    this.keys.clear();
+    this.appendChatLine(
+      "SYSTEM",
+      `탈락했습니다 (${String(reasonLabel)}). 관전자 구역으로 이동합니다...`,
+      "system"
+    );
+  }
+
+  finishLocalEliminationDrop() {
+    this.localEliminationDrop.active = false;
+    this.localEliminationDrop.elapsed = 0;
+    this.localEliminationDrop.velocityY = 0;
+    this.localSpectatorMode = true;
+    this.verticalVelocity = 0;
+    this.playerPosition.copy(this.spectatorSpawn);
+    this.yaw = this.getLookYaw(this.playerPosition, this.tempVecA.set(0, GAME_CONSTANTS.PLAYER_HEIGHT, 0));
+    this.pitch = -0.08;
+    this.lastSafePosition.set(this.playerPosition.x, GAME_CONSTANTS.PLAYER_HEIGHT, this.playerPosition.z);
+    this.appendChatLine(
+      "SYSTEM",
+      "관전 모드: WASD 이동, SPACE/CTRL 상하 이동, V로 생존자 관전 전환",
+      "system"
+    );
+  }
+
+  enterHostSpectatorMode() {
+    if (this.localSpectatorMode) {
+      return;
+    }
+    this.localSpectatorMode = true;
+    this.localEliminationDrop.active = false;
+    this.localEliminationDrop.elapsed = 0;
+    this.localEliminationDrop.velocityY = 0;
+    this.spectatorFollowId = null;
+    this.spectatorFollowIndex = -1;
+    this.verticalVelocity = 0;
+    this.playerPosition.y = Math.max(this.playerPosition.y, this.spectatorSpawn.y - 1.2);
+    this.onGround = false;
+    this.appendChatLine(
+      "SYSTEM",
+      "진행자 관전 모드가 활성화되었습니다. 진행자는 탈락하지 않습니다.",
+      "system"
+    );
+  }
+
+  ensureLocalGameplayPosition() {
+    this.localSpectatorMode = false;
+    this.localEliminationDrop.active = false;
+    this.localEliminationDrop.elapsed = 0;
+    this.localEliminationDrop.velocityY = 0;
+    this.spectatorFollowId = null;
+    this.spectatorFollowIndex = -1;
+    this.verticalVelocity = 0;
+    this.onGround = true;
+    if (this.hubFlowEnabled) {
+      this.playerPosition.copy(this.citySpawn);
+    } else {
+      this.playerPosition.set(0, GAME_CONSTANTS.PLAYER_HEIGHT, 0);
+    }
+    this.lastSafePosition.set(this.playerPosition.x, GAME_CONSTANTS.PLAYER_HEIGHT, this.playerPosition.z);
+  }
+
+  getAutoStartCountdownSeconds() {
+    const startsAt = Number(this.quizState.autoStartsAt) || 0;
+    if (startsAt <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.ceil((startsAt - Date.now()) / 1000));
+  }
+
+  cycleSpectatorTarget() {
+    if (!this.localSpectatorMode) {
+      return;
+    }
+    const candidates = Array.from(this.remotePlayers.entries()).filter(
+      ([, remote]) => Boolean(remote?.alive)
+    );
+    if (candidates.length === 0) {
+      this.spectatorFollowId = null;
+      this.spectatorFollowIndex = -1;
+      this.appendChatLine("SYSTEM", "관전할 생존자가 없습니다.", "system");
+      return;
+    }
+
+    const currentIndex = candidates.findIndex(([id]) => id === this.spectatorFollowId);
+    if (currentIndex < 0) {
+      this.spectatorFollowIndex = 0;
+      this.spectatorFollowId = candidates[0][0];
+    } else {
+      const nextIndex = currentIndex + 1;
+      if (nextIndex >= candidates.length) {
+        this.spectatorFollowId = null;
+        this.spectatorFollowIndex = -1;
+        this.appendChatLine("SYSTEM", "자유 관전 모드로 전환합니다.", "system");
+        return;
+      }
+      this.spectatorFollowIndex = nextIndex;
+      this.spectatorFollowId = candidates[nextIndex][0];
+    }
+
+    const target = this.remotePlayers.get(this.spectatorFollowId);
+    const targetName = this.formatPlayerName(target?.name);
+    this.appendChatLine("SYSTEM", `${targetName} 관전 중`, "system");
+  }
+
+  updateLocalEliminationDrop(delta) {
+    if (!this.localEliminationDrop.active) {
+      return false;
+    }
+    this.localEliminationDrop.elapsed += delta;
+    this.localEliminationDrop.velocityY += GAME_CONSTANTS.PLAYER_GRAVITY * 1.35 * delta;
+    this.playerPosition.y += this.localEliminationDrop.velocityY * delta;
+    if (this.playerPosition.y <= -18 || this.localEliminationDrop.elapsed >= 3.4) {
+      this.finishLocalEliminationDrop();
+    }
+    this.camera.position.copy(this.playerPosition);
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
+    return true;
+  }
+
+  updateSpectatorMovement(delta) {
+    if (!this.localSpectatorMode) {
+      return false;
+    }
+    if (this.spectatorFollowId) {
+      const target = this.remotePlayers.get(this.spectatorFollowId);
+      if (target?.alive) {
+        const followPos = target.mesh.position;
+        const lookYaw = this.getLookYaw(this.playerPosition, followPos);
+        const sinYaw = Math.sin(lookYaw);
+        const cosYaw = Math.cos(lookYaw);
+        const offset = this.spectatorFollowOffset;
+        this.tempVecA.set(
+          followPos.x + sinYaw * offset.z,
+          followPos.y + offset.y,
+          followPos.z + cosYaw * offset.z
+        );
+        const alpha = THREE.MathUtils.clamp(1 - Math.exp(-8 * delta), 0, 1);
+        this.playerPosition.lerp(this.tempVecA, alpha);
+        this.yaw = lerpAngle(this.yaw, lookYaw, alpha);
+        this.pitch = THREE.MathUtils.lerp(this.pitch, -0.18, alpha);
+        this.camera.position.copy(this.playerPosition);
+        this.camera.rotation.y = this.yaw;
+        this.camera.rotation.x = this.pitch;
+        return true;
+      }
+      this.spectatorFollowId = null;
+      this.spectatorFollowIndex = -1;
+    }
+
+    const keyForward =
+      (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) -
+      (this.keys.has("KeyS") || this.keys.has("ArrowDown") ? 1 : 0);
+    const keyStrafe =
+      (this.keys.has("KeyD") || this.keys.has("ArrowRight") ? 1 : 0) -
+      (this.keys.has("KeyA") || this.keys.has("ArrowLeft") ? 1 : 0);
+    const keyVertical =
+      (this.keys.has("Space") ? 1 : 0) -
+      (this.keys.has("ControlLeft") || this.keys.has("ControlRight") ? 1 : 0);
+
+    const sprinting = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    const speed = (sprinting ? GAME_CONSTANTS.PLAYER_SPRINT : GAME_CONSTANTS.PLAYER_SPEED) * 1.25;
+    const moveStep = speed * delta;
+
+    const sinYaw = Math.sin(this.yaw);
+    const cosYaw = Math.cos(this.yaw);
+    if (keyForward !== 0 || keyStrafe !== 0) {
+      this.moveForwardVec.set(-sinYaw, 0, -cosYaw);
+      this.moveRightVec.set(cosYaw, 0, -sinYaw);
+      this.moveVec
+        .set(0, 0, 0)
+        .addScaledVector(this.moveForwardVec, keyForward)
+        .addScaledVector(this.moveRightVec, keyStrafe);
+      if (this.moveVec.lengthSq() > 0.0001) {
+        this.moveVec.normalize();
+      }
+      this.playerPosition.x += this.moveVec.x * moveStep;
+      this.playerPosition.z += this.moveVec.z * moveStep;
+    }
+    if (keyVertical !== 0) {
+      this.playerPosition.y += keyVertical * moveStep * 0.72;
+    }
+
+    const worldLimit = this.getBoundaryHardLimit();
+    this.playerPosition.x = THREE.MathUtils.clamp(this.playerPosition.x, -worldLimit, worldLimit);
+    this.playerPosition.z = THREE.MathUtils.clamp(this.playerPosition.z, -worldLimit, worldLimit);
+    this.playerPosition.y = THREE.MathUtils.clamp(this.playerPosition.y, 4, 72);
+    this.verticalVelocity = 0;
+    this.onGround = false;
+
+    this.camera.position.copy(this.playerPosition);
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
+    return true;
   }
 
   updateHubFlow(delta) {
@@ -1510,7 +2045,7 @@ export class GameRuntime {
       } else {
         this.setFlowHeadline(
           "포탈 개방 / 대상 없음",
-          "?portal=https://... 값을 지정해 이동 경로를 설정하세요."
+          "방장이 포탈 링크를 설정해야 이동할 수 있습니다."
         );
       }
       if (this.portalPhaseClock <= 0) {
@@ -1656,21 +2191,36 @@ export class GameRuntime {
     this.setBoundaryWarning(true, "맵 경계를 벗어나셨습니다. 안전 지점으로 복귀했습니다.");
   }
 
+  normalizePortalTargetUrl(rawTarget = "") {
+    const text = String(rawTarget ?? "").trim();
+    if (!text) {
+      return null;
+    }
+    try {
+      const target = new URL(text, window.location.href);
+      if (target.protocol !== "http:" && target.protocol !== "https:") {
+        return null;
+      }
+      return target.toString();
+    } catch {
+      return null;
+    }
+  }
+
   resolvePortalTargetUrl(defaultTarget = "") {
-    const queryTarget = String(
+    const queryTarget = this.normalizePortalTargetUrl(
       this.queryParams.get("portal") ?? this.queryParams.get("next") ?? ""
-    ).trim();
+    );
     if (queryTarget) {
       return queryTarget;
     }
 
-    const globalTarget = String(window.__EMPTINES_PORTAL_TARGET ?? "").trim();
+    const globalTarget = this.normalizePortalTargetUrl(window.__EMPTINES_PORTAL_TARGET ?? "");
     if (globalTarget) {
       return globalTarget;
     }
 
-    const configTarget = String(defaultTarget ?? "").trim();
-    return configTarget || null;
+    return this.normalizePortalTargetUrl(defaultTarget ?? "");
   }
 
   buildPortalTransferUrl() {
@@ -1705,7 +2255,7 @@ export class GameRuntime {
       this.portalPhaseClock = this.portalCooldownSeconds;
       this.setFlowHeadline(
         "포탈 링크 누락",
-        "?portal=https://... 로 이동 주소를 지정한 뒤 다시 시도하세요."
+        "방장이 유효한 포탈 링크를 설정한 뒤 다시 시도하세요."
       );
       return;
     }
@@ -1724,12 +2274,56 @@ export class GameRuntime {
   syncPlayerNameIfConnected() {
     const nextName = this.formatPlayerName(this.localPlayerName);
     this.localPlayerName = nextName;
+    if (this.lobbyEnabled && !this.lobbyNameConfirmed) {
+      this.pendingPlayerNameSync = true;
+      return;
+    }
+
     if (!this.socket || !this.networkConnected) {
       this.pendingPlayerNameSync = true;
       return;
     }
 
-    this.socket.emit("room:quick-join", { name: nextName });
+    if (this.redirectInFlight || this.lobbyJoinInFlight) {
+      return;
+    }
+
+    if (this.lobbyEnabled) {
+      this.lobbyJoinInFlight = true;
+      if (this.lobbyJoinBtnEl) {
+        this.lobbyJoinBtnEl.disabled = true;
+      }
+      this.setLobbyStatus("매칭 요청을 전송하는 중...");
+    }
+
+    const joinPayload = { name: nextName };
+    if (this.ownerAccessEnabled) {
+      joinPayload.ownerKey = this.ownerAccessKey;
+    }
+
+    this.socket.emit("room:quick-join", joinPayload, (response = {}) => {
+      if (this.lobbyEnabled) {
+        this.lobbyJoinInFlight = false;
+        if (this.lobbyJoinBtnEl) {
+          this.lobbyJoinBtnEl.disabled = false;
+        }
+      }
+      if (!response?.ok) {
+        if (this.lobbyEnabled) {
+          const message = this.translateQuizError(response?.error || "입장 실패");
+          this.setLobbyStatus(`입장 실패: ${message}`, true);
+        }
+        return;
+      }
+      if (response?.redirect) {
+        if (this.lobbyEnabled) {
+          this.setLobbyStatus("매치 서버로 이동 중...");
+        }
+        this.applyRouteRedirect(response.redirect);
+      } else if (this.lobbyEnabled && this.socketRole !== "gateway") {
+        this.hideLobbyScreen();
+      }
+    });
     this.pendingPlayerNameSync = false;
   }
 
@@ -2115,6 +2709,345 @@ export class GameRuntime {
     this.scene.add(this.floatingArenaGroup);
   }
 
+  clearSpectatorStands() {
+    if (this.spectatorStandsGroup) {
+      this.scene.remove(this.spectatorStandsGroup);
+      disposeMeshTree(this.spectatorStandsGroup);
+      this.spectatorStandsGroup = null;
+    }
+    for (const texture of this.worldDecorTextures) {
+      texture?.dispose?.();
+    }
+    this.worldDecorTextures.length = 0;
+  }
+
+  setupSpectatorStands(config = {}, boundaryConfig = {}) {
+    this.clearSpectatorStands();
+    if (!config?.enabled) {
+      return;
+    }
+
+    const halfExtent = Math.max(26, Number(boundaryConfig?.halfExtent) || 62);
+    const boundaryThickness = Math.max(0.4, Number(boundaryConfig?.thickness) || 1.6);
+    const tiers = Math.max(1, Math.min(4, Math.floor(Number(config.tiers) || 3)));
+    const tierHeight = Math.max(0.8, Number(config.tierHeight) || 1.2);
+    const tierGap = Math.max(0, Number(config.tierGap) || 0.18);
+    const requestedTierDepth = Math.max(1.6, Number(config.tierDepth) || 3.8);
+    const inset = Math.max(1.2, Number(config.inset) || 2.2);
+    const maxDepthPerTier = Math.max(1.6, (halfExtent - inset - 6) / tiers);
+    const tierDepth = Math.min(requestedTierDepth, maxDepthPerTier);
+    const baseY = Number.isFinite(Number(config.baseY)) ? Number(config.baseY) : 0.22;
+
+    const group = new THREE.Group();
+    const standMaterial = new THREE.MeshStandardMaterial({
+      color: config.color ?? 0x6a727e,
+      roughness: Number(config.roughness) || 0.8,
+      metalness: Number(config.metalness) || 0.06,
+      emissive: config.emissive ?? 0x242d37,
+      emissiveIntensity: Number(config.emissiveIntensity) || 0.12
+    });
+
+    const createStandBlock = (width, height, depth, x, y, z) => {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(width, height, depth),
+        standMaterial
+      );
+      mesh.position.set(x, y, z);
+      mesh.castShadow = !this.mobileEnabled;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    };
+
+    for (let tier = 0; tier < tiers; tier += 1) {
+      const edgeOffset = inset + tier * tierDepth;
+      const span = Math.max(12, halfExtent * 2 - (boundaryThickness + edgeOffset) * 2);
+      const y = baseY + tier * (tierHeight + tierGap) + tierHeight * 0.5;
+      const northZ = -halfExtent + boundaryThickness + edgeOffset + tierDepth * 0.5;
+      const southZ = halfExtent - boundaryThickness - edgeOffset - tierDepth * 0.5;
+      const westX = -halfExtent + boundaryThickness + edgeOffset + tierDepth * 0.5;
+      const eastX = halfExtent - boundaryThickness - edgeOffset - tierDepth * 0.5;
+
+      createStandBlock(span, tierHeight, tierDepth, 0, y, northZ);
+      createStandBlock(span, tierHeight, tierDepth, 0, y, southZ);
+      createStandBlock(tierDepth, tierHeight, span, westX, y, 0);
+      createStandBlock(tierDepth, tierHeight, span, eastX, y, 0);
+    }
+
+    const adConfig = config.ads ?? {};
+    if (adConfig?.enabled) {
+      const textureUrl = String(adConfig.textureUrl ?? "").trim();
+      let adTexture = null;
+      if (textureUrl) {
+        try {
+          adTexture = this.textureLoader.load(textureUrl);
+          adTexture.colorSpace = THREE.SRGBColorSpace;
+          adTexture.minFilter = THREE.LinearFilter;
+          adTexture.magFilter = THREE.LinearFilter;
+          adTexture.generateMipmaps = true;
+          this.worldDecorTextures.push(adTexture);
+        } catch {
+          adTexture = null;
+        }
+      }
+
+      const panelWidth = Math.max(2.6, Number(adConfig.boardWidth) || 8.4);
+      const panelHeight = Math.max(1.2, Number(adConfig.boardHeight) || 2.6);
+      const panelDepth = Math.max(0.08, Number(adConfig.boardDepth) || 0.22);
+      const panelGap = Math.max(0.2, Number(adConfig.gap) || 1.2);
+      const panelY = Math.max(0.6, Number(adConfig.y) || 1.2);
+      const frontInset = Math.max(1.4, Number(adConfig.frontInset) || 2.2);
+      const frameThickness = Math.max(0.05, Number(adConfig.frameThickness) || 0.24);
+      const frameMaterial = new THREE.MeshStandardMaterial({
+        color: adConfig.frameColor ?? 0x111821,
+        roughness: 0.72,
+        metalness: 0.16,
+        emissive: 0x0f151f,
+        emissiveIntensity: 0.2
+      });
+      const panelMaterial = new THREE.MeshStandardMaterial({
+        color: adTexture ? 0xffffff : 0x8a97a3,
+        map: adTexture ?? null,
+        roughness: 0.42,
+        metalness: 0.1,
+        emissive: 0x122131,
+        emissiveIntensity: adTexture ? 0.18 : 0.1
+      });
+
+      const placePanels = (span, callback) => {
+        const count = Math.max(1, Math.floor((span + panelGap) / (panelWidth + panelGap)));
+        const used = count * panelWidth + (count - 1) * panelGap;
+        const start = -used * 0.5 + panelWidth * 0.5;
+        for (let index = 0; index < count; index += 1) {
+          const offset = start + index * (panelWidth + panelGap);
+          callback(offset);
+        }
+      };
+
+      const spanX = Math.max(12, halfExtent * 2 - (boundaryThickness + frontInset + 2) * 2);
+      const spanZ = Math.max(12, halfExtent * 2 - (boundaryThickness + frontInset + 2) * 2);
+      const northZ = -halfExtent + boundaryThickness + frontInset;
+      const southZ = halfExtent - boundaryThickness - frontInset;
+      const westX = -halfExtent + boundaryThickness + frontInset;
+      const eastX = halfExtent - boundaryThickness - frontInset;
+
+      const createPanel = (x, y, z, rotationY = 0) => {
+        const frame = new THREE.Mesh(
+          new THREE.BoxGeometry(panelWidth + 0.38, panelHeight + 0.38, frameThickness),
+          frameMaterial
+        );
+        frame.position.set(x, y, z);
+        frame.rotation.y = rotationY;
+        frame.castShadow = !this.mobileEnabled;
+        frame.receiveShadow = true;
+        group.add(frame);
+
+        const panel = new THREE.Mesh(
+          new THREE.PlaneGeometry(panelWidth, panelHeight),
+          panelMaterial
+        );
+        panel.position.set(
+          x + Math.sin(rotationY) * 0.015,
+          y,
+          z + Math.cos(rotationY) * 0.015
+        );
+        panel.rotation.y = rotationY;
+        panel.renderOrder = 9;
+        group.add(panel);
+      };
+
+      placePanels(spanX, (offsetX) => {
+        createPanel(offsetX, panelY, northZ, 0);
+        createPanel(offsetX, panelY, southZ, Math.PI);
+      });
+      placePanels(spanZ, (offsetZ) => {
+        createPanel(westX, panelY, offsetZ, Math.PI * 0.5);
+        createPanel(eastX, panelY, offsetZ, -Math.PI * 0.5);
+      });
+    }
+
+    this.spectatorStandsGroup = group;
+    this.scene.add(this.spectatorStandsGroup);
+  }
+
+  clearMegaAdScreen() {
+    if (this.megaAdVideoEl) {
+      this.megaAdVideoEl.pause();
+      this.megaAdVideoEl.removeAttribute("src");
+      this.megaAdVideoEl.load();
+      this.megaAdVideoEl = null;
+    }
+    if (this.megaAdVideoTexture) {
+      this.megaAdVideoTexture.dispose?.();
+      this.megaAdVideoTexture = null;
+    }
+    if (!this.megaAdScreenGroup) {
+      return;
+    }
+    this.scene.remove(this.megaAdScreenGroup);
+    disposeMeshTree(this.megaAdScreenGroup);
+    this.megaAdScreenGroup = null;
+  }
+
+  kickMegaAdVideoPlayback() {
+    const video = this.megaAdVideoEl;
+    if (!video) {
+      return;
+    }
+    if (!video.paused) {
+      return;
+    }
+    video.play().catch(() => {});
+  }
+
+  setupMegaAdScreen(config = {}) {
+    this.clearMegaAdScreen();
+    if (!config?.enabled) {
+      return;
+    }
+
+    const width = Math.max(18, Number(config.width) || 42);
+    const height = Math.max(10, Number(config.height) || 18);
+    const centerY = Math.max(8, Number(config.centerY) || 16);
+    const poleHeight = Math.max(8, Number(config.poleHeight) || centerY);
+    const heading = Number(config.heading) || 0;
+    const position = parseVec3(config.position, [0, 0, -56]);
+
+    const group = new THREE.Group();
+    group.position.set(position.x, position.y, position.z);
+    group.rotation.y = heading;
+
+    const frameMaterial = new THREE.MeshStandardMaterial({
+      color: config.frameColor ?? 0x1e2630,
+      roughness: 0.52,
+      metalness: 0.38,
+      emissive: config.frameEmissive ?? 0x101820,
+      emissiveIntensity: Number(config.frameEmissiveIntensity) || 0.24
+    });
+    const supportMaterial = new THREE.MeshStandardMaterial({
+      color: config.supportColor ?? 0x37414d,
+      roughness: 0.74,
+      metalness: 0.22,
+      emissive: 0x161f29,
+      emissiveIntensity: 0.12
+    });
+
+    const frame = new THREE.Mesh(
+      new THREE.BoxGeometry(width + 2.2, height + 2.2, 1.28),
+      frameMaterial
+    );
+    frame.position.y = centerY;
+    frame.castShadow = !this.mobileEnabled;
+    frame.receiveShadow = true;
+    group.add(frame);
+
+    const video = document.createElement("video");
+    const configuredUrl = String(config.videoUrl ?? "").trim();
+    video.src = configuredUrl || MEGA_AD_VIDEO_URL;
+    video.preload = this.mobileEnabled ? "metadata" : "auto";
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.crossOrigin = "anonymous";
+    video.disablePictureInPicture = true;
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+    video.setAttribute("disablePictureInPicture", "");
+
+    const videoTexture = new THREE.VideoTexture(video);
+    videoTexture.colorSpace = THREE.SRGBColorSpace;
+    videoTexture.minFilter = THREE.LinearFilter;
+    videoTexture.magFilter = THREE.LinearFilter;
+    videoTexture.generateMipmaps = false;
+
+    const screen = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height),
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: videoTexture,
+        roughness: 0.2,
+        metalness: 0.06,
+        emissive: 0x3a5f84,
+        emissiveIntensity: Number(config.screenGlow) || 0.24
+      })
+    );
+    screen.position.set(0, centerY, 0.7);
+    group.add(screen);
+
+    const backCase = new THREE.Mesh(
+      new THREE.BoxGeometry(width + 0.76, height + 0.76, 1.06),
+      new THREE.MeshStandardMaterial({
+        color: 0x141c26,
+        roughness: 0.78,
+        metalness: 0.22
+      })
+    );
+    backCase.position.set(0, centerY, -0.34);
+    backCase.castShadow = !this.mobileEnabled;
+    backCase.receiveShadow = true;
+    group.add(backCase);
+
+    const braceYTop = centerY + height * 0.5 + 0.62;
+    const braceYBottom = centerY - height * 0.5 - 0.62;
+    const topBrace = new THREE.Mesh(
+      new THREE.BoxGeometry(width + 3.6, 0.62, 0.72),
+      supportMaterial
+    );
+    topBrace.position.set(0, braceYTop, -0.44);
+    topBrace.castShadow = !this.mobileEnabled;
+    topBrace.receiveShadow = true;
+    group.add(topBrace);
+    const bottomBrace = topBrace.clone();
+    bottomBrace.position.y = braceYBottom;
+    group.add(bottomBrace);
+
+    const poleOffsetX = width * 0.36;
+    const poleThickness = 1.4;
+    const poleMaterial = new THREE.MeshStandardMaterial({
+      color: config.poleColor ?? 0x4f5a67,
+      roughness: 0.72,
+      metalness: 0.24,
+      emissive: 0x1a2734,
+      emissiveIntensity: 0.12
+    });
+    const leftPole = new THREE.Mesh(
+      new THREE.BoxGeometry(poleThickness, poleHeight, poleThickness),
+      poleMaterial
+    );
+    leftPole.position.set(-poleOffsetX, poleHeight * 0.5, -0.5);
+    leftPole.castShadow = !this.mobileEnabled;
+    leftPole.receiveShadow = true;
+    group.add(leftPole);
+    const rightPole = leftPole.clone();
+    rightPole.position.x = poleOffsetX;
+    group.add(rightPole);
+
+    const platform = new THREE.Mesh(
+      new THREE.CylinderGeometry(width * 0.18, width * 0.22, 0.6, this.mobileEnabled ? 16 : 28),
+      new THREE.MeshStandardMaterial({
+        color: 0x4d5866,
+        roughness: 0.84,
+        metalness: 0.12,
+        emissive: 0x1a232e,
+        emissiveIntensity: 0.08
+      })
+    );
+    platform.position.set(0, 0.3, -0.5);
+    platform.receiveShadow = true;
+    group.add(platform);
+
+    this.megaAdVideoEl = video;
+    this.megaAdVideoTexture = videoTexture;
+    this.megaAdScreenGroup = group;
+    this.scene.add(this.megaAdScreenGroup);
+
+    const attemptPlay = () => {
+      video.play().catch(() => {});
+    };
+    video.addEventListener("canplay", attemptPlay, { once: true });
+    attemptPlay();
+  }
+
   clearCenterBillboard() {
     if (this.centerBillboardGroup) {
       this.scene.remove(this.centerBillboardGroup);
@@ -2145,11 +3078,12 @@ export class GameRuntime {
     const poleHeight = Math.max(4, Number(config.poleHeight) || boardCenterY - 0.25);
     const lines = Array.isArray(config.lines) && config.lines.length > 0
       ? config.lines
-      : ["MEGA OX QUIZ", "WAITING FOR HOST"];
+      : ["메가 OX 퀴즈", "진행 대기 중"];
 
     const canvas = document.createElement("canvas");
-    canvas.width = 1024;
-    canvas.height = 512;
+    const billboardScale = this.mobileEnabled ? 0.5 : 0.75;
+    canvas.width = Math.max(512, Math.round(CENTER_BILLBOARD_BASE_WIDTH * billboardScale));
+    canvas.height = Math.max(256, Math.round(CENTER_BILLBOARD_BASE_HEIGHT * billboardScale));
     const context = canvas.getContext("2d");
     this.centerBillboardCanvas = canvas;
     this.centerBillboardContext = context;
@@ -2245,10 +3179,10 @@ export class GameRuntime {
     this.centerBillboardGroup = group;
     this.scene.add(this.centerBillboardGroup);
     this.renderCenterBillboard({
-      kicker: "LIVE",
-      title: lines[0] ?? "MEGA OX QUIZ",
+      kicker: "실시간",
+      title: lines[0] ?? "메가 OX 퀴즈",
       lines: lines.slice(1),
-      footer: "WAITING FOR HOST"
+      footer: "진행자 대기 중"
     });
   }
 
@@ -2259,8 +3193,8 @@ export class GameRuntime {
       return;
     }
 
-    const kicker = String(payload.kicker ?? "LIVE").trim().slice(0, 32);
-    const title = String(payload.title ?? "MEGA OX QUIZ").trim().slice(0, 90);
+    const kicker = String(payload.kicker ?? "실시간").trim().slice(0, 32);
+    const title = String(payload.title ?? "메가 OX 퀴즈").trim().slice(0, 90);
     const footer = String(payload.footer ?? "").trim().slice(0, 80);
     const lineSource = Array.isArray(payload.lines) ? payload.lines : [];
     const lines = lineSource
@@ -2273,31 +3207,35 @@ export class GameRuntime {
     }
     this.centerBillboardLastSignature = signature;
 
-    const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
+    const scaleX = canvas.width / CENTER_BILLBOARD_BASE_WIDTH;
+    const scaleY = canvas.height / CENTER_BILLBOARD_BASE_HEIGHT;
+    context.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+
+    const gradient = context.createLinearGradient(0, 0, 0, CENTER_BILLBOARD_BASE_HEIGHT);
     gradient.addColorStop(0, "#0d141d");
     gradient.addColorStop(0.55, "#151f2d");
     gradient.addColorStop(1, "#0d141d");
     context.fillStyle = gradient;
-    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillRect(0, 0, CENTER_BILLBOARD_BASE_WIDTH, CENTER_BILLBOARD_BASE_HEIGHT);
 
     context.strokeStyle = "rgba(140, 190, 255, 0.6)";
     context.lineWidth = 18;
-    context.strokeRect(22, 22, canvas.width - 44, canvas.height - 44);
+    context.strokeRect(22, 22, CENTER_BILLBOARD_BASE_WIDTH - 44, CENTER_BILLBOARD_BASE_HEIGHT - 44);
 
     context.fillStyle = "#89ccff";
     context.font = "700 48px 'Segoe UI'";
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText(kicker || "LIVE", canvas.width * 0.5, 82);
+    context.fillText(kicker || "실시간", CENTER_BILLBOARD_BASE_WIDTH * 0.5, 82);
 
     context.fillStyle = "#f3f8ff";
     context.font = "800 60px 'Bahnschrift'";
     this.drawBillboardWrappedText(
       context,
-      title || "MEGA OX QUIZ",
-      canvas.width * 0.5,
+      title || "메가 OX 퀴즈",
+      CENTER_BILLBOARD_BASE_WIDTH * 0.5,
       168,
-      canvas.width - 120,
+      CENTER_BILLBOARD_BASE_WIDTH - 120,
       66,
       2
     );
@@ -2309,9 +3247,9 @@ export class GameRuntime {
       this.drawBillboardWrappedText(
         context,
         lines[index],
-        canvas.width * 0.5,
+        CENTER_BILLBOARD_BASE_WIDTH * 0.5,
         baseY + index * 60,
-        canvas.width - 150,
+        CENTER_BILLBOARD_BASE_WIDTH - 150,
         48,
         1
       );
@@ -2320,8 +3258,9 @@ export class GameRuntime {
     if (footer) {
       context.fillStyle = "#a7c8ee";
       context.font = "600 34px 'Segoe UI'";
-      context.fillText(footer, canvas.width * 0.5, canvas.height - 54);
+      context.fillText(footer, CENTER_BILLBOARD_BASE_WIDTH * 0.5, CENTER_BILLBOARD_BASE_HEIGHT - 54);
     }
+    context.setTransform(1, 0, 0, 1, 0, 0);
 
     this.centerBillboardTexture.needsUpdate = true;
   }
@@ -2375,6 +3314,11 @@ export class GameRuntime {
       texture?.dispose?.();
     }
     this.oxArenaTextures.length = 0;
+    this.oxTrapdoors.o = null;
+    this.oxTrapdoors.x = null;
+    this.oxTrapdoorAnim.active = false;
+    this.oxTrapdoorAnim.loserSide = null;
+    this.oxTrapdoorAnim.elapsed = 0;
   }
 
   createArenaTextMesh(text, options = {}) {
@@ -2441,6 +3385,21 @@ export class GameRuntime {
       const centerX = Number.isFinite(Number(zoneConfig.centerX)) ? Number(zoneConfig.centerX) : fallbackCenterX;
       const centerZ = Number.isFinite(Number(zoneConfig.centerZ)) ? Number(zoneConfig.centerZ) : 0;
 
+      const trapdoor = new THREE.Mesh(
+        new THREE.BoxGeometry(width * 0.96, 0.22, depth * 0.96),
+        new THREE.MeshStandardMaterial({
+          color: zoneConfig.trapdoorColor ?? zoneConfig.color ?? 0x3f586f,
+          roughness: 0.76,
+          metalness: 0.08,
+          emissive: zoneConfig.trapdoorEmissive ?? zoneConfig.emissive ?? 0x1f2d3b,
+          emissiveIntensity: 0.14
+        })
+      );
+      trapdoor.position.set(centerX, -0.03, centerZ);
+      trapdoor.receiveShadow = true;
+      trapdoor.castShadow = !this.mobileEnabled;
+      group.add(trapdoor);
+
       const plate = new THREE.Mesh(
         new THREE.PlaneGeometry(width, depth),
         new THREE.MeshStandardMaterial({
@@ -2450,19 +3409,48 @@ export class GameRuntime {
           emissive: zoneConfig.emissive ?? 0x1f2d3b,
           emissiveIntensity: 0.2,
           transparent: true,
-          opacity: 0.92
+          opacity: 0.96
         })
       );
       plate.rotation.x = -Math.PI / 2;
-      plate.position.set(centerX, 0.034, centerZ);
+      plate.position.set(centerX, 0.07, centerZ);
       plate.receiveShadow = true;
       plate.renderOrder = 8;
       group.add(plate);
-      return { plate, centerX, centerZ, width, depth };
+
+      const pit = new THREE.Mesh(
+        new THREE.PlaneGeometry(width * 0.92, depth * 0.92),
+        new THREE.MeshBasicMaterial({
+          color: 0x08101a,
+          transparent: true,
+          opacity: 0.18,
+          side: THREE.DoubleSide
+        })
+      );
+      pit.rotation.x = -Math.PI / 2;
+      pit.position.set(centerX, -8.8, centerZ);
+      pit.visible = false;
+      group.add(pit);
+
+      return { plate, trapdoor, pit, centerX, centerZ, width, depth };
     };
 
     const oZone = createZonePlate(config.oZone, -34);
     const xZone = createZonePlate(config.xZone, 34);
+
+    this.oxTrapdoors.o = {
+      mesh: oZone.trapdoor,
+      pit: oZone.pit,
+      closedY: oZone.trapdoor.position.y
+    };
+    this.oxTrapdoors.x = {
+      mesh: xZone.trapdoor,
+      pit: xZone.pit,
+      closedY: xZone.trapdoor.position.y
+    };
+    this.oxTrapdoorAnim.active = false;
+    this.oxTrapdoorAnim.loserSide = null;
+    this.oxTrapdoorAnim.elapsed = 0;
 
     const dividerWidth = Math.max(0.8, Number(config.dividerWidth) || 2.2);
     const dividerDepth = Math.max(Math.max(oZone.depth, xZone.depth), Number(config.dividerDepth) || 112);
@@ -2508,8 +3496,237 @@ export class GameRuntime {
       group.add(xLetter);
     }
 
+    const zoneMinX = Math.min(
+      oZone.centerX - oZone.width * 0.5,
+      xZone.centerX - xZone.width * 0.5
+    );
+    const zoneMaxX = Math.max(
+      oZone.centerX + oZone.width * 0.5,
+      xZone.centerX + xZone.width * 0.5
+    );
+    const zoneSpanX = zoneMaxX - zoneMinX;
+
+    const backWallConfig = config.backWall ?? {};
+    const backWallEnabled = backWallConfig?.enabled !== false;
+    let backWallMetrics = null;
+    if (backWallEnabled) {
+      const maxDepth = Math.max(oZone.depth, xZone.depth, dividerDepth);
+      const wallWidth = Math.max(18, Number(backWallConfig.width) || zoneSpanX + 12);
+      const wallHeight = Math.max(6, Number(backWallConfig.height) || 16);
+      const wallThickness = Math.max(0.5, Number(backWallConfig.thickness) || 1.5);
+      const wallCenterX = Number.isFinite(Number(backWallConfig.centerX))
+        ? Number(backWallConfig.centerX)
+        : 0;
+      const wallCenterY = Number.isFinite(Number(backWallConfig.centerY))
+        ? Number(backWallConfig.centerY)
+        : wallHeight * 0.5;
+      const wallCenterZ = Number.isFinite(Number(backWallConfig.centerZ))
+        ? Number(backWallConfig.centerZ)
+        : -(maxDepth * 0.5 + wallThickness * 0.5 + 3.2);
+
+      const backWall = new THREE.Mesh(
+        new THREE.BoxGeometry(wallWidth, wallHeight, wallThickness),
+        new THREE.MeshStandardMaterial({
+          color: backWallConfig.color ?? 0x56606c,
+          roughness: Number(backWallConfig.roughness) || 0.86,
+          metalness: Number(backWallConfig.metalness) || 0.06,
+          emissive: backWallConfig.emissive ?? 0x1d2631,
+          emissiveIntensity: Number(backWallConfig.emissiveIntensity) || 0.12
+        })
+      );
+      backWall.position.set(wallCenterX, wallCenterY, wallCenterZ);
+      backWall.castShadow = !this.mobileEnabled;
+      backWall.receiveShadow = true;
+      group.add(backWall);
+
+      backWallMetrics = {
+        width: wallWidth,
+        height: wallHeight,
+        thickness: wallThickness,
+        centerX: wallCenterX,
+        centerY: wallCenterY,
+        centerZ: wallCenterZ
+      };
+    }
+
+    const adsConfig = config.ads ?? {};
+    if (backWallMetrics && adsConfig?.enabled) {
+      const columns = Math.max(1, Math.min(8, Math.floor(Number(adsConfig.columns) || 4)));
+      const rows = Math.max(1, Math.min(4, Math.floor(Number(adsConfig.rows) || 2)));
+      const marginX = Math.max(0, Number(adsConfig.marginX) || 2.8);
+      const gapXRaw = Math.max(0.25, Number(adsConfig.gapX) || 1.2);
+      const gapY = Math.max(0.2, Number(adsConfig.gapY) || 1.1);
+      const usableWidth = Math.max(6, backWallMetrics.width - marginX * 2);
+      const gapXCap =
+        columns > 1
+          ? Math.max(0.05, (usableWidth - columns * 2.4) / (columns - 1))
+          : gapXRaw;
+      const gapX = Math.min(gapXRaw, gapXCap);
+      const boardWidthBase = Number(adsConfig.boardWidth);
+      const boardWidthFit = (usableWidth - gapX * (columns - 1)) / columns;
+      const boardWidth = Math.max(
+        2.6,
+        Number.isFinite(boardWidthBase) ? boardWidthBase : boardWidthFit
+      );
+      const maxBoardWidth = Math.max(2.6, boardWidthFit);
+      const finalBoardWidth = Math.min(boardWidth, maxBoardWidth);
+
+      const boardHeightBase = Number(adsConfig.boardHeight);
+      const usableHeight = Math.max(4.2, backWallMetrics.height * 0.72);
+      const boardHeightFit = (usableHeight - gapY * (rows - 1)) / rows;
+      const boardHeight = Math.max(
+        1.8,
+        Number.isFinite(boardHeightBase) ? boardHeightBase : boardHeightFit
+      );
+      const maxBoardHeight = Math.max(1.8, boardHeightFit);
+      const finalBoardHeight = Math.min(boardHeight, maxBoardHeight);
+      const centerY = Number.isFinite(Number(adsConfig.centerY))
+        ? Number(adsConfig.centerY)
+        : backWallMetrics.centerY + backWallMetrics.height * 0.13;
+      const centerX = Number.isFinite(Number(adsConfig.centerX))
+        ? Number(adsConfig.centerX)
+        : backWallMetrics.centerX;
+      const offsetZ = Math.max(0.04, Number(adsConfig.offsetZ) || 0.08);
+      const boardZ = backWallMetrics.centerZ + backWallMetrics.thickness * 0.5 + offsetZ;
+      const frameThickness = Math.max(0.06, Number(adsConfig.frameThickness) || 0.2);
+
+      const textureUrl = String(adsConfig.textureUrl ?? "").trim();
+      let adTexture = null;
+      if (textureUrl) {
+        try {
+          adTexture = this.textureLoader.load(textureUrl);
+          adTexture.colorSpace = THREE.SRGBColorSpace;
+          adTexture.minFilter = THREE.LinearFilter;
+          adTexture.magFilter = THREE.LinearFilter;
+          adTexture.generateMipmaps = true;
+          this.oxArenaTextures.push(adTexture);
+        } catch (error) {
+          adTexture = null;
+        }
+      }
+
+      const frameMaterial = new THREE.MeshStandardMaterial({
+        color: adsConfig.frameColor ?? 0x1b222b,
+        roughness: 0.78,
+        metalness: 0.14,
+        emissive: 0x10151c,
+        emissiveIntensity: 0.12
+      });
+      const panelMaterial = new THREE.MeshStandardMaterial({
+        color: adTexture ? 0xffffff : 0x8c98a4,
+        map: adTexture ?? null,
+        roughness: 0.44,
+        metalness: 0.08,
+        emissive: 0x1a2735,
+        emissiveIntensity: adTexture ? 0.18 : 0.08
+      });
+
+      const startX = centerX - ((columns - 1) * (finalBoardWidth + gapX)) * 0.5;
+      const startY = centerY + ((rows - 1) * (finalBoardHeight + gapY)) * 0.5;
+
+      for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const x = startX + column * (finalBoardWidth + gapX);
+          const y = startY - row * (finalBoardHeight + gapY);
+
+          const frame = new THREE.Mesh(
+            new THREE.BoxGeometry(
+              finalBoardWidth + 0.42,
+              finalBoardHeight + 0.42,
+              frameThickness
+            ),
+            frameMaterial
+          );
+          frame.position.set(x, y, boardZ - frameThickness * 0.5);
+          frame.castShadow = !this.mobileEnabled;
+          frame.receiveShadow = true;
+          group.add(frame);
+
+          const panel = new THREE.Mesh(
+            new THREE.PlaneGeometry(finalBoardWidth, finalBoardHeight),
+            panelMaterial
+          );
+          panel.position.set(x, y, boardZ + 0.012);
+          panel.castShadow = false;
+          panel.receiveShadow = false;
+          panel.renderOrder = 9;
+          group.add(panel);
+        }
+      }
+    }
+
     this.oxArenaGroup = group;
     this.scene.add(this.oxArenaGroup);
+  }
+
+  resetTrapdoors() {
+    const entries = [this.oxTrapdoors.o, this.oxTrapdoors.x];
+    for (const entry of entries) {
+      if (!entry?.mesh) {
+        continue;
+      }
+      entry.mesh.visible = true;
+      entry.mesh.position.y = entry.closedY;
+      entry.mesh.rotation.x = 0;
+      if (entry.pit) {
+        entry.pit.visible = false;
+        const pitMaterial = entry.pit.material;
+        if (pitMaterial) {
+          pitMaterial.opacity = 0.22;
+        }
+      }
+    }
+    this.oxTrapdoorAnim.active = false;
+    this.oxTrapdoorAnim.loserSide = null;
+    this.oxTrapdoorAnim.elapsed = 0;
+  }
+
+  triggerTrapdoorForAnswer(answer) {
+    const normalized = String(answer ?? "").trim().toUpperCase();
+    const loserSide = normalized === "O" ? "x" : normalized === "X" ? "o" : null;
+    if (!loserSide) {
+      return;
+    }
+    const loser = this.oxTrapdoors[loserSide];
+    if (!loser?.mesh) {
+      return;
+    }
+    this.resetTrapdoors();
+    if (loser.pit) {
+      loser.pit.visible = true;
+    }
+    this.oxTrapdoorAnim.active = true;
+    this.oxTrapdoorAnim.loserSide = loserSide;
+    this.oxTrapdoorAnim.elapsed = 0;
+    this.oxTrapdoorAnim.duration = 1.05;
+  }
+
+  updateTrapdoorAnimation(delta) {
+    if (!this.oxTrapdoorAnim.active) {
+      return;
+    }
+    const side = this.oxTrapdoorAnim.loserSide;
+    const loser = side ? this.oxTrapdoors[side] : null;
+    if (!loser?.mesh) {
+      this.oxTrapdoorAnim.active = false;
+      return;
+    }
+
+    this.oxTrapdoorAnim.elapsed += delta;
+    const t = THREE.MathUtils.clamp(
+      this.oxTrapdoorAnim.elapsed / Math.max(0.2, this.oxTrapdoorAnim.duration),
+      0,
+      1
+    );
+    const eased = 1 - Math.pow(1 - t, 3);
+    loser.mesh.position.y = loser.closedY - eased * 11.5;
+    loser.mesh.rotation.x = -eased * 0.28;
+    if (loser.pit?.material) {
+      loser.pit.material.opacity = 0.22 + eased * 0.56;
+    }
+    if (t >= 1) {
+      this.oxTrapdoorAnim.active = false;
+    }
   }
 
   clearChalkLayer() {
@@ -3005,7 +4222,6 @@ export class GameRuntime {
 
     const composer = new EffectComposer(this.renderer);
     composer.setPixelRatio(this.currentPixelRatio);
-    composer.setSize(window.innerWidth, window.innerHeight);
 
     const renderPass = new RenderPass(this.scene, this.camera);
     composer.addPass(renderPass);
@@ -3119,13 +4335,38 @@ export class GameRuntime {
     this.resolveUiElements();
 
     window.addEventListener("resize", () => this.onResize());
+    window.addEventListener(
+      "pointerdown",
+      (event) => {
+        const pointerType = String(event?.pointerType ?? "").toLowerCase();
+        if (pointerType !== "touch" && pointerType !== "pen") {
+          return;
+        }
+        this.mobileModeLocked = true;
+        if (!this.mobileEnabled) {
+          this.mobileEnabled = true;
+          this.onResize();
+        } else {
+          this.bindMobileControlEvents();
+          this.updateMobileControlUi();
+        }
+      },
+      { passive: true }
+    );
 
     window.addEventListener("keydown", (event) => {
+      this.kickMegaAdVideoPlayback();
       if (this.isTextInputTarget(event.target)) {
         if (event.code === "Escape") {
           this.setChatOpen(false);
           event.target.blur?.();
         }
+        return;
+      }
+
+      if (event.code === "Tab") {
+        event.preventDefault();
+        this.setRosterTabVisible(true);
         return;
       }
 
@@ -3136,6 +4377,12 @@ export class GameRuntime {
       ) {
         event.preventDefault();
         this.focusChatInput();
+        return;
+      }
+
+      if (event.code === "KeyV" && this.localSpectatorMode) {
+        event.preventDefault();
+        this.cycleSpectatorTarget();
         return;
       }
 
@@ -3170,15 +4417,23 @@ export class GameRuntime {
       if (this.isTextInputTarget(event.target)) {
         return;
       }
+      if (event.code === "Tab") {
+        event.preventDefault();
+        this.setRosterTabVisible(false);
+        return;
+      }
       this.keys.delete(event.code);
     });
 
     window.addEventListener("blur", () => {
       this.keys.clear();
+      this.releaseMobileInputs();
+      this.setRosterTabVisible(false);
       this.chalkDrawingActive = false;
     });
 
     this.renderer.domElement.addEventListener("click", () => {
+      this.kickMegaAdVideoPlayback();
       this.tryPointerLock();
     });
     this.renderer.domElement.addEventListener("mousedown", (event) => {
@@ -3263,11 +4518,20 @@ export class GameRuntime {
       });
     }
 
+    this.quizHostBtnEl?.addEventListener("click", () => {
+      this.requestHostClaim();
+    });
     this.quizStartBtnEl?.addEventListener("click", () => {
       this.requestQuizStart();
     });
     this.quizStopBtnEl?.addEventListener("click", () => {
       this.requestQuizStop();
+    });
+    this.portalLobbyOpenBtnEl?.addEventListener("click", () => {
+      this.requestPortalLobbyOpen();
+    });
+    this.portalLobbyStartBtnEl?.addEventListener("click", () => {
+      this.requestPortalLobbyStart();
     });
     this.quizNextBtnEl?.addEventListener("click", () => {
       this.requestQuizNext();
@@ -3275,6 +4539,15 @@ export class GameRuntime {
     this.quizLockBtnEl?.addEventListener("click", () => {
       this.requestQuizLock();
     });
+    this.portalTargetSaveBtnEl?.addEventListener("click", () => {
+      this.requestPortalTargetSave();
+    });
+    this.lobbyFormEl?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.requestLobbyJoin();
+    });
+    this.bindMobileControlEvents();
+    this.updateMobileControlUi();
   }
 
   resolveUiElements() {
@@ -3287,11 +4560,20 @@ export class GameRuntime {
     if (!this.quizControlsEl) {
       this.quizControlsEl = document.getElementById("quiz-controls");
     }
+    if (!this.quizHostBtnEl) {
+      this.quizHostBtnEl = document.getElementById("quiz-host-btn");
+    }
     if (!this.quizStartBtnEl) {
       this.quizStartBtnEl = document.getElementById("quiz-start-btn");
     }
     if (!this.quizStopBtnEl) {
       this.quizStopBtnEl = document.getElementById("quiz-stop-btn");
+    }
+    if (!this.portalLobbyOpenBtnEl) {
+      this.portalLobbyOpenBtnEl = document.getElementById("portal-open-btn");
+    }
+    if (!this.portalLobbyStartBtnEl) {
+      this.portalLobbyStartBtnEl = document.getElementById("portal-admit-btn");
     }
     if (!this.quizNextBtnEl) {
       this.quizNextBtnEl = document.getElementById("quiz-next-btn");
@@ -3301,6 +4583,12 @@ export class GameRuntime {
     }
     if (!this.quizControlsNoteEl) {
       this.quizControlsNoteEl = document.getElementById("quiz-controls-note");
+    }
+    if (!this.portalTargetInputEl) {
+      this.portalTargetInputEl = document.getElementById("portal-target-input");
+    }
+    if (!this.portalTargetSaveBtnEl) {
+      this.portalTargetSaveBtnEl = document.getElementById("portal-target-save-btn");
     }
     if (!this.hubFlowUiEl) {
       this.hubFlowUiEl = document.getElementById("hub-flow-ui");
@@ -3323,6 +4611,30 @@ export class GameRuntime {
     if (!this.nicknameErrorEl) {
       this.nicknameErrorEl = document.getElementById("nickname-error");
     }
+    if (!this.lobbyScreenEl) {
+      this.lobbyScreenEl = document.getElementById("lobby-screen");
+    }
+    if (!this.lobbyFormEl) {
+      this.lobbyFormEl = document.getElementById("lobby-form");
+    }
+    if (!this.lobbyNameInputEl) {
+      this.lobbyNameInputEl = document.getElementById("lobby-name-input");
+    }
+    if (!this.lobbyJoinBtnEl) {
+      this.lobbyJoinBtnEl = document.getElementById("lobby-join-btn");
+    }
+    if (!this.lobbyStatusEl) {
+      this.lobbyStatusEl = document.getElementById("lobby-status");
+    }
+    if (!this.lobbyRoomCountEl) {
+      this.lobbyRoomCountEl = document.getElementById("lobby-room-count");
+    }
+    if (!this.lobbyPlayerCountEl) {
+      this.lobbyPlayerCountEl = document.getElementById("lobby-player-count");
+    }
+    if (!this.lobbyTopRoomEl) {
+      this.lobbyTopRoomEl = document.getElementById("lobby-top-room");
+    }
     if (!this.portalTransitionEl) {
       this.portalTransitionEl = document.getElementById("portal-transition");
     }
@@ -3331,6 +4643,52 @@ export class GameRuntime {
     }
     if (!this.boundaryWarningEl) {
       this.boundaryWarningEl = document.getElementById("boundary-warning");
+    }
+    if (!this.roundOverlayEl) {
+      this.roundOverlayEl = document.getElementById("round-overlay");
+    }
+    if (!this.roundOverlayCanvasEl) {
+      this.roundOverlayCanvasEl = document.getElementById("round-overlay-canvas");
+      this.roundOverlayCtx = this.roundOverlayCanvasEl?.getContext?.("2d") ?? null;
+    }
+    if (!this.roundOverlayTitleEl) {
+      this.roundOverlayTitleEl = document.getElementById("round-overlay-title");
+    }
+    if (!this.roundOverlaySubtitleEl) {
+      this.roundOverlaySubtitleEl = document.getElementById("round-overlay-subtitle");
+    }
+    if (!this.entryWaitOverlayEl) {
+      this.entryWaitOverlayEl = document.getElementById("entry-wait-overlay");
+    }
+    if (!this.entryWaitTextEl) {
+      this.entryWaitTextEl = document.getElementById("entry-wait-text");
+    }
+    if (!this.playerRosterPanelEl) {
+      this.playerRosterPanelEl = document.getElementById("player-roster-panel");
+    }
+    if (!this.rosterCountEl) {
+      this.rosterCountEl = document.getElementById("roster-count");
+    }
+    if (!this.rosterSubtitleEl) {
+      this.rosterSubtitleEl = document.getElementById("roster-subtitle");
+    }
+    if (!this.rosterListEl) {
+      this.rosterListEl = document.getElementById("roster-list");
+    }
+    if (!this.mobileControlsEl) {
+      this.mobileControlsEl = document.getElementById("mobile-controls");
+    }
+    if (!this.mobileJumpBtnEl) {
+      this.mobileJumpBtnEl = document.getElementById("mobile-jump-btn");
+    }
+    if (!this.mobileRunBtnEl) {
+      this.mobileRunBtnEl = document.getElementById("mobile-run-btn");
+    }
+    if (!this.mobileRosterBtnEl) {
+      this.mobileRosterBtnEl = document.getElementById("mobile-roster-btn");
+    }
+    if (!this.mobileLookPadEl) {
+      this.mobileLookPadEl = document.getElementById("mobile-look-pad");
     }
     if (!this.chatLogEl) {
       this.chatLogEl = document.getElementById("chat-log");
@@ -3347,6 +4705,7 @@ export class GameRuntime {
     if (!this.chalkColorsEl) {
       this.chalkColorsEl = document.getElementById("chalk-colors");
     }
+    this.mobileMoveButtons = Array.from(document.querySelectorAll(".mobile-move-btn[data-key]"));
     this.chalkColorButtons = Array.from(document.querySelectorAll(".chalk-color[data-color]"));
     this.toolButtons = Array.from(document.querySelectorAll(".tool-slot[data-tool]"));
   }
@@ -3395,6 +4754,430 @@ export class GameRuntime {
     this.chalkColorButtons = Array.from(
       this.chalkColorsEl.querySelectorAll(".chalk-color[data-color]")
     );
+  }
+
+  getFallbackRosterEntries() {
+    const entries = [];
+    const localId = String(this.localPlayerId ?? "local");
+    const localName = this.formatPlayerName(this.localPlayerName);
+    entries.push({
+      id: localId,
+      name: localName,
+      alive: this.localQuizAlive !== false,
+      admitted: !this.localAdmissionWaiting,
+      score: Math.max(0, Math.trunc(Number(this.quizState.myScore) || 0)),
+      isHost: String(this.quizState.hostId ?? "") === String(this.localPlayerId ?? ""),
+      spectator: Boolean(this.localSpectatorMode && this.isLocalHost()),
+      isMe: true
+    });
+
+    for (const [id, remote] of this.remotePlayers.entries()) {
+      const name = this.formatPlayerName(remote?.name);
+      entries.push({
+        id: String(id),
+        name,
+        alive: remote?.alive !== false,
+        admitted: remote?.admitted !== false,
+        score: 0,
+        isHost: String(this.quizState.hostId ?? "") === String(id),
+        spectator: remote?.spectator === true,
+        isMe: false
+      });
+    }
+    return entries;
+  }
+
+  setRosterTabVisible(visible) {
+    this.rosterVisibleByTab = Boolean(visible);
+    if (this.rosterVisibleByTab) {
+      this.refreshRosterPanel();
+    }
+    this.syncRosterVisibility();
+  }
+
+  setRosterPinned(visible) {
+    this.rosterPinned = Boolean(visible);
+    if (this.rosterPinned) {
+      this.refreshRosterPanel();
+    }
+    this.syncRosterVisibility();
+  }
+
+  toggleRosterPinned() {
+    this.setRosterPinned(!this.rosterPinned);
+  }
+
+  syncRosterVisibility() {
+    const visible = this.rosterVisibleByTab || this.rosterPinned;
+    this.playerRosterPanelEl?.classList.toggle("hidden", !visible);
+    if (this.mobileRosterBtnEl) {
+      this.mobileRosterBtnEl.classList.toggle("active", this.rosterPinned);
+      this.mobileRosterBtnEl.textContent = this.rosterPinned ? "닫기" : "인원";
+    }
+  }
+
+  refreshRosterPanel(players = null) {
+    this.resolveUiElements();
+    if (Array.isArray(players)) {
+      this.roomRoster = players
+        .map((player) => {
+          const id = String(player?.id ?? "");
+          if (!id) {
+            return null;
+          }
+          const score = Math.max(0, Math.trunc(Number(player?.score) || 0));
+          return {
+            id,
+            name: this.formatPlayerName(player?.name),
+            alive: player?.alive !== false,
+            admitted: player?.admitted !== false,
+            score,
+            isHost: id === String(this.quizState.hostId ?? ""),
+            spectator: player?.spectator === true,
+            isMe: id === String(this.localPlayerId ?? "")
+          };
+        })
+        .filter(Boolean);
+    }
+
+    const source = this.roomRoster.length > 0 ? this.roomRoster : this.getFallbackRosterEntries();
+    const roster = source.slice().sort((left, right) => {
+      if (left.isHost !== right.isHost) {
+        return Number(right.isHost) - Number(left.isHost);
+      }
+      if (left.admitted !== right.admitted) {
+        return Number(right.admitted) - Number(left.admitted);
+      }
+      if (left.alive !== right.alive) {
+        return Number(right.alive) - Number(left.alive);
+      }
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      return String(left.name ?? "").localeCompare(String(right.name ?? ""), "ko");
+    });
+
+    if (this.rosterCountEl) {
+      this.rosterCountEl.textContent = `${roster.length}명`;
+    }
+    if (this.rosterSubtitleEl) {
+      this.rosterSubtitleEl.textContent = this.mobileEnabled
+        ? "인원 버튼으로 고정/닫기"
+        : "Tab 키를 누르는 동안 표시됩니다.";
+    }
+    if (!this.rosterListEl) {
+      return;
+    }
+
+    if (roster.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "roster-entry";
+      empty.textContent = "현재 접속 인원이 없습니다.";
+      this.rosterListEl.replaceChildren(empty);
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < roster.length; index += 1) {
+      const entry = roster[index];
+      const row = document.createElement("div");
+      row.className = "roster-entry";
+      if (!entry.alive) {
+        row.classList.add("eliminated");
+      }
+      if (entry.isHost) {
+        row.classList.add("host");
+      }
+      if (entry.isMe) {
+        row.classList.add("me");
+      }
+
+      const rankEl = document.createElement("span");
+      rankEl.className = "roster-rank";
+      rankEl.textContent = String(index + 1);
+
+      const nameEl = document.createElement("span");
+      nameEl.className = "roster-name";
+      nameEl.textContent = entry.isMe ? `${entry.name} (나)` : entry.name;
+
+      const stateEl = document.createElement("span");
+      stateEl.className = "roster-state";
+      stateEl.textContent =
+        entry.spectator === true
+          ? "관전자"
+          : entry.admitted === false
+            ? "대기실"
+          : entry.alive
+            ? `생존 ${entry.score}점`
+            : `탈락 ${entry.score}점`;
+
+      row.append(rankEl, nameEl, stateEl);
+      fragment.appendChild(row);
+    }
+    this.rosterListEl.replaceChildren(fragment);
+  }
+
+  updateMobileControlUi() {
+    this.resolveUiElements();
+    const showMobileUi =
+      this.mobileEnabled && !this.isLobbyBlockingGameplay() && !this.localAdmissionWaiting;
+    this.mobileControlsEl?.classList.toggle("hidden", !showMobileUi);
+    this.mobileLookPadEl?.classList.toggle("hidden", !showMobileUi);
+    if (typeof document !== "undefined" && document.body) {
+      document.body.classList.toggle("mobile-mode", showMobileUi);
+    }
+    if (!showMobileUi) {
+      this.releaseMobileInputs();
+      this.mobileLookPointerId = null;
+      this.mobileLookPadEl?.classList.remove("active");
+      if (!this.rosterVisibleByTab) {
+        this.setRosterPinned(false);
+      }
+    }
+  }
+
+  isAcceptedMobilePointer(event) {
+    if (!event) {
+      return false;
+    }
+    const pointerType = String(event.pointerType ?? "").toLowerCase();
+    if (pointerType === "touch" || pointerType === "pen") {
+      return true;
+    }
+    // 일부 모바일 웹뷰는 touch를 mouse/empty로 보고합니다.
+    return this.mobileEnabled && (pointerType === "mouse" || pointerType.length === 0);
+  }
+
+  setMobileKeyState(keyCode, active) {
+    const key = String(keyCode ?? "");
+    if (!key) {
+      return;
+    }
+    if (!active) {
+      this.mobileHeldKeys.delete(key);
+      this.keys.delete(key);
+      return;
+    }
+    this.mobileHeldKeys.add(key);
+    this.keys.add(key);
+    if (key === "Space" && this.onGround && this.canMovePlayer()) {
+      this.verticalVelocity = GAME_CONSTANTS.JUMP_FORCE;
+      this.onGround = false;
+    }
+  }
+
+  releaseMobileInputs() {
+    for (const reset of this.mobileHoldResetters) {
+      if (typeof reset === "function") {
+        reset();
+      }
+    }
+    for (const key of this.mobileHeldKeys) {
+      this.keys.delete(key);
+    }
+    this.mobileHeldKeys.clear();
+    for (const button of this.mobileMoveButtons) {
+      button?.classList?.remove("active");
+    }
+    this.mobileJumpBtnEl?.classList?.remove("active");
+    this.mobileRunBtnEl?.classList?.remove("active");
+    this.mobileLookPointerId = null;
+    this.mobileLookPadEl?.classList?.remove("active");
+  }
+
+  bindMobileControlEvents() {
+    if (this.mobileEventsBound) {
+      return;
+    }
+    this.mobileEventsBound = true;
+
+    for (const button of this.mobileMoveButtons) {
+      const keyCode = String(button?.dataset?.key ?? "").trim();
+      if (!keyCode) {
+        continue;
+      }
+      this.bindMobileHoldButton(button, keyCode);
+    }
+    this.bindMobileHoldButton(this.mobileJumpBtnEl, "Space");
+    this.bindMobileHoldButton(this.mobileRunBtnEl, "ShiftLeft");
+
+    this.mobileRosterBtnEl?.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+        this.toggleRosterPinned();
+      },
+      { passive: false }
+    );
+
+    this.bindMobileLookPadEvents();
+  }
+
+  bindMobileHoldButton(button, keyCode) {
+    if (!button || !keyCode) {
+      return;
+    }
+
+    let activePointerId = null;
+
+    const activate = (event) => {
+      if (!this.isAcceptedMobilePointer(event)) {
+        return;
+      }
+      if (!this.mobileEnabled || !this.canMovePlayer()) {
+        return;
+      }
+      if (activePointerId !== null) {
+        return;
+      }
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+      activePointerId = event.pointerId;
+      if (typeof button.setPointerCapture === "function") {
+        try {
+          button.setPointerCapture(event.pointerId);
+        } catch {
+          // ignore
+        }
+      }
+      button.classList.add("active");
+      this.setMobileKeyState(keyCode, true);
+    };
+
+    const deactivate = (event) => {
+      if (activePointerId === null) {
+        return;
+      }
+      if (
+        event &&
+        Object.prototype.hasOwnProperty.call(event, "pointerId") &&
+        event.pointerId !== activePointerId
+      ) {
+        return;
+      }
+      if (event?.cancelable) {
+        event.preventDefault();
+      }
+      const releaseId = activePointerId;
+      if (typeof button.hasPointerCapture === "function" && button.hasPointerCapture(releaseId)) {
+        try {
+          button.releasePointerCapture(releaseId);
+        } catch {
+          // ignore
+        }
+      }
+      activePointerId = null;
+      button.classList.remove("active");
+      this.setMobileKeyState(keyCode, false);
+    };
+
+    button.addEventListener("pointerdown", activate, { passive: false });
+    button.addEventListener("pointerup", deactivate, { passive: false });
+    button.addEventListener("pointercancel", deactivate, { passive: false });
+    button.addEventListener("lostpointercapture", deactivate, { passive: false });
+    window.addEventListener("pointerup", deactivate, { passive: false });
+    window.addEventListener("pointercancel", deactivate, { passive: false });
+    this.mobileHoldResetters.push(() => deactivate(null));
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
+  }
+
+  bindMobileLookPadEvents() {
+    if (!this.mobileLookPadEl) {
+      return;
+    }
+
+    const finishLookDrag = (event = null) => {
+      if (
+        event &&
+        this.mobileLookPointerId !== null &&
+        Object.prototype.hasOwnProperty.call(event, "pointerId") &&
+        event.pointerId !== this.mobileLookPointerId
+      ) {
+        return;
+      }
+      if (event?.cancelable) {
+        event.preventDefault();
+      }
+      const releaseId = this.mobileLookPointerId;
+      this.mobileLookPointerId = null;
+      if (
+        releaseId !== null &&
+        typeof this.mobileLookPadEl.hasPointerCapture === "function" &&
+        this.mobileLookPadEl.hasPointerCapture(releaseId)
+      ) {
+        try {
+          this.mobileLookPadEl.releasePointerCapture(releaseId);
+        } catch {
+          // ignore
+        }
+      }
+      this.mobileLookPadEl?.classList.remove("active");
+    };
+
+    this.mobileLookPadEl.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (!this.isAcceptedMobilePointer(event)) {
+          return;
+        }
+        if (!this.mobileEnabled || !this.canMovePlayer()) {
+          return;
+        }
+        if (this.mobileLookPointerId !== null) {
+          return;
+        }
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        this.mobileLookPointerId = event.pointerId;
+        this.mobileLookLastX = event.clientX;
+        this.mobileLookLastY = event.clientY;
+        this.mobileLookPadEl?.classList.add("active");
+        if (typeof this.mobileLookPadEl.setPointerCapture === "function") {
+          try {
+            this.mobileLookPadEl.setPointerCapture(event.pointerId);
+          } catch {
+            // ignore
+          }
+        }
+      },
+      { passive: false }
+    );
+
+    document.addEventListener(
+      "pointermove",
+      (event) => {
+        if (
+          !this.isAcceptedMobilePointer(event) ||
+          !this.mobileEnabled ||
+          this.mobileLookPointerId === null ||
+          event.pointerId !== this.mobileLookPointerId
+        ) {
+          return;
+        }
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        const deltaX = event.clientX - this.mobileLookLastX;
+        const deltaY = event.clientY - this.mobileLookLastY;
+        this.mobileLookLastX = event.clientX;
+        this.mobileLookLastY = event.clientY;
+        this.yaw -= deltaX * MOBILE_RUNTIME_SETTINGS.lookSensitivityX;
+        this.pitch -= deltaY * MOBILE_RUNTIME_SETTINGS.lookSensitivityY;
+        this.pitch = THREE.MathUtils.clamp(this.pitch, -1.52, 1.52);
+      },
+      { passive: false }
+    );
+
+    document.addEventListener("pointerup", finishLookDrag, { passive: false });
+    document.addEventListener("pointercancel", finishLookDrag, { passive: false });
+    this.mobileLookPadEl.addEventListener("lostpointercapture", finishLookDrag, { passive: false });
+    this.mobileLookPadEl.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+    });
   }
 
   setChatOpen(open) {
@@ -3476,29 +5259,53 @@ export class GameRuntime {
     }
   }
 
-  connectNetwork() {
-    const endpoint = this.resolveSocketEndpoint();
-    this.socketEndpoint = endpoint;
+  connectNetwork(options = {}) {
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+    }
+
+    const endpoint = String(options.endpoint ?? this.resolveSocketEndpoint() ?? "").trim();
+    this.socketEndpoint = endpoint || null;
+    this.socketAuth = options.auth ?? null;
     if (!endpoint) {
       this.networkConnected = false;
       this.hud.setStatus(this.getStatusText());
+      if (this.lobbyEnabled) {
+        this.showLobbyScreen("서버 주소를 찾지 못했습니다. ?server=http://주소:포트 로 접속하세요.");
+      }
       return;
     }
 
-    const socket = io(endpoint, {
+    const ioOptions = {
       transports: ["websocket", "polling"],
       timeout: 3200,
       reconnection: true,
       reconnectionDelay: 900,
       reconnectionDelayMax: 5000
-    });
+    };
+    if (this.socketAuth && typeof this.socketAuth === "object") {
+      ioOptions.auth = this.socketAuth;
+    }
 
+    const socket = io(endpoint, ioOptions);
     this.socket = socket;
+    this.attachSocketHandlers(socket);
+  }
 
+  attachSocketHandlers(socket) {
     socket.on("connect", () => {
       this.networkConnected = true;
       this.localPlayerId = socket.id;
       this.hud.setStatus(this.getStatusText());
+      this.refreshRosterPanel();
+      if (this.lobbyEnabled) {
+        this.setLobbyStatus(
+          this.lobbyNameConfirmed ? "매치 서버 연결 중..." : "닉네임을 입력한 뒤 입장하세요."
+        );
+        socket.emit("room:list");
+      }
       this.syncPlayerNameIfConnected();
       this.updateQuizControlUi();
     });
@@ -3507,24 +5314,93 @@ export class GameRuntime {
       this.networkConnected = false;
       this.localPlayerId = null;
       this.clearRemotePlayers();
+      this.roomRoster = [];
+      this.localAdmissionWaiting = false;
+      this.entryGateState = {
+        portalOpen: false,
+        waitingPlayers: 0,
+        admittedPlayers: 0,
+        openedAt: 0,
+        lastAdmissionAt: 0,
+        admissionStartsAt: 0,
+        admissionInProgress: false
+      };
       this.resetQuizStateLocal();
       this.hud.setStatus(this.getStatusText());
       this.hud.setPlayers(1);
+      this.setRosterTabVisible(false);
+      this.setRosterPinned(false);
+      this.refreshRosterPanel();
+      this.syncGameplayUiForFlow();
+      if (this.lobbyEnabled) {
+        this.lobbyJoinInFlight = false;
+        this.showLobbyScreen("연결이 끊겼습니다. 재연결 중...");
+      }
       this.updateQuizControlUi();
     });
 
     socket.on("connect_error", () => {
       this.networkConnected = false;
+      this.roomRoster = [];
+      this.localAdmissionWaiting = false;
+      this.entryGateState = {
+        portalOpen: false,
+        waitingPlayers: 0,
+        admittedPlayers: 0,
+        openedAt: 0,
+        lastAdmissionAt: 0,
+        admissionStartsAt: 0,
+        admissionInProgress: false
+      };
       this.hud.setStatus(this.getStatusText());
+      this.refreshRosterPanel();
+      this.syncGameplayUiForFlow();
+      if (this.lobbyEnabled) {
+        this.lobbyJoinInFlight = false;
+        this.showLobbyScreen("서버 연결에 실패했습니다. 잠시 후 다시 시도하세요.");
+      }
       this.updateQuizControlUi();
+    });
+
+    socket.on("server:role", (payload = {}) => {
+      this.handleServerRole(payload);
+    });
+
+    socket.on("route:assign", (payload = {}) => {
+      this.handleRouteAssign(payload);
+    });
+
+    socket.on("auth:error", (payload = {}) => {
+      const reason = String(payload?.reason ?? "인증 실패");
+      this.appendChatLine("SYSTEM", `접속 인증 실패: ${reason}`, "system");
     });
 
     socket.on("room:update", (room) => {
       this.handleRoomUpdate(room);
     });
 
+    socket.on("room:list", (payload = []) => {
+      this.handleLobbyRoomList(payload);
+    });
+
+    socket.on("portal:target:update", (payload = {}) => {
+      this.handlePortalTargetUpdate(payload);
+    });
+
+    socket.on("portal:lobby-admitted", (payload = {}) => {
+      this.handlePortalLobbyAdmitted(payload);
+    });
+
     socket.on("player:sync", (payload) => {
       this.handleRemoteSync(payload);
+    });
+
+    socket.on("player:delta", (payload = {}) => {
+      this.handleRemoteDelta(payload);
+    });
+
+    socket.on("player:correct", (payload = {}) => {
+      this.handleServerCorrection(payload);
     });
 
     socket.on("chat:message", (payload) => {
@@ -3533,6 +5409,10 @@ export class GameRuntime {
 
     socket.on("quiz:start", (payload = {}) => {
       this.handleQuizStart(payload);
+    });
+
+    socket.on("quiz:auto-countdown", (payload = {}) => {
+      this.handleQuizAutoCountdown(payload);
     });
 
     socket.on("quiz:question", (payload = {}) => {
@@ -3598,10 +5478,89 @@ export class GameRuntime {
     return `${protocol}//${hostname}`;
   }
 
+  handleServerRole(payload = {}) {
+    this.socketRole = String(payload?.role ?? "worker");
+    if (this.socketRole === "gateway") {
+      this.hud.setStatus("게이트웨이 연결 중...");
+      if (this.lobbyEnabled) {
+        this.showLobbyScreen(
+          this.lobbyNameConfirmed
+            ? "매치 서버를 찾는 중..."
+            : "닉네임을 입력한 뒤 입장 버튼을 눌러주세요."
+        );
+        this.socket?.emit?.("room:list");
+      }
+      return;
+    }
+    if (this.lobbyEnabled && this.socketRole === "worker" && this.lobbyNameConfirmed) {
+      this.setLobbyStatus("게임 서버에 연결되었습니다. 입장 마무리 중...");
+    }
+  }
+
+  handleRouteAssign(payload = {}) {
+    this.applyRouteRedirect(payload);
+  }
+
+  applyRouteRedirect(redirect = {}) {
+    const endpoint = String(redirect?.endpoint ?? "").trim();
+    const token = String(redirect?.token ?? "").trim();
+    if (!endpoint || !token) {
+      return;
+    }
+    if (this.redirectInFlight) {
+      return;
+    }
+
+    const current = String(this.socketEndpoint ?? "").trim();
+    const isSameEndpoint = endpoint === current;
+    if (isSameEndpoint && this.socketRole !== "gateway") {
+      return;
+    }
+
+    this.redirectInFlight = true;
+    this.hud.setStatus("매치 서버로 이동 중...");
+    if (this.lobbyEnabled) {
+      this.setLobbyStatus("매치 서버로 이동 중...");
+    }
+
+    const auth = {
+      token,
+      roomCode: String(redirect?.roomCode ?? "").trim(),
+      name: this.formatPlayerName(this.localPlayerName)
+    };
+
+    window.setTimeout(() => {
+      this.socketRole = "worker";
+      this.connectNetwork({ endpoint, auth });
+      this.redirectInFlight = false;
+    }, 60);
+  }
+
   handleRoomUpdate(room) {
     const players = Array.isArray(room?.players) ? room.players : [];
-    this.quizState.hostId = room?.hostId ?? this.quizState.hostId;
+    const previousHostId = String(this.quizState.hostId ?? "");
+    const wasAdmissionInProgress =
+      this.entryGateState?.admissionInProgress === true || this.getAdmissionCountdownSeconds() > 0;
+    if (room && Object.prototype.hasOwnProperty.call(room, "hostId")) {
+      this.quizState.hostId = room.hostId ?? null;
+    }
+    const gate = room?.entryGate ?? {};
+    const admissionStartsAt = Math.max(0, Math.trunc(Number(gate?.admissionStartsAt) || 0));
+    this.entryGateState = {
+      portalOpen: gate?.portalOpen === true,
+      waitingPlayers: Math.max(0, Math.trunc(Number(gate?.waitingPlayers) || 0)),
+      admittedPlayers: Math.max(0, Math.trunc(Number(gate?.admittedPlayers) || 0)),
+      openedAt: Math.max(0, Math.trunc(Number(gate?.openedAt) || 0)),
+      lastAdmissionAt: Math.max(0, Math.trunc(Number(gate?.lastAdmissionAt) || 0)),
+      admissionStartsAt,
+      admissionInProgress: gate?.admissionInProgress === true || admissionStartsAt > Date.now()
+    };
+    if (typeof room?.portalTargetUrl === "string") {
+      this.applyPortalTarget(room.portalTargetUrl, { announce: false });
+    }
     const seen = new Set();
+    let localSeen = false;
+    const wasAdmissionWaiting = this.localAdmissionWaiting;
 
     for (const player of players) {
       const id = String(player?.id ?? "");
@@ -3609,17 +5568,52 @@ export class GameRuntime {
         continue;
       }
       if (id === this.localPlayerId) {
+        localSeen = true;
         this.localPlayerName = this.formatPlayerName(player?.name);
-        const nextAlive = player?.alive !== false;
+        const isHostSpectator = player?.spectator === true;
+        const admitted = player?.admitted !== false || isHostSpectator;
+        this.localAdmissionWaiting = !admitted;
+        if (isHostSpectator) {
+          this.localQuizAlive = true;
+          if (this.quizState.active) {
+            this.enterHostSpectatorMode();
+          }
+          continue;
+        }
+        let nextAlive = player?.alive !== false;
         if (this.quizState.active && this.localQuizAlive && !nextAlive) {
-          this.appendChatLine("SYSTEM", "You are OUT. Spectator mode.", "system");
-          this.keys.clear();
+          this.startLocalEliminationDrop("server-eliminated");
+        } else if (
+          nextAlive &&
+          !this.localQuizAlive &&
+          this.quizState.active &&
+          this.quizState.phase !== "start"
+        ) {
+          nextAlive = false;
+        } else if (
+          nextAlive &&
+          !this.localQuizAlive &&
+          (!this.quizState.active || this.quizState.phase === "start")
+        ) {
+          this.localSpectatorMode = false;
+          this.localEliminationDrop.active = false;
+          this.localEliminationDrop.elapsed = 0;
+          this.localEliminationDrop.velocityY = 0;
+          this.spectatorFollowId = null;
+          this.spectatorFollowIndex = -1;
         }
         this.localQuizAlive = nextAlive;
         continue;
       }
       seen.add(id);
-      this.upsertRemotePlayer(id, player.state ?? null, player?.name, player?.alive);
+      this.upsertRemotePlayer(
+        id,
+        player.state ?? null,
+        player?.name,
+        player?.alive,
+        player?.spectator === true,
+        player?.admitted !== false
+      );
     }
 
     for (const id of this.remotePlayers.keys()) {
@@ -3630,6 +5624,51 @@ export class GameRuntime {
 
     const localPlayer = this.networkConnected ? 1 : 0;
     this.hud.setPlayers(this.remotePlayers.size + localPlayer);
+    const nextHostId = String(this.quizState.hostId ?? "");
+    if (previousHostId && previousHostId !== nextHostId) {
+      if (!nextHostId) {
+        this.appendChatLine(
+          "SYSTEM",
+          "진행자 권한이 비어 있습니다. 오너가 호스팅 권한을 다시 가져와야 합니다.",
+          "system"
+        );
+      } else {
+        const nextHostPlayer = players.find(
+          (entry) => String(entry?.id ?? "") === nextHostId
+        );
+        const nextHostName = this.formatPlayerName(nextHostPlayer?.name ?? "진행자");
+        this.appendChatLine("SYSTEM", `진행자가 ${nextHostName}(으)로 변경되었습니다.`, "system");
+      }
+    }
+    if (
+      this.lobbyEnabled &&
+      localSeen &&
+      this.lobbyNameConfirmed &&
+      this.socketRole !== "gateway" &&
+      !this.redirectInFlight
+    ) {
+      this.hideLobbyScreen();
+    }
+    const nowAdmissionInProgress =
+      this.entryGateState?.admissionInProgress === true || this.getAdmissionCountdownSeconds() > 0;
+    if (!wasAdmissionInProgress && nowAdmissionInProgress) {
+      const countdownSeconds = this.getAdmissionCountdownSeconds();
+      this.appendChatLine(
+        "SYSTEM",
+        countdownSeconds > 0
+          ? `입장 카운트다운이 시작되었습니다. ${countdownSeconds}초 후 이동합니다.`
+          : "입장 처리를 시작합니다.",
+        "system"
+      );
+    }
+    if (wasAdmissionWaiting && !this.localAdmissionWaiting) {
+      this.appendChatLine("SYSTEM", "입장이 시작되었습니다. 경기장으로 진입합니다.", "system");
+    }
+    if (!wasAdmissionWaiting && this.localAdmissionWaiting) {
+      this.appendChatLine("SYSTEM", "현재 포탈 대기실 상태입니다. 진행자를 기다려주세요.", "system");
+    }
+    this.syncGameplayUiForFlow();
+    this.refreshRosterPanel(players);
     this.updateQuizControlUi();
   }
 
@@ -3644,7 +5683,90 @@ export class GameRuntime {
     this.hud.setPlayers(this.remotePlayers.size + localPlayer);
   }
 
-  upsertRemotePlayer(id, state, name, alive = null) {
+  decodeDeltaState(delta = {}) {
+    const state = {};
+    if (Array.isArray(delta.p) && delta.p.length >= 3) {
+      state.x = Number(delta.p[0] || 0) / 100;
+      state.y = Number(delta.p[1] || 0) / 100;
+      state.z = Number(delta.p[2] || 0) / 100;
+    }
+    if (Array.isArray(delta.r) && delta.r.length >= 2) {
+      state.yaw = Number(delta.r[0] || 0) / 1000;
+      state.pitch = Number(delta.r[1] || 0) / 1000;
+    }
+    return Object.keys(state).length > 0 ? state : null;
+  }
+
+  handleRemoteDelta(payload = {}) {
+    const updates = Array.isArray(payload?.updates) ? payload.updates : [];
+    for (const update of updates) {
+      const id = String(update?.id ?? "");
+      if (!id || id === this.localPlayerId) {
+        continue;
+      }
+      const state = this.decodeDeltaState(update);
+      const nextAlive =
+        Object.prototype.hasOwnProperty.call(update, "a") ? Number(update.a) !== 0 : null;
+      this.upsertRemotePlayer(id, state, update?.n, nextAlive);
+    }
+
+    const removes = Array.isArray(payload?.removes) ? payload.removes : [];
+    for (const entry of removes) {
+      const id = String(entry ?? "");
+      if (!id || id === this.localPlayerId) {
+        continue;
+      }
+      this.removeRemotePlayer(id);
+    }
+
+    const localPlayer = this.networkConnected ? 1 : 0;
+    this.hud.setPlayers(this.remotePlayers.size + localPlayer);
+  }
+
+  handleServerCorrection(payload = {}) {
+    const state = payload?.state;
+    if (!state) {
+      return;
+    }
+
+    const nextX = Number(state.x);
+    const nextY = Number(state.y);
+    const nextZ = Number(state.z);
+    if (!Number.isFinite(nextX) || !Number.isFinite(nextY) || !Number.isFinite(nextZ)) {
+      return;
+    }
+
+    const distance = Math.hypot(
+      nextX - this.playerPosition.x,
+      nextY - this.playerPosition.y,
+      nextZ - this.playerPosition.z
+    );
+    if (distance < 0.08) {
+      return;
+    }
+
+    if (distance >= 2.6) {
+      this.playerPosition.set(nextX, nextY, nextZ);
+    } else {
+      const blend = THREE.MathUtils.clamp(0.14 + (distance / 2.6) * 0.32, 0.14, 0.46);
+      this.playerPosition.lerp(new THREE.Vector3(nextX, nextY, nextZ), blend);
+    }
+    if (Number.isFinite(Number(state.yaw))) {
+      const nextYaw = Number(state.yaw);
+      const yawBlend = distance >= 2.6 ? 1 : 0.35;
+      this.yaw = lerpAngle(this.yaw, nextYaw, yawBlend);
+    }
+    if (Number.isFinite(Number(state.pitch))) {
+      const nextPitch = Number(state.pitch);
+      const pitchBlend = distance >= 2.6 ? 1 : 0.3;
+      this.pitch = THREE.MathUtils.lerp(this.pitch, nextPitch, pitchBlend);
+    }
+    this.camera.position.copy(this.playerPosition);
+    this.camera.rotation.y = this.yaw;
+    this.camera.rotation.x = this.pitch;
+  }
+
+  upsertRemotePlayer(id, state, name, alive = null, spectator = null, admitted = null) {
     let remote = this.remotePlayers.get(id);
     if (!remote) {
       const root = new THREE.Group();
@@ -3696,6 +5818,8 @@ export class GameRuntime {
         chatLabel,
         name: "플레이어",
         alive: true,
+        spectator: false,
+        admitted: true,
         chatExpireAt: 0,
         targetPosition: new THREE.Vector3(0, 0, 0),
         targetYaw: 0,
@@ -3705,10 +5829,12 @@ export class GameRuntime {
       this.remotePlayers.set(id, remote);
     }
 
-    const nextName = this.formatPlayerName(name);
-    if (nextName !== remote.name) {
-      remote.name = nextName;
-      this.setTextLabel(remote.nameLabel, nextName, "name");
+    if (typeof name !== "undefined" && name !== null) {
+      const nextName = this.formatPlayerName(name);
+      if (nextName !== remote.name) {
+        remote.name = nextName;
+        this.setTextLabel(remote.nameLabel, nextName, "name");
+      }
     }
 
     if (state) {
@@ -3724,34 +5850,53 @@ export class GameRuntime {
       remote.lastSeen = performance.now();
     }
 
-    if (alive !== null && typeof alive !== "undefined") {
-      this.setRemoteAliveVisual(remote, alive !== false);
+    const hasAlive = alive !== null && typeof alive !== "undefined";
+    const hasSpectator = spectator !== null && typeof spectator !== "undefined";
+    const hasAdmitted = admitted !== null && typeof admitted !== "undefined";
+    if (hasAdmitted) {
+      remote.admitted = admitted === true;
     }
+    if (hasAlive || hasSpectator) {
+      this.setRemoteAliveVisual(
+        remote,
+        hasAlive ? alive !== false : remote.alive,
+        hasSpectator ? spectator === true : remote.spectator === true
+      );
+    }
+
+    remote.lastSeen = performance.now();
   }
 
-  setRemoteAliveVisual(remote, alive) {
+  setRemoteAliveVisual(remote, alive, spectator = false) {
     if (!remote) {
       return;
     }
     const nextAlive = Boolean(alive);
-    if (remote.alive === nextAlive) {
+    const nextSpectator = Boolean(spectator);
+    if (remote.alive === nextAlive && remote.spectator === nextSpectator) {
       return;
     }
 
     remote.alive = nextAlive;
+    remote.spectator = nextSpectator;
     const meshes = [remote.body, remote.head];
     for (const mesh of meshes) {
       const material = mesh?.material;
       if (!material) {
         continue;
       }
-      material.transparent = !nextAlive;
-      material.opacity = nextAlive ? 1 : 0.28;
-      material.emissiveIntensity = nextAlive ? 0.2 : 0.42;
+      material.transparent = !nextAlive || nextSpectator;
+      material.opacity = nextSpectator ? 0.8 : nextAlive ? 1 : 0.28;
+      material.emissiveIntensity = nextSpectator ? 0.26 : nextAlive ? 0.2 : 0.42;
       material.needsUpdate = true;
     }
 
-    const nameText = nextAlive ? remote.name : `${remote.name} [OUT]`;
+    let nameText = remote.name;
+    if (nextSpectator) {
+      nameText = `${remote.name} [진행자]`;
+    } else if (!nextAlive) {
+      nameText = `${remote.name} [탈락]`;
+    }
     this.setTextLabel(remote.nameLabel, nameText, "name");
   }
 
@@ -3776,6 +5921,7 @@ export class GameRuntime {
 
   tick(delta) {
     this.updateMovement(delta);
+    this.updateTrapdoorAnimation(delta);
     this.updateHubFlow(delta);
     this.updateChalkDrawing();
     this.updateCloudLayer(delta);
@@ -3783,10 +5929,20 @@ export class GameRuntime {
     this.updateRemotePlayers(delta);
     this.emitLocalSync(delta);
     this.updateDynamicResolution(delta);
+    this.updateShadowMapRefresh(delta);
+    this.updateQuizBillboardPulse(delta);
     this.updateHud(delta);
+    this.updateRoundOverlay(delta);
   }
 
   updateMovement(delta) {
+    if (this.updateLocalEliminationDrop(delta)) {
+      return;
+    }
+    if (this.updateSpectatorMovement(delta)) {
+      return;
+    }
+
     const movementEnabled = this.canMovePlayer();
     const keyForward = movementEnabled
       ? (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) -
@@ -3915,6 +6071,9 @@ export class GameRuntime {
   resetQuizStateLocal() {
     this.quizState.active = false;
     this.quizState.phase = "idle";
+    this.quizState.autoMode = false;
+    this.quizState.autoStartsAt = 0;
+    this.quizState.prepareEndsAt = 0;
     this.quizState.hostId = null;
     this.quizState.questionIndex = 0;
     this.quizState.totalQuestions = 0;
@@ -3923,39 +6082,95 @@ export class GameRuntime {
     this.quizState.survivors = 0;
     this.quizState.myScore = 0;
     this.localQuizAlive = true;
+    this.localSpectatorMode = false;
+    this.localEliminationDrop.active = false;
+    this.localEliminationDrop.elapsed = 0;
+    this.localEliminationDrop.velocityY = 0;
+    this.spectatorFollowId = null;
+    this.spectatorFollowIndex = -1;
+    this.resetTrapdoors();
     this.centerBillboardLastCountdown = null;
+    this.hideRoundOverlay();
     this.renderCenterBillboard({
-      kicker: "LIVE",
-      title: "MEGA OX QUIZ",
-      lines: ["WAITING FOR HOST"],
-      footer: "MAX 50 PLAYERS"
+      kicker: "실시간",
+      title: "메가 OX 퀴즈",
+      lines: ["진행자 대기 중"],
+      footer: "최대 50명"
     });
     this.updateQuizControlUi();
+  }
+
+  handleQuizAutoCountdown(payload = {}) {
+    this.quizState.autoMode = payload.autoMode !== false;
+    this.quizState.autoStartsAt = Math.max(
+      0,
+      Math.trunc(
+        Number(payload.startsAt) || (Date.now() + Math.max(0, Math.trunc(Number(payload.delayMs) || 0)))
+      )
+    );
+    if (this.quizState.active) {
+      return;
+    }
+    const seconds = this.getAutoStartCountdownSeconds();
+    if (seconds > 0) {
+      this.appendChatLine(
+        "SYSTEM",
+        `게임이 곧 시작됩니다 (${seconds}초 전, ${Math.max(0, Math.trunc(Number(payload.players) || 0))}/${Math.max(1, Math.trunc(Number(payload.minPlayers) || 1))})`,
+        "system"
+      );
+      this.renderCenterBillboard({
+        kicker: "자동 모드",
+        title: `${seconds}초 후 시작`,
+        lines: ["준비하세요", "라운드 시작 후 O/X 구역으로 이동"],
+        footer: "진행자 수동 제어 가능"
+      });
+      this.hud.setStatus(this.getStatusText());
+    }
   }
 
   handleQuizStart(payload = {}) {
     this.quizState.active = true;
     this.quizState.phase = "start";
+    this.quizState.autoMode = payload.autoMode !== false;
+    this.quizState.autoStartsAt = 0;
+    this.quizState.prepareEndsAt = Math.max(
+      0,
+      Math.trunc(
+        Number(payload.prepareEndsAt) || (Date.now() + Math.max(0, Math.trunc(Number(payload.prepareDelayMs) || 0)))
+      )
+    );
     this.quizState.hostId = payload.hostId ?? null;
     this.quizState.questionIndex = 0;
     this.quizState.totalQuestions = Math.max(0, Math.trunc(Number(payload.totalQuestions) || 0));
     this.quizState.lockAt = 0;
     this.quizState.questionText = "";
     this.localQuizAlive = true;
+    this.ensureLocalGameplayPosition();
+    this.resetTrapdoors();
     this.centerBillboardLastCountdown = null;
 
     const totalText =
       this.quizState.totalQuestions > 0 ? `${this.quizState.totalQuestions}` : "?";
+    const prepareSeconds =
+      this.quizState.prepareEndsAt > 0
+        ? Math.max(1, Math.ceil((this.quizState.prepareEndsAt - Date.now()) / 1000))
+        : Math.ceil(ROUND_OVERLAY_SETTINGS.prepareDurationSeconds);
     this.appendChatLine(
       "SYSTEM",
-      `OX quiz started. Total questions: ${totalText}`,
+      `게임이 곧 시작됩니다. 총 문제 수: ${totalText} (약 ${prepareSeconds}초 후 시작)`,
       "system"
     );
+    this.showRoundOverlay({
+      title: "게임이 곧 시작됩니다",
+      subtitle: `${prepareSeconds}초 후 첫 문항이 열립니다.`,
+      fireworks: false,
+      durationSeconds: Math.max(prepareSeconds, 2.2)
+    });
     this.renderCenterBillboard({
-      kicker: "OX QUIZ 10",
-      title: "ROUND START",
-      lines: [`TOTAL QUESTIONS ${totalText}`, "MOVE TO O OR X ZONE"],
-      footer: "QUESTION LOADING..."
+      kicker: "OX 퀴즈 10",
+      title: "게임이 곧 시작됩니다",
+      lines: [`총 문제 ${totalText}개`, `${prepareSeconds}초 후 시작`],
+      footer: "시작 위치에서 대기하세요"
     });
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
@@ -3971,12 +6186,16 @@ export class GameRuntime {
     );
     this.quizState.lockAt = Math.max(0, Math.trunc(Number(payload.lockAt) || 0));
     this.quizState.questionText = String(payload.text ?? "").trim().slice(0, 180);
+    this.quizState.autoStartsAt = 0;
+    this.quizState.prepareEndsAt = 0;
+    this.resetTrapdoors();
+    this.hideRoundOverlay();
     this.centerBillboardLastCountdown = null;
 
-    const questionText = this.quizState.questionText || "Question opened";
+    const questionText = this.quizState.questionText || "문제가 열렸습니다";
     this.appendChatLine(
       "SYSTEM",
-      `Q${this.quizState.questionIndex}/${this.quizState.totalQuestions}: ${questionText}`,
+      `문항 ${this.quizState.questionIndex}/${this.quizState.totalQuestions}: ${questionText}`,
       "system"
     );
     this.syncQuizBillboard(true);
@@ -3992,12 +6211,12 @@ export class GameRuntime {
       Math.trunc(Number(payload.index) || this.quizState.questionIndex || 0)
     );
     this.quizState.questionIndex = index;
-    this.appendChatLine("SYSTEM", `Q${index} locked. Judging...`, "system");
+    this.appendChatLine("SYSTEM", `문항 ${index} 잠금. 판정 중...`, "system");
     this.renderCenterBillboard({
-      kicker: `Q${index}/${Math.max(this.quizState.totalQuestions, index)}`,
-      title: "LOCKED",
-      lines: ["NO MORE MOVEMENT", "SERVER JUDGING"],
-      footer: "WAIT RESULT"
+      kicker: `문항 ${index}/${Math.max(this.quizState.totalQuestions, index)}`,
+      title: "잠금",
+      lines: ["이동 불가", "서버 판정 중"],
+      footer: "결과 대기"
     });
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
@@ -4011,19 +6230,34 @@ export class GameRuntime {
     );
     this.quizState.questionIndex = index;
     const answer = String(payload.answer ?? "").trim().toUpperCase();
+    this.triggerTrapdoorForAnswer(answer);
     const survivorCount = Math.max(0, Math.trunc(Number(payload.survivorCount) || 0));
     this.quizState.survivors = survivorCount;
 
+    const myId = String(this.localPlayerId ?? "");
+    const eliminatedIds = Array.isArray(payload.eliminatedPlayerIds)
+      ? payload.eliminatedPlayerIds.map((entry) => String(entry))
+      : [];
+    const eliminatedSet = new Set(eliminatedIds);
+    const eliminatedPlayers = Array.isArray(payload.eliminatedPlayers) ? payload.eliminatedPlayers : [];
+    const myElimination =
+      eliminatedPlayers.find((entry) => String(entry?.id ?? "") === myId) ??
+      (eliminatedSet.has(myId) ? { reason: "오답 구역" } : null);
+    if (myElimination && !this.localSpectatorMode) {
+      this.localQuizAlive = false;
+      this.startLocalEliminationDrop(myElimination.reason ?? "오답 구역");
+    }
+
     this.appendChatLine(
       "SYSTEM",
-      `Q${index} result: answer=${answer || "?"}, survivors=${survivorCount}`,
+      `문항 ${index} 결과: 정답=${answer || "?"}, 생존=${survivorCount}`,
       "system"
     );
     this.renderCenterBillboard({
-      kicker: `Q${index}/${Math.max(this.quizState.totalQuestions, index)}`,
-      title: `ANSWER ${answer || "?"}`,
-      lines: [`SURVIVORS ${survivorCount}`, this.localQuizAlive ? "YOU ARE SAFE" : "YOU ARE OUT"],
-      footer: "NEXT QUESTION SOON"
+      kicker: `문항 ${index}/${Math.max(this.quizState.totalQuestions, index)}`,
+      title: `정답 ${answer || "?"}`,
+      lines: [`생존자 ${survivorCount}명`, this.localQuizAlive ? "생존" : "탈락"],
+      footer: "잠시 후 다음 문제"
     });
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
@@ -4037,7 +6271,18 @@ export class GameRuntime {
     if (hasOwn("phase")) {
       this.quizState.phase = String(payload.phase ?? "idle");
     }
-    this.quizState.hostId = payload.hostId ?? this.quizState.hostId;
+    if (hasOwn("autoMode")) {
+      this.quizState.autoMode = payload.autoMode !== false;
+    }
+    if (hasOwn("autoStartsAt")) {
+      this.quizState.autoStartsAt = Math.max(0, Math.trunc(Number(payload.autoStartsAt) || 0));
+    }
+    if (hasOwn("prepareEndsAt")) {
+      this.quizState.prepareEndsAt = Math.max(0, Math.trunc(Number(payload.prepareEndsAt) || 0));
+    }
+    if (hasOwn("hostId")) {
+      this.quizState.hostId = payload.hostId ?? null;
+    }
     this.quizState.questionIndex = Math.max(
       this.quizState.questionIndex,
       Math.trunc(Number(payload.questionIndex) || this.quizState.questionIndex || 0)
@@ -4051,59 +6296,137 @@ export class GameRuntime {
 
     const myId = String(this.localPlayerId ?? "");
     const leaderboard = Array.isArray(payload.leaderboard) ? payload.leaderboard : [];
-    const aliveById = new Map();
+    if (leaderboard.length > 0) {
+      const previousRosterById = new Map(
+        this.roomRoster.map((entry) => [String(entry?.id ?? ""), entry])
+      );
+      this.roomRoster = leaderboard
+        .map((entry) => {
+          const id = String(entry?.id ?? "");
+          if (!id) {
+            return null;
+          }
+          const prev = previousRosterById.get(id) ?? null;
+          return {
+            id,
+            name: this.formatPlayerName(entry?.name),
+            alive: entry?.alive !== false,
+            admitted: prev?.admitted !== false,
+            score: Math.max(0, Math.trunc(Number(entry?.score) || 0)),
+            isHost: id === String(this.quizState.hostId ?? ""),
+            spectator: entry?.spectator === true,
+            isMe: id === myId
+          };
+        })
+        .filter(Boolean);
+    }
+    const stateById = new Map();
     for (const entry of leaderboard) {
       const id = String(entry?.id ?? "");
       if (!id) {
         continue;
       }
-      aliveById.set(id, entry?.alive !== false);
+      stateById.set(id, {
+        alive: entry?.alive !== false,
+        spectator: entry?.spectator === true
+      });
     }
 
     const me = leaderboard.find((entry) => String(entry?.id ?? "") === myId) ?? null;
     if (me) {
       this.quizState.myScore = Math.max(0, Math.trunc(Number(me.score) || 0));
-      const nextAlive = me.alive !== false;
-      if (this.quizState.active && this.localQuizAlive && !nextAlive) {
-        this.appendChatLine("SYSTEM", "You are OUT. Spectator mode.", "system");
-        this.keys.clear();
+      const isHostSpectator = me?.spectator === true;
+      if (isHostSpectator) {
+        this.localQuizAlive = true;
+        if (this.quizState.active) {
+          this.enterHostSpectatorMode();
+        }
+      } else {
+        const nextAlive = me.alive !== false;
+        if (this.quizState.active && this.localQuizAlive && !nextAlive) {
+          this.startLocalEliminationDrop("점수판 동기화");
+        } else if (
+          nextAlive &&
+          !this.localQuizAlive &&
+          (!this.quizState.active || this.quizState.phase === "start")
+        ) {
+          this.localSpectatorMode = false;
+          this.localEliminationDrop.active = false;
+          this.localEliminationDrop.elapsed = 0;
+          this.localEliminationDrop.velocityY = 0;
+          this.spectatorFollowId = null;
+          this.spectatorFollowIndex = -1;
+        }
+        this.localQuizAlive = nextAlive;
       }
-      this.localQuizAlive = nextAlive;
     }
 
     for (const [remoteId, remote] of this.remotePlayers) {
-      if (!aliveById.has(remoteId)) {
+      if (!stateById.has(remoteId)) {
         continue;
       }
-      this.setRemoteAliveVisual(remote, aliveById.get(remoteId));
+      const next = stateById.get(remoteId);
+      this.setRemoteAliveVisual(remote, next?.alive !== false, next?.spectator === true);
     }
 
+    this.refreshRosterPanel();
     this.syncQuizBillboard();
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
   }
 
   handleQuizEnd(payload = {}) {
-    const winners = Array.isArray(payload.winners) ? payload.winners : [];
-    if (winners.length > 0) {
-      const label = winners
-        .slice(0, 3)
-        .map((entry) => `${this.formatPlayerName(entry?.name)}(${Math.max(0, Math.trunc(Number(entry?.score) || 0))})`)
+    const rankingSource = Array.isArray(payload.ranking)
+      ? payload.ranking
+      : Array.isArray(payload.leaderboard)
+        ? payload.leaderboard
+        : [];
+    const ranking = rankingSource
+      .map((entry, index) => {
+        const rankValue = Math.max(1, Math.trunc(Number(entry?.rank) || index + 1));
+        return {
+          rank: rankValue,
+          name: this.formatPlayerName(entry?.name),
+          score: Math.max(0, Math.trunc(Number(entry?.score) || 0))
+        };
+      })
+      .sort((left, right) => left.rank - right.rank);
+
+    if (ranking.length > 0) {
+      const rankingLabel = ranking
+        .slice(0, 5)
+        .map((entry) => `${entry.rank}위 ${entry.name}(${entry.score}점)`)
         .join(", ");
-      this.appendChatLine("SYSTEM", `Quiz finished. Winners: ${label}`, "system");
+      this.appendChatLine("SYSTEM", `게임 종료. 최종 순위: ${rankingLabel}`, "system");
     } else {
-      this.appendChatLine("SYSTEM", "Quiz finished.", "system");
+      this.appendChatLine("SYSTEM", "퀴즈가 종료되었습니다.", "system");
     }
 
     this.quizState.active = false;
     this.quizState.phase = "ended";
     this.quizState.lockAt = 0;
+    this.quizState.prepareEndsAt = 0;
     this.centerBillboardLastCountdown = null;
+    this.showRoundOverlay({
+      title: "게임이 종료되었습니다",
+      subtitle:
+        ranking.length > 0
+          ? ranking
+              .slice(0, 3)
+              .map((entry) => `${entry.rank}위 ${entry.name} ${entry.score}점`)
+              .join(" | ")
+          : "최종 순위를 계산할 수 없습니다.",
+      fireworks: true,
+      durationSeconds: ROUND_OVERLAY_SETTINGS.endDurationSeconds
+    });
     this.renderCenterBillboard({
-      kicker: "OX QUIZ 10",
-      title: "ROUND END",
-      lines: winners.length > 0 ? winners.slice(0, 2).map((w) => this.formatPlayerName(w?.name)) : ["NO WINNER"],
-      footer: "WAITING NEXT START"
+      kicker: "OX 퀴즈 10",
+      title: "게임이 종료되었습니다",
+      lines:
+        ranking.length > 0
+          ? ranking.slice(0, 3).map((entry) => `${entry.rank}위 ${entry.name} (${entry.score}점)`)
+          : ["우승자 없음"],
+      footer: "호스팅 후 시작 버튼으로 새 게임 시작"
     });
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
@@ -4111,6 +6434,28 @@ export class GameRuntime {
 
   syncQuizBillboard(force = false) {
     if (!this.quizState.active) {
+      const autoSeconds = this.getAutoStartCountdownSeconds();
+      if (autoSeconds > 0) {
+        this.centerBillboardLastCountdown = autoSeconds;
+        this.renderCenterBillboard({
+          kicker: "자동 모드",
+          title: "다음 라운드",
+          lines: [`${autoSeconds}초 후 시작`, "대기"],
+          footer: "진행자 수동 시작 가능"
+        });
+      }
+      return;
+    }
+
+    if (this.quizState.phase === "start") {
+      const seconds = this.getQuizPrepareSeconds();
+      this.centerBillboardLastCountdown = seconds;
+      this.renderCenterBillboard({
+        kicker: "OX 퀴즈 10",
+        title: "게임이 곧 시작됩니다",
+        lines: [`${seconds}초 후 시작`, "시작 위치에서 대기"],
+        footer: "곧 첫 문항이 공개됩니다"
+      });
       return;
     }
 
@@ -4118,13 +6463,13 @@ export class GameRuntime {
       const seconds = this.getQuizCountdownSeconds();
       this.centerBillboardLastCountdown = seconds;
       this.renderCenterBillboard({
-        kicker: `Q${this.quizState.questionIndex}/${Math.max(this.quizState.totalQuestions, this.quizState.questionIndex)}`,
-        title: this.quizState.questionText || "QUESTION",
+        kicker: `문항 ${this.quizState.questionIndex}/${Math.max(this.quizState.totalQuestions, this.quizState.questionIndex)}`,
+        title: this.quizState.questionText || "문제",
         lines: [
-          `TIME LEFT ${seconds}s`,
-          this.localQuizAlive ? "STATUS ALIVE" : "STATUS OUT"
+          `남은 시간 ${seconds}초`,
+          this.localQuizAlive ? "상태: 생존" : "상태: 탈락"
         ],
-        footer: "MOVE TO O OR X NOW"
+        footer: "지금 O 또는 X 구역으로 이동"
       });
       return;
     }
@@ -4145,34 +6490,50 @@ export class GameRuntime {
     return Math.max(0, Math.ceil((lockAt - Date.now()) / 1000));
   }
 
+  getQuizPrepareSeconds() {
+    if (!this.quizState.active || this.quizState.phase !== "start") {
+      return 0;
+    }
+    const prepareEndsAt = Number(this.quizState.prepareEndsAt) || 0;
+    if (prepareEndsAt <= 0) {
+      return Math.ceil(ROUND_OVERLAY_SETTINGS.prepareDurationSeconds);
+    }
+    return Math.max(0, Math.ceil((prepareEndsAt - Date.now()) / 1000));
+  }
+
   composeStatusWithQuiz(baseStatus) {
     const status = String(baseStatus ?? "");
     if (!this.quizState.active && this.quizState.phase !== "ended") {
+      const autoSeconds = this.getAutoStartCountdownSeconds();
+      if (autoSeconds > 0) {
+        return `${status} | 자동 시작 ${autoSeconds}초`;
+      }
       return status;
     }
 
     const questionLabel =
       this.quizState.questionIndex > 0
-        ? `Q${this.quizState.questionIndex}/${Math.max(this.quizState.totalQuestions, this.quizState.questionIndex)}`
-        : "Q?";
+        ? `문항 ${this.quizState.questionIndex}/${Math.max(this.quizState.totalQuestions, this.quizState.questionIndex)}`
+        : "문항 ?";
 
     if (this.quizState.phase === "question") {
       const seconds = this.getQuizCountdownSeconds();
-      return `${status} | ${questionLabel} ${seconds}s ${this.localQuizAlive ? "alive" : "OUT"}`;
+      return `${status} | ${questionLabel} ${seconds}초 ${this.localQuizAlive ? "생존" : "탈락"}`;
     }
     if (this.quizState.phase === "lock") {
-      return `${status} | ${questionLabel} LOCK ${this.localQuizAlive ? "alive" : "OUT"}`;
+      return `${status} | ${questionLabel} 잠금 ${this.localQuizAlive ? "생존" : "탈락"}`;
     }
     if (this.quizState.phase === "result") {
-      return `${status} | ${questionLabel} survivors ${this.quizState.survivors} ${this.localQuizAlive ? "alive" : "OUT"}`;
+      return `${status} | ${questionLabel} 생존자 ${this.quizState.survivors}명 ${this.localQuizAlive ? "생존" : "탈락"}`;
     }
     if (this.quizState.phase === "ended") {
-      return `${status} | quiz ended`;
+      return `${status} | 퀴즈 종료`;
     }
     if (this.quizState.phase === "start") {
-      return `${status} | quiz start`;
+      const seconds = this.getQuizPrepareSeconds();
+      return `${status} | 시작 준비 ${seconds}초`;
     }
-    return `${status} | quiz ${this.quizState.phase}`;
+    return `${status} | 퀴즈 ${this.formatQuizPhase(this.quizState.phase)}`;
   }
 
   isLocalHost() {
@@ -4181,11 +6542,54 @@ export class GameRuntime {
     return Boolean(hostId && myId && hostId === myId);
   }
 
+  translateQuizError(rawError) {
+    const code = String(rawError ?? "").trim().toLowerCase();
+    const table = {
+      "not in room": "방에 참여한 상태가 아닙니다.",
+      "host only": "방장만 사용할 수 있습니다.",
+      "quiz is not active": "진행 중인 퀴즈가 없습니다.",
+      "question is not open": "열린 문제가 없습니다.",
+      "question is already open": "이미 문제가 열려 있습니다.",
+      "quiz already active": "이미 퀴즈가 진행 중입니다.",
+      "no more questions": "남은 문제가 없습니다.",
+      "room missing": "방 정보를 찾을 수 없습니다.",
+      "gateway draining": "게이트웨이가 점검 중입니다.",
+      "redirect build failed": "서버 라우팅 구성에 실패했습니다.",
+      "no room capacity available": "현재 수용 가능한 방이 없습니다.",
+      "no playable players": "참가 플레이어가 없어 시작할 수 없습니다.",
+      "players waiting admission": "대기실 인원이 아직 입장하지 않았습니다. 입장 시작을 먼저 눌러주세요.",
+      "lobby already open": "이미 포탈 대기실이 열려 있습니다.",
+      "lobby not open": "포탈 대기실이 열려 있지 않습니다.",
+      "admission already in progress": "이미 입장 카운트다운이 진행 중입니다.",
+      "no waiting players": "현재 입장 대기 인원이 없습니다.",
+      unauthorized: "권한이 없습니다.",
+      "invalid portal target": "포탈 링크 형식이 잘못되었습니다. http(s) 주소만 허용됩니다.",
+      "all-questions-complete": "모든 문제가 종료되었습니다.",
+      unknown: "알 수 없음"
+    };
+    return table[code] ?? String(rawError ?? "알 수 없음");
+  }
+
+  formatQuizPhase(rawPhase) {
+    const phase = String(rawPhase ?? "idle");
+    const phaseKorMap = {
+      idle: "대기",
+      start: "시작",
+      question: "문제",
+      lock: "잠금",
+      locked: "잠금",
+      result: "결과",
+      "waiting-next": "다음 대기",
+      ended: "종료"
+    };
+    return phaseKorMap[phase] ?? phase;
+  }
+
   updateQuizControlUi() {
     this.resolveUiElements();
     const isHost = this.isLocalHost();
     const connected = Boolean(this.networkConnected && this.socket);
-    const show = connected && isHost;
+    const show = connected && !this.isLobbyBlockingGameplay() && this.ownerAccessEnabled;
     this.quizControlsEl?.classList.toggle("hidden", !show);
     if (!show) {
       return;
@@ -4193,68 +6597,441 @@ export class GameRuntime {
 
     const phase = String(this.quizState.phase ?? "idle");
     const active = Boolean(this.quizState.active);
-    this.quizStartBtnEl && (this.quizStartBtnEl.disabled = active);
-    this.quizStopBtnEl && (this.quizStopBtnEl.disabled = !active);
-    this.quizNextBtnEl && (this.quizNextBtnEl.disabled = !active || phase !== "waiting-next");
-    this.quizLockBtnEl && (this.quizLockBtnEl.disabled = !active || phase !== "question");
+    const portalOpen = this.entryGateState?.portalOpen === true;
+    const waitingPlayers = Math.max(0, Math.trunc(Number(this.entryGateState?.waitingPlayers) || 0));
+    const countdownSeconds = this.getAdmissionCountdownSeconds();
+    const admissionInProgress =
+      this.entryGateState?.admissionInProgress === true || countdownSeconds > 0;
+    if (this.quizHostBtnEl) {
+      const canClaimHost = this.ownerAccessEnabled;
+      this.quizHostBtnEl.classList.toggle("hidden", !canClaimHost || isHost);
+      this.quizHostBtnEl.disabled = !canClaimHost || isHost;
+    }
+    const canControl = isHost;
+    this.quizStartBtnEl &&
+      (this.quizStartBtnEl.disabled = !canControl || active || waitingPlayers > 0 || admissionInProgress);
+    this.quizStopBtnEl && (this.quizStopBtnEl.disabled = !canControl || !active);
+    if (this.portalLobbyOpenBtnEl) {
+      this.portalLobbyOpenBtnEl.disabled = !canControl || active || portalOpen || admissionInProgress;
+    }
+    if (this.portalLobbyStartBtnEl) {
+      this.portalLobbyStartBtnEl.disabled =
+        !canControl || active || admissionInProgress || !portalOpen || waitingPlayers <= 0;
+      if (admissionInProgress) {
+        this.portalLobbyStartBtnEl.textContent =
+          countdownSeconds > 0 ? `입장 중 (${countdownSeconds})` : "입장 중";
+      } else {
+        this.portalLobbyStartBtnEl.textContent =
+          waitingPlayers > 0 ? `입장 시작 (${waitingPlayers})` : "입장 시작";
+      }
+    }
+    this.quizNextBtnEl &&
+      (this.quizNextBtnEl.disabled = !canControl || !active || phase !== "waiting-next");
+    this.quizLockBtnEl &&
+      (this.quizLockBtnEl.disabled = !canControl || !active || phase !== "question");
+    this.portalTargetInputEl && (this.portalTargetInputEl.disabled = !canControl);
+    this.portalTargetSaveBtnEl && (this.portalTargetSaveBtnEl.disabled = !canControl);
 
     if (this.quizControlsNoteEl) {
-      this.quizControlsNoteEl.textContent = active
-        ? `Phase: ${phase} | Q${Math.max(0, this.quizState.questionIndex)}/${Math.max(0, this.quizState.totalQuestions)}`
-        : "Ready. Press START to run OX quiz.";
+      if (!isHost) {
+        this.quizControlsNoteEl.textContent = this.ownerAccessEnabled
+          ? "오너 토큰 보유 시 호스팅 권한을 요청할 수 있습니다."
+          : "방장 권한이 있는 사용자만 퀴즈/포탈을 제어할 수 있습니다.";
+        return;
+      }
+      const phaseKor = this.formatQuizPhase(phase);
+      if (active) {
+        this.quizControlsNoteEl.textContent = `모드: 수동(호스팅) | 단계: ${phaseKor} | 문항 ${Math.max(0, this.quizState.questionIndex)}/${Math.max(0, this.quizState.totalQuestions)}`;
+      } else {
+        if (admissionInProgress) {
+          this.quizControlsNoteEl.textContent =
+            countdownSeconds > 0
+              ? `모드: 수동(호스팅) | 입장 카운트다운 ${countdownSeconds}초`
+              : "모드: 수동(호스팅) | 입장 처리 중";
+        } else if (portalOpen) {
+          this.quizControlsNoteEl.textContent = `모드: 수동(호스팅) | 포탈 대기실 오픈 (${waitingPlayers}명 대기)`;
+        } else {
+          this.quizControlsNoteEl.textContent =
+            "모드: 수동(호스팅) | 필요 시 포탈을 열어 대기실 인원을 모은 뒤 시작하세요.";
+        }
+      }
     }
   }
 
-  requestQuizStart() {
+  requestHostClaim() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 호스팅 권한을 요청할 수 없습니다.", "system");
+      return;
+    }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "Cannot start quiz while offline.", "system");
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 호스팅을 받을 수 없습니다.", "system");
+      return;
+    }
+
+    this.socket.emit("room:claim-host", (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("SYSTEM", `호스팅 실패: ${this.translateQuizError(response?.error)}`, "system");
+        return;
+      }
+      this.quizState.hostId = String(response?.hostId ?? this.localPlayerId ?? "");
+      this.appendChatLine("SYSTEM", "호스팅 권한을 획득했습니다.", "system");
+      this.updateQuizControlUi();
+    });
+  }
+
+  requestPortalLobbyOpen() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 포탈 열기 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 포탈을 열 수 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("SYSTEM", "방장만 포탈을 열 수 있습니다.", "system");
+      return;
+    }
+
+    this.socket.emit("portal:lobby-open", (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine(
+          "SYSTEM",
+          `포탈 열기 실패: ${this.translateQuizError(response?.error)}`,
+          "system"
+        );
+        return;
+      }
+      const waiting = Math.max(0, Math.trunc(Number(response?.waitingPlayers) || 0));
+      this.appendChatLine(
+        "SYSTEM",
+        `포탈 대기실을 열었습니다. 대기 인원 ${waiting}명`,
+        "system"
+      );
+    });
+  }
+
+  requestPortalLobbyStart() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 입장 시작 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 입장을 시작할 수 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("SYSTEM", "방장만 입장을 시작할 수 있습니다.", "system");
+      return;
+    }
+
+    this.socket.emit("portal:lobby-start", (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine(
+          "SYSTEM",
+          `입장 시작 실패: ${this.translateQuizError(response?.error)}`,
+          "system"
+        );
+        return;
+      }
+      const admitted = Math.max(0, Math.trunc(Number(response?.admittedCount) || 0));
+      const countdownMs = Math.max(0, Math.trunc(Number(response?.countdownMs) || 0));
+      const countdownSeconds = Math.max(1, Math.ceil(countdownMs / 1000));
+      this.appendChatLine(
+        "SYSTEM",
+        `입장 카운트다운 ${countdownSeconds}초 시작 (대기 ${admitted}명)`,
+        "system"
+      );
+    });
+  }
+
+  requestQuizStart() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 시작 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 시작할 수 없습니다.", "system");
       return;
     }
     this.socket.emit("quiz:start", { lockSeconds: 15 }, (response = {}) => {
       if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `Start failed: ${String(response?.error ?? "unknown")}`, "system");
+        this.appendChatLine("SYSTEM", `시작 실패: ${this.translateQuizError(response?.error)}`, "system");
         return;
       }
-      this.appendChatLine("SYSTEM", "Quiz started by host.", "system");
+      this.appendChatLine("SYSTEM", "방장이 퀴즈를 시작했습니다.", "system");
     });
   }
 
   requestQuizStop() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 중지 권한이 없습니다.", "system");
+      return;
+    }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "Cannot stop quiz while offline.", "system");
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 중지할 수 없습니다.", "system");
       return;
     }
     this.socket.emit("quiz:stop", {}, (response = {}) => {
       if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `Stop failed: ${String(response?.error ?? "unknown")}`, "system");
+        this.appendChatLine("SYSTEM", `중지 실패: ${this.translateQuizError(response?.error)}`, "system");
         return;
       }
-      this.appendChatLine("SYSTEM", "Quiz stopped by host.", "system");
+      this.appendChatLine("SYSTEM", "방장이 퀴즈를 중지했습니다.", "system");
     });
   }
 
   requestQuizNext() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 다음 문제 권한이 없습니다.", "system");
+      return;
+    }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "Cannot move next while offline.", "system");
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 다음 문제로 넘어갈 수 없습니다.", "system");
       return;
     }
     this.socket.emit("quiz:next", {}, (response = {}) => {
       if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `Next failed: ${String(response?.error ?? "unknown")}`, "system");
+        this.appendChatLine("SYSTEM", `다음 문제 실패: ${this.translateQuizError(response?.error)}`, "system");
       }
     });
   }
 
   requestQuizLock() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 잠금 권한이 없습니다.", "system");
+      return;
+    }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "Cannot lock while offline.", "system");
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 잠글 수 없습니다.", "system");
       return;
     }
     this.socket.emit("quiz:force-lock", (response = {}) => {
       if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `Lock failed: ${String(response?.error ?? "unknown")}`, "system");
+        this.appendChatLine("SYSTEM", `잠금 실패: ${this.translateQuizError(response?.error)}`, "system");
       }
     });
+  }
+
+  requestPortalTargetSave() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 포탈 링크 변경 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 포탈 링크를 저장할 수 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("SYSTEM", "방장만 포탈 링크를 변경할 수 있습니다.", "system");
+      return;
+    }
+
+    const rawTarget = String(this.portalTargetInputEl?.value ?? "").trim();
+    this.socket.emit("portal:set-target", { targetUrl: rawTarget }, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine(
+          "SYSTEM",
+          `포탈 링크 저장 실패: ${this.translateQuizError(response?.error)}`,
+          "system"
+        );
+        return;
+      }
+      this.applyPortalTarget(response?.targetUrl ?? "", { announce: false });
+      this.appendChatLine(
+        "SYSTEM",
+        rawTarget ? "포탈 링크가 갱신되었습니다." : "포탈 링크가 비워졌습니다.",
+        "system"
+      );
+    });
+  }
+
+  handlePortalTargetUpdate(payload = {}) {
+    const targetUrl = String(payload?.targetUrl ?? "").trim();
+    const updatedBy = String(payload?.updatedBy ?? "");
+    this.applyPortalTarget(targetUrl, { announce: false });
+    if (!targetUrl) {
+      this.appendChatLine("SYSTEM", "방장이 포탈 링크를 비웠습니다.", "system");
+      return;
+    }
+    if (updatedBy && updatedBy === String(this.localPlayerId ?? "")) {
+      return;
+    }
+    this.appendChatLine("SYSTEM", "방장이 포탈 링크를 변경했습니다.", "system");
+  }
+
+  handlePortalLobbyAdmitted(payload = {}) {
+    const admittedCount = Math.max(0, Math.trunc(Number(payload?.admittedCount) || 0));
+    if (admittedCount <= 0) {
+      this.appendChatLine("SYSTEM", "입장 처리 완료: 이동한 인원이 없습니다.", "system");
+    } else {
+      this.appendChatLine(
+        "SYSTEM",
+        `입장 완료: ${admittedCount}명이 경기장으로 이동했습니다.`,
+        "system"
+      );
+    }
+    this.updateEntryWaitOverlay();
+    this.updateQuizControlUi();
+  }
+
+  applyPortalTarget(targetUrl, { announce = false } = {}) {
+    const normalized = this.normalizePortalTargetUrl(targetUrl ?? "");
+    this.portalTargetUrl = normalized;
+    if (this.portalTargetInputEl) {
+      const nextValue = this.portalTargetUrl ?? "";
+      if (this.portalTargetInputEl.value !== nextValue) {
+        this.portalTargetInputEl.value = nextValue;
+      }
+    }
+    if (announce) {
+      this.appendChatLine(
+        "SYSTEM",
+        this.portalTargetUrl ? "포탈 링크가 설정되었습니다." : "포탈 링크가 해제되었습니다.",
+        "system"
+      );
+    }
+  }
+
+  resizeRoundOverlayCanvas() {
+    if (!this.roundOverlayCanvasEl || !this.roundOverlayCtx) {
+      return;
+    }
+    const width = Math.max(1, window.innerWidth);
+    const height = Math.max(1, window.innerHeight);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const targetWidth = Math.round(width * dpr);
+    const targetHeight = Math.round(height * dpr);
+    if (
+      this.roundOverlayCanvasEl.width === targetWidth &&
+      this.roundOverlayCanvasEl.height === targetHeight
+    ) {
+      return;
+    }
+    this.roundOverlayCanvasEl.width = targetWidth;
+    this.roundOverlayCanvasEl.height = targetHeight;
+    this.roundOverlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  showRoundOverlay({
+    title = "",
+    subtitle = "",
+    fireworks = false,
+    durationSeconds = ROUND_OVERLAY_SETTINGS.endDurationSeconds
+  } = {}) {
+    this.resolveUiElements();
+    if (!this.roundOverlayEl) {
+      return;
+    }
+    if (this.roundOverlayTitleEl) {
+      this.roundOverlayTitleEl.textContent = String(title ?? "").trim();
+    }
+    if (this.roundOverlaySubtitleEl) {
+      this.roundOverlaySubtitleEl.textContent = String(subtitle ?? "").trim();
+    }
+    this.roundOverlayVisible = true;
+    this.roundOverlayFireworks = Boolean(fireworks);
+    this.roundOverlayTimer = Math.max(0.6, Number(durationSeconds) || 0);
+    this.roundOverlaySpawnClock = 0;
+    this.roundOverlayParticles.length = 0;
+    this.roundOverlayEl.classList.add("on");
+    this.roundOverlayEl.setAttribute("aria-hidden", "false");
+    this.roundOverlayEl.dataset.mode = this.roundOverlayFireworks ? "end" : "prepare";
+    this.resizeRoundOverlayCanvas();
+    if (this.roundOverlayCtx) {
+      this.roundOverlayCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    }
+  }
+
+  hideRoundOverlay() {
+    this.roundOverlayVisible = false;
+    this.roundOverlayFireworks = false;
+    this.roundOverlayTimer = 0;
+    this.roundOverlaySpawnClock = 0;
+    this.roundOverlayParticles.length = 0;
+    if (!this.roundOverlayEl) {
+      return;
+    }
+    this.roundOverlayEl.classList.remove("on");
+    this.roundOverlayEl.setAttribute("aria-hidden", "true");
+    this.roundOverlayEl.dataset.mode = "";
+    if (this.roundOverlayCtx) {
+      this.roundOverlayCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    }
+  }
+
+  spawnRoundFireworkBurst() {
+    if (!this.roundOverlayCtx) {
+      return;
+    }
+    const width = Math.max(1, window.innerWidth);
+    const height = Math.max(1, window.innerHeight);
+    const originX = THREE.MathUtils.lerp(width * 0.14, width * 0.86, Math.random());
+    const originY = THREE.MathUtils.lerp(height * 0.16, height * 0.52, Math.random());
+    const count = THREE.MathUtils.randInt(
+      ROUND_OVERLAY_SETTINGS.fireworkParticleCountMin,
+      ROUND_OVERLAY_SETTINGS.fireworkParticleCountMax
+    );
+    const hue = Math.floor(Math.random() * 360);
+    for (let index = 0; index < count; index += 1) {
+      const angle = (Math.PI * 2 * index) / count + Math.random() * 0.2;
+      const speed = THREE.MathUtils.lerp(86, 240, Math.random());
+      const life = THREE.MathUtils.lerp(0.8, 1.6, Math.random());
+      this.roundOverlayParticles.push({
+        x: originX,
+        y: originY,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life,
+        maxLife: life,
+        size: THREE.MathUtils.lerp(1.6, 3.2, Math.random()),
+        hue: (hue + THREE.MathUtils.randInt(-18, 24) + 360) % 360
+      });
+    }
+  }
+
+  updateRoundOverlay(delta) {
+    if (!this.roundOverlayVisible || !this.roundOverlayEl) {
+      return;
+    }
+
+    this.roundOverlayTimer -= delta;
+    if (this.roundOverlayTimer <= 0) {
+      this.hideRoundOverlay();
+      return;
+    }
+
+    if (!this.roundOverlayFireworks || !this.roundOverlayCtx) {
+      return;
+    }
+    this.resizeRoundOverlayCanvas();
+    const ctx = this.roundOverlayCtx;
+    const width = Math.max(1, window.innerWidth);
+    const height = Math.max(1, window.innerHeight);
+    ctx.clearRect(0, 0, width, height);
+
+    this.roundOverlaySpawnClock += delta;
+    if (this.roundOverlaySpawnClock >= ROUND_OVERLAY_SETTINGS.fireworkSpawnIntervalSeconds) {
+      this.roundOverlaySpawnClock = 0;
+      this.spawnRoundFireworkBurst();
+    }
+
+    for (let index = this.roundOverlayParticles.length - 1; index >= 0; index -= 1) {
+      const particle = this.roundOverlayParticles[index];
+      particle.life -= delta;
+      if (particle.life <= 0) {
+        this.roundOverlayParticles.splice(index, 1);
+        continue;
+      }
+      particle.vy += 132 * delta;
+      particle.x += particle.vx * delta;
+      particle.y += particle.vy * delta;
+      const alpha = THREE.MathUtils.clamp(particle.life / particle.maxLife, 0, 1);
+      ctx.fillStyle = `hsla(${particle.hue}, 96%, 68%, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   appendChatLine(name, text, type = "remote") {
@@ -4487,14 +7264,38 @@ export class GameRuntime {
       return;
     }
     this.remoteSyncClock = 0;
+    this.localSyncSeq = (this.localSyncSeq + 1) % 2147483647;
 
     this.socket.emit("player:sync", {
       x: this.playerPosition.x,
       y: this.playerPosition.y,
       z: this.playerPosition.z,
       yaw: this.yaw,
-      pitch: this.pitch
+      pitch: this.pitch,
+      s: this.localSyncSeq
     });
+  }
+
+  updateShadowMapRefresh(delta) {
+    if (!this.renderer.shadowMap.enabled || this.renderer.shadowMap.autoUpdate) {
+      return;
+    }
+
+    this.shadowRefreshClock += delta;
+    if (this.shadowRefreshClock < RUNTIME_TUNING.SHADOW_UPDATE_INTERVAL_SECONDS) {
+      return;
+    }
+    this.shadowRefreshClock = 0;
+    this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  updateQuizBillboardPulse(delta) {
+    this.quizBillboardRefreshClock += delta;
+    if (this.quizBillboardRefreshClock < RUNTIME_TUNING.QUIZ_BILLBOARD_REFRESH_INTERVAL_SECONDS) {
+      return;
+    }
+    this.quizBillboardRefreshClock = 0;
+    this.syncQuizBillboard();
   }
 
   updateHud(delta) {
@@ -4517,7 +7318,6 @@ export class GameRuntime {
       return;
     }
     this.hudRefreshClock = 0;
-    this.syncQuizBillboard();
 
     const localPlayer = this.networkConnected ? 1 : 0;
     this.hud.update({
@@ -4527,49 +7327,86 @@ export class GameRuntime {
       z: this.playerPosition.z,
       fps: fpsState.fps
     });
+    const countdownSeconds = this.getAdmissionCountdownSeconds();
+    if (this.localAdmissionWaiting || countdownSeconds > 0) {
+      this.updateEntryWaitOverlay();
+    }
+    if (countdownSeconds > 0) {
+      this.updateQuizControlUi();
+    }
   }
 
   getStatusText() {
     let baseStatus;
 
+    if (this.isLobbyBlockingGameplay()) {
+      if (!this.networkConnected) {
+        baseStatus = "로비 / 연결 대기";
+        return this.composeStatusWithQuiz(baseStatus);
+      }
+      if (!this.lobbyNameConfirmed) {
+        baseStatus = "로비 / 닉네임 입력";
+        return this.composeStatusWithQuiz(baseStatus);
+      }
+      if (this.redirectInFlight || this.socketRole === "gateway") {
+        baseStatus = "로비 / 매치 서버 연결 중";
+        return this.composeStatusWithQuiz(baseStatus);
+      }
+      baseStatus = "로비 / 입장 준비";
+      return this.composeStatusWithQuiz(baseStatus);
+    }
+
+    if (this.localAdmissionWaiting) {
+      const countdownSeconds = this.getAdmissionCountdownSeconds();
+      if (this.entryGateState?.admissionInProgress === true || countdownSeconds > 0) {
+        baseStatus =
+          countdownSeconds > 0
+            ? `대기실 / 입장 카운트다운 ${countdownSeconds}초`
+            : "대기실 / 입장 처리 중";
+      } else {
+        baseStatus = this.entryGateState?.portalOpen ? "대기실 / 입장 대기" : "대기실 / 진행자 대기";
+      }
+      return this.composeStatusWithQuiz(baseStatus);
+    }
+
     if (this.hubFlowEnabled) {
       if (this.flowStage === "bridge_approach") {
-        baseStatus = this.networkConnected ? "online / entering hub" : "offline / entering hub";
+        baseStatus = this.networkConnected ? "온라인 / 허브 진입 중" : "오프라인 / 허브 진입 중";
         return this.composeStatusWithQuiz(baseStatus);
       }
       if (this.flowStage === "bridge_dialogue") {
-        baseStatus = this.networkConnected ? "online / npc briefing" : "offline / npc briefing";
+        baseStatus = this.networkConnected ? "온라인 / 안내 진행 중" : "오프라인 / 안내 진행 중";
         return this.composeStatusWithQuiz(baseStatus);
       }
       if (this.flowStage === "bridge_name") {
-        baseStatus = this.networkConnected ? "online / name check" : "offline / name check";
+        baseStatus = this.networkConnected ? "온라인 / 이름 확인" : "오프라인 / 이름 확인";
         return this.composeStatusWithQuiz(baseStatus);
       }
       if (this.flowStage === "bridge_mirror") {
-        baseStatus = this.networkConnected ? "online / mirror gate" : "offline / mirror gate";
+        baseStatus = this.networkConnected ? "온라인 / 미러 게이트" : "오프라인 / 미러 게이트";
         return this.composeStatusWithQuiz(baseStatus);
       }
       if (this.flowStage === "city_intro") {
-        baseStatus = this.networkConnected ? "online / city transfer" : "offline / city transfer";
+        baseStatus = this.networkConnected ? "온라인 / 도시 이동 중" : "오프라인 / 도시 이동 중";
         return this.composeStatusWithQuiz(baseStatus);
       }
       if (this.flowStage === "portal_transfer") {
-        baseStatus = "portal / transferring";
+        baseStatus = "포탈 / 이동 중";
         return this.composeStatusWithQuiz(baseStatus);
       }
     }
 
     if (!this.networkConnected) {
-      baseStatus = this.socketEndpoint ? "offline" : "offline / server needed";
+      baseStatus = this.socketEndpoint ? "오프라인" : "오프라인 / 서버 필요";
       return this.composeStatusWithQuiz(baseStatus);
     }
 
     if (this.pointerLockSupported && !this.pointerLocked && !this.mobileEnabled) {
-      baseStatus = "online / click to focus";
+      baseStatus = "온라인 / 클릭해서 포커스";
       return this.composeStatusWithQuiz(baseStatus);
     }
 
-    baseStatus = "online";
+    baseStatus = "온라인";
     return this.composeStatusWithQuiz(baseStatus);
   }
 
@@ -4594,7 +7431,7 @@ export class GameRuntime {
     config.frameCount += 1;
     config.cooldown = Math.max(0, config.cooldown - delta);
 
-    if (config.sampleTime < 0.8) {
+    if (config.sampleTime < DYNAMIC_RESOLUTION_SETTINGS.sampleWindowSeconds) {
       return;
     }
 
@@ -4609,33 +7446,55 @@ export class GameRuntime {
     const floorRatio = Math.max(0.5, Math.min(config.minRatio, this.maxPixelRatio));
     let targetRatio = this.currentPixelRatio;
 
-    if (fps < 50 && this.currentPixelRatio > floorRatio) {
-      targetRatio = Math.max(floorRatio, this.currentPixelRatio - 0.1);
-      config.cooldown = 0.8;
-    } else if (fps > 58 && this.currentPixelRatio < this.maxPixelRatio) {
-      targetRatio = Math.min(this.maxPixelRatio, this.currentPixelRatio + 0.05);
-      config.cooldown = 1.5;
+    if (fps < DYNAMIC_RESOLUTION_SETTINGS.downshiftFps && this.currentPixelRatio > floorRatio) {
+      config.downshiftSamples += 1;
+      config.upshiftSamples = 0;
+      if (config.downshiftSamples >= DYNAMIC_RESOLUTION_SETTINGS.stableSamplesRequired) {
+        targetRatio = Math.max(
+          floorRatio,
+          this.currentPixelRatio - DYNAMIC_RESOLUTION_SETTINGS.downshiftStep
+        );
+        config.downshiftSamples = 0;
+        config.cooldown = DYNAMIC_RESOLUTION_SETTINGS.downshiftCooldownSeconds;
+      } else {
+        config.cooldown = DYNAMIC_RESOLUTION_SETTINGS.idleCooldownSeconds;
+      }
+    } else if (fps > DYNAMIC_RESOLUTION_SETTINGS.upshiftFps && this.currentPixelRatio < this.maxPixelRatio) {
+      config.upshiftSamples += 1;
+      config.downshiftSamples = 0;
+      if (config.upshiftSamples >= DYNAMIC_RESOLUTION_SETTINGS.stableSamplesRequired) {
+        targetRatio = Math.min(
+          this.maxPixelRatio,
+          this.currentPixelRatio + DYNAMIC_RESOLUTION_SETTINGS.upshiftStep
+        );
+        config.upshiftSamples = 0;
+        config.cooldown = DYNAMIC_RESOLUTION_SETTINGS.upshiftCooldownSeconds;
+      } else {
+        config.cooldown = DYNAMIC_RESOLUTION_SETTINGS.idleCooldownSeconds;
+      }
     } else {
-      config.cooldown = 0.4;
+      config.downshiftSamples = 0;
+      config.upshiftSamples = 0;
+      config.cooldown = DYNAMIC_RESOLUTION_SETTINGS.idleCooldownSeconds;
     }
 
-    if (Math.abs(targetRatio - this.currentPixelRatio) < 0.01) {
+    if (Math.abs(targetRatio - this.currentPixelRatio) < DYNAMIC_RESOLUTION_SETTINGS.ratioEpsilon) {
       return;
     }
 
     this.currentPixelRatio = Number(targetRatio.toFixed(2));
     this.renderer.setPixelRatio(this.currentPixelRatio);
-    this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     if (this.composer) {
       this.composer.setPixelRatio(this.currentPixelRatio);
-      this.composer.setSize(window.innerWidth, window.innerHeight);
     }
   }
 
   applyQualityProfile() {
     const shadowEnabled = !this.mobileEnabled;
     this.renderer.shadowMap.enabled = shadowEnabled;
-    this.renderer.shadowMap.autoUpdate = shadowEnabled;
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = shadowEnabled;
+    this.shadowRefreshClock = 0;
 
     if (this.sunLight) {
       const sunConfig = this.worldContent.lights.sun;
@@ -4655,7 +7514,9 @@ export class GameRuntime {
     this.setupCloudLayer();
     this.setupBoundaryWalls(this.worldContent.boundary);
     this.setupFloatingArena(this.worldContent.floatingArena, this.worldContent.ground);
+    this.setupSpectatorStands(this.worldContent.spectatorStands, this.worldContent.boundary);
     this.setupCenterBillboard(this.worldContent.centerBillboard);
+    this.setupMegaAdScreen(this.worldContent.megaAdScreen);
     this.setupOxArenaVisuals(this.worldContent.oxArena);
     this.setupBeachLayer(this.worldContent.beach, this.worldContent.ocean);
     this.setupOceanLayer(this.worldContent.ocean);
@@ -4665,31 +7526,50 @@ export class GameRuntime {
 
   onResize() {
     const wasMobile = this.mobileEnabled;
-    this.mobileEnabled = isLikelyTouchDevice();
+    const detectedMobile = isLikelyTouchDevice();
+    this.mobileEnabled = this.mobileModeLocked || detectedMobile;
+    if (this.mobileEnabled) {
+      this.mobileModeLocked = true;
+    }
 
     if (this.mobileEnabled !== wasMobile) {
       this.applyQualityProfile();
+      if (this.mobileEnabled) {
+        this.bindMobileControlEvents();
+      }
     }
 
     this.dynamicResolution.minRatio = this.mobileEnabled
       ? GAME_CONSTANTS.DYNAMIC_RESOLUTION.mobileMinRatio
       : GAME_CONSTANTS.DYNAMIC_RESOLUTION.desktopMinRatio;
+    this.networkSyncInterval = this.mobileEnabled
+      ? Math.max(this.baseNetworkSyncInterval, MOBILE_RUNTIME_SETTINGS.minNetworkSyncInterval)
+      : this.baseNetworkSyncInterval;
 
-    this.maxPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    this.maxPixelRatio = Math.min(
+      window.devicePixelRatio || 1,
+      this.mobileEnabled ? MOBILE_RUNTIME_SETTINGS.maxPixelRatio : 2
+    );
     const minPixelRatio = Math.max(0.5, Math.min(this.dynamicResolution.minRatio, this.maxPixelRatio));
     const clampedRatio = THREE.MathUtils.clamp(this.currentPixelRatio, minPixelRatio, this.maxPixelRatio);
     if (Math.abs(clampedRatio - this.currentPixelRatio) > 0.01) {
       this.currentPixelRatio = Number(clampedRatio.toFixed(2));
       this.renderer.setPixelRatio(this.currentPixelRatio);
+      if (this.composer) {
+        this.composer.setPixelRatio(this.currentPixelRatio);
+      }
     }
 
-    this.camera.aspect = window.innerWidth / window.innerHeight;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    this.camera.aspect = viewportWidth / viewportHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(viewportWidth, viewportHeight, false);
     if (this.composer) {
-      this.composer.setPixelRatio(this.currentPixelRatio);
-      this.composer.setSize(window.innerWidth, window.innerHeight);
+      this.composer.setSize(viewportWidth, viewportHeight);
     }
+    this.resizeRoundOverlayCanvas();
+    this.updateMobileControlUi();
   }
 }
 

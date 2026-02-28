@@ -1,6 +1,7 @@
 ﻿import { createServer } from "http";
 import { Server } from "socket.io";
 import { BASE_VOID_PACK } from "./src/game/content/packs/base-void/pack.js";
+import { verifyRoomJoinToken } from "./src/server/roomToken.js";
 
 function parseCorsOrigins(rawValue) {
   const value = String(rawValue ?? "").trim();
@@ -50,6 +51,13 @@ const ROOM_CODE_RANDOM_LENGTH = 5;
 const MAX_ROOM_PLAYERS = 50;
 const MAX_ACTIVE_ROOMS = 24;
 
+const WORKER_SINGLE_ROOM_MODE = process.env.ROOM_WORKER_SINGLE === "1";
+const WORKER_ROOM_CODE_RAW = String(process.env.ROOM_CODE ?? "");
+const REQUIRE_JOIN_TOKEN = process.env.REQUIRE_JOIN_TOKEN === "1";
+const ROOM_JOIN_SECRET = String(process.env.ROOM_JOIN_SECRET ?? "dev-room-secret") || "dev-room-secret";
+const ROOM_JOIN_TOKEN_LEEWAY_MS = 8000;
+const ROOM_OWNER_KEY = String(process.env.ROOM_OWNER_KEY ?? "").trim();
+
 const SERVER_TICK_RATE = 20;
 const SERVER_TICK_INTERVAL_MS = Math.max(30, Math.trunc(1000 / SERVER_TICK_RATE));
 const SERVER_DELTA_HEARTBEAT_TICKS = 20;
@@ -69,7 +77,8 @@ const SERVER_MAX_VERTICAL_SPEED = 24;
 const SERVER_MAX_ACCELERATION = 46;
 const SERVER_MOVEMENT_MARGIN = 0.4;
 const SERVER_MAX_TELEPORT_DISTANCE = 18;
-const SERVER_CORRECTION_MIN_DISTANCE = 0.08;
+const SERVER_CORRECTION_MIN_DISTANCE = 0.22;
+const SERVER_CORRECTION_COOLDOWN_MS = 140;
 
 const QUIZ_DEFAULT_LOCK_SECONDS = 15;
 const QUIZ_MIN_LOCK_SECONDS = 3;
@@ -77,11 +86,14 @@ const QUIZ_MAX_LOCK_SECONDS = 60;
 const QUIZ_MAX_QUESTIONS = 50;
 const QUIZ_TEXT_MAX_LENGTH = 180;
 const QUIZ_AUTO_NEXT_DELAY_MS = 3200;
+const QUIZ_PREPARE_DELAY_MS = 3000;
 const QUIZ_AUTO_START_DELAY_MS = 12000;
 const QUIZ_AUTO_RESTART_DELAY_MS = 9000;
 const QUIZ_AUTO_START_MIN_PLAYERS = 1;
+const QUIZ_END_ON_SINGLE_SURVIVOR = process.env.QUIZ_END_ON_SINGLE_SURVIVOR === "1";
 const QUIZ_ZONE_EDGE_MARGIN = 0.5;
 const QUIZ_ZONE_CENTER_MARGIN = 0.8;
+const DEFAULT_PORTAL_TARGET_URL = sanitizePortalTargetUrl(process.env.PORTAL_TARGET_URL ?? "");
 
 const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
   Object.freeze({
@@ -165,6 +177,12 @@ const QUIZ_DIVIDER_WIDTH = Math.max(0.6, Number(QUIZ_ARENA_CONFIG?.dividerWidth)
 const QUIZ_ACTIVE_MIN_Z = Math.min(QUIZ_O_ZONE.minZ, QUIZ_X_ZONE.minZ);
 const QUIZ_ACTIVE_MAX_Z = Math.max(QUIZ_O_ZONE.maxZ, QUIZ_X_ZONE.maxZ);
 const QUIZ_CENTER_DEAD_BAND = QUIZ_DIVIDER_WIDTH * 0.5 + QUIZ_ZONE_CENTER_MARGIN;
+const ADMISSION_SPAWN_Y = 1.72;
+const ADMISSION_SPAWN_CENTER_X = 0;
+const ADMISSION_SPAWN_CENTER_Z = 14;
+const ADMISSION_SPAWN_RING_START = 2.4;
+const ADMISSION_SPAWN_RING_STEP = 2.35;
+const ADMISSION_SPAWN_PER_RING = 10;
 
 const rooms = new Map();
 let playerCount = 0;
@@ -173,11 +191,12 @@ function createQuizState() {
   return {
     active: false,
     phase: "idle",
-    autoMode: true,
+    autoMode: false,
     autoStartsAt: 0,
     autoStartTimer: null,
     hostId: null,
     startedAt: 0,
+    prepareEndsAt: 0,
     endedAt: 0,
     questionIndex: -1,
     totalQuestions: 0,
@@ -196,6 +215,15 @@ function createRoom(code, persistent = false) {
     code,
     hostId: null,
     players: new Map(),
+    portalTargetUrl: DEFAULT_PORTAL_TARGET_URL,
+    entryGate: {
+      portalOpen: false,
+      openedAt: 0,
+      lastAdmissionAt: 0,
+      admissionStartsAt: 0,
+      admissionTimer: null,
+      pendingAdmissionIds: []
+    },
     persistent,
     createdAt: Date.now(),
     quiz: createQuizState(),
@@ -211,6 +239,9 @@ function sanitizeRoomCode(rawCode) {
     .slice(0, 24);
   return value || null;
 }
+
+const WORKER_FIXED_ROOM_CODE =
+  sanitizeRoomCode(WORKER_ROOM_CODE_RAW) ?? `${ROOM_CODE_PREFIX}-WORKER`;
 
 function createRoomCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -243,6 +274,36 @@ function getRoom(code) {
   return rooms.get(normalized) ?? null;
 }
 
+function validateJoinTokenForWorker(token) {
+  const verified = verifyRoomJoinToken(token, ROOM_JOIN_SECRET);
+  if (!verified?.ok) {
+    return verified;
+  }
+
+  const payload = verified.payload ?? {};
+  const roomCode = sanitizeRoomCode(payload.roomCode ?? payload.room);
+  if (!roomCode || roomCode !== WORKER_FIXED_ROOM_CODE) {
+    return { ok: false, error: "token room mismatch" };
+  }
+
+  const exp = Number(payload.exp ?? 0);
+  if (!Number.isFinite(exp) || exp <= 0) {
+    return { ok: false, error: "token exp missing" };
+  }
+  if (Date.now() - ROOM_JOIN_TOKEN_LEEWAY_MS > exp) {
+    return { ok: false, error: "token expired" };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      roomCode,
+      name: sanitizeName(payload.name ?? payload.playerName ?? "PLAYER"),
+      ownerClaim: payload.owner === true
+    }
+  };
+}
+
 function isRoomJoinable(room) {
   if (!room) {
     return false;
@@ -252,6 +313,12 @@ function isRoomJoinable(room) {
 }
 
 function findJoinableRoom(preferredCode = null) {
+  if (WORKER_SINGLE_ROOM_MODE) {
+    const workerRoom =
+      getRoom(WORKER_FIXED_ROOM_CODE) ?? createMatchRoom(WORKER_FIXED_ROOM_CODE, true);
+    return isRoomJoinable(workerRoom) ? workerRoom : null;
+  }
+
   const preferred = preferredCode ? getRoom(preferredCode) : null;
   if (preferred && isRoomJoinable(preferred)) {
     return preferred;
@@ -280,6 +347,10 @@ function findJoinableRoom(preferredCode = null) {
   return candidates[0];
 }
 
+if (WORKER_SINGLE_ROOM_MODE && !rooms.has(WORKER_FIXED_ROOM_CODE)) {
+  createMatchRoom(WORKER_FIXED_ROOM_CODE, true);
+}
+
 function getRoomQuiz(room) {
   if (!room || typeof room !== "object") {
     return createQuizState();
@@ -290,12 +361,96 @@ function getRoomQuiz(room) {
   return room.quiz;
 }
 
+function ensureRoomEntryGate(room) {
+  if (!room || typeof room !== "object") {
+    return {
+      portalOpen: false,
+      openedAt: 0,
+      lastAdmissionAt: 0,
+      admissionStartsAt: 0,
+      admissionTimer: null,
+      pendingAdmissionIds: []
+    };
+  }
+  if (!room.entryGate || typeof room.entryGate !== "object") {
+    room.entryGate = {
+      portalOpen: false,
+      openedAt: 0,
+      lastAdmissionAt: 0,
+      admissionStartsAt: 0,
+      admissionTimer: null,
+      pendingAdmissionIds: []
+    };
+  }
+  room.entryGate.portalOpen = room.entryGate.portalOpen === true;
+  room.entryGate.openedAt = Math.max(0, Math.trunc(Number(room.entryGate.openedAt) || 0));
+  room.entryGate.lastAdmissionAt = Math.max(
+    0,
+    Math.trunc(Number(room.entryGate.lastAdmissionAt) || 0)
+  );
+  room.entryGate.admissionStartsAt = Math.max(
+    0,
+    Math.trunc(Number(room.entryGate.admissionStartsAt) || 0)
+  );
+  if (!Array.isArray(room.entryGate.pendingAdmissionIds)) {
+    room.entryGate.pendingAdmissionIds = [];
+  }
+  return room.entryGate;
+}
+
+function clearEntryAdmissionTimer(room) {
+  const gate = ensureRoomEntryGate(room);
+  if (gate.admissionTimer) {
+    clearTimeout(gate.admissionTimer);
+    gate.admissionTimer = null;
+  }
+  gate.admissionStartsAt = 0;
+  gate.pendingAdmissionIds = [];
+}
+
 function sanitizeName(raw) {
   const value = String(raw ?? "")
     .trim()
     .replace(/\s+/g, "_")
     .slice(0, 16);
   return value || "PLAYER";
+}
+
+function sanitizePortalTargetUrl(raw) {
+  const value = String(raw ?? "").trim();
+  if (!value) {
+    return "";
+  }
+  try {
+    const target = new URL(value);
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      return "";
+    }
+    return target.toString();
+  } catch {
+    return "";
+  }
+}
+
+function hasOwnerAccess(ownerKeyRaw) {
+  if (!ROOM_OWNER_KEY) {
+    return false;
+  }
+  return String(ownerKeyRaw ?? "").trim() === ROOM_OWNER_KEY;
+}
+
+function applySocketOwnerAccess(socket, ownerKeyRaw) {
+  if (!socket || typeof socket !== "object") {
+    return false;
+  }
+  if (socket.data?.ownerClaim === true) {
+    return true;
+  }
+  if (hasOwnerAccess(ownerKeyRaw)) {
+    socket.data.ownerClaim = true;
+    return true;
+  }
+  return false;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -320,6 +475,8 @@ function sanitizePlayerState(raw = {}) {
 function createPlayerNetState(initialState = sanitizePlayerState()) {
   return {
     lastAcceptedAt: Date.now(),
+    lastSeq: -1,
+    warmupSyncs: 0,
     velocity: { x: 0, y: 0, z: 0 },
     rejectedMoves: 0,
     lastCorrectionAt: 0,
@@ -339,6 +496,46 @@ function ensurePlayerNetState(player) {
     player.net = createPlayerNetState(player.state);
   }
   return player.net;
+}
+
+function setPlayerAuthoritativeState(player, nextState = {}) {
+  if (!player || typeof player !== "object") {
+    return;
+  }
+  const merged = {
+    ...(player.state ?? {}),
+    ...nextState
+  };
+  const sanitized = sanitizePlayerState(merged);
+  player.state = sanitized;
+  const net = ensurePlayerNetState(player);
+  net.state = {
+    x: Number(sanitized.x) || 0,
+    y: Number(sanitized.y) || ADMISSION_SPAWN_Y,
+    z: Number(sanitized.z) || 0
+  };
+  net.velocity = { x: 0, y: 0, z: 0 };
+  net.lastAcceptedAt = Date.now();
+  net.warmupSyncs = 0;
+  net.lastCorrectionAt = 0;
+}
+
+function buildAdmissionSpawnPoint(index, total) {
+  const safeTotal = Math.max(1, Math.trunc(Number(total) || 1));
+  const safeIndex = Math.max(0, Math.trunc(Number(index) || 0));
+  const ring = Math.floor(safeIndex / ADMISSION_SPAWN_PER_RING);
+  const slot = safeIndex % ADMISSION_SPAWN_PER_RING;
+  const slotsInRing = Math.max(
+    1,
+    Math.min(ADMISSION_SPAWN_PER_RING, safeTotal - ring * ADMISSION_SPAWN_PER_RING)
+  );
+  const angle = (slot / slotsInRing) * Math.PI * 2;
+  const radius = ADMISSION_SPAWN_RING_START + ring * ADMISSION_SPAWN_RING_STEP;
+  return {
+    x: Number((ADMISSION_SPAWN_CENTER_X + Math.cos(angle) * radius).toFixed(3)),
+    y: ADMISSION_SPAWN_Y,
+    z: Number((ADMISSION_SPAWN_CENTER_Z + Math.sin(angle) * radius).toFixed(3))
+  };
 }
 
 function normalizeVec3Magnitude(x, y, z, maxLength) {
@@ -361,7 +558,10 @@ function applyAuthoritativeMovement(player, proposedState) {
   const previousState = player?.state ?? sanitizePlayerState();
 
   const elapsedMs = Math.max(1, now - Number(net.lastAcceptedAt || now));
-  const dt = Math.max(1 / 120, Math.min(0.25, elapsedMs / 1000));
+  const warmupSyncs = Math.max(0, Math.trunc(Number(net.warmupSyncs) || 0));
+  const warmupPhase = warmupSyncs < 3;
+  const dtFloor = warmupPhase ? 0.35 : 1 / 60;
+  const dt = Math.max(dtFloor, Math.min(0.3, elapsedMs / 1000));
 
   let dx = Number(proposedState.x) - Number(previousState.x);
   let dy = Number(proposedState.y) - Number(previousState.y);
@@ -425,6 +625,7 @@ function applyAuthoritativeMovement(player, proposedState) {
   };
 
   net.lastAcceptedAt = now;
+  net.warmupSyncs = warmupSyncs + 1;
   net.velocity = {
     x: (nextState.x - Number(previousState.x)) / dt,
     y: (nextState.y - Number(previousState.y)) / dt,
@@ -763,6 +964,204 @@ function initializePlayerForQuiz(player, resetScore = true) {
   player.lastChoiceReason = null;
 }
 
+function isPlayerHostModerator(room, player) {
+  if (!room || !player) {
+    return false;
+  }
+  if (String(player.id ?? "") !== String(room.hostId ?? "")) {
+    return false;
+  }
+  if (!ROOM_OWNER_KEY) {
+    return true;
+  }
+  return player.isOwner === true;
+}
+
+function countPlayablePlayers(room) {
+  let count = 0;
+  for (const player of room?.players?.values?.() ?? []) {
+    if (!player) {
+      continue;
+    }
+    if (isPlayerHostModerator(room, player)) {
+      continue;
+    }
+    if (player.admitted !== true) {
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function countWaitingPlayers(room) {
+  let count = 0;
+  for (const player of room?.players?.values?.() ?? []) {
+    if (!player) {
+      continue;
+    }
+    if (isPlayerHostModerator(room, player)) {
+      continue;
+    }
+    if (player.admitted === true) {
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function collectWaitingPlayers(room) {
+  const waiting = [];
+  for (const player of room?.players?.values?.() ?? []) {
+    if (!player) {
+      continue;
+    }
+    if (isPlayerHostModerator(room, player)) {
+      continue;
+    }
+    if (player.admitted === true) {
+      continue;
+    }
+    waiting.push(player);
+  }
+  return waiting;
+}
+
+function openEntryGate(room) {
+  if (!room) {
+    return { ok: false, error: "room missing" };
+  }
+  const quiz = getRoomQuiz(room);
+  if (quiz.active) {
+    return { ok: false, error: "quiz already active" };
+  }
+  const gate = ensureRoomEntryGate(room);
+  if (gate.admissionStartsAt > Date.now()) {
+    return { ok: false, error: "admission already in progress" };
+  }
+  if (gate.portalOpen) {
+    return { ok: false, error: "lobby already open" };
+  }
+  gate.portalOpen = true;
+  gate.openedAt = Date.now();
+  gate.admissionStartsAt = 0;
+  gate.pendingAdmissionIds = [];
+
+  for (const player of room.players.values()) {
+    if (!player) {
+      continue;
+    }
+    if (isPlayerHostModerator(room, player)) {
+      player.admitted = true;
+      continue;
+    }
+    player.admitted = false;
+  }
+
+  return {
+    ok: true,
+    waitingPlayers: countWaitingPlayers(room),
+    openedAt: gate.openedAt
+  };
+}
+
+function startEntryAdmission(room) {
+  if (!room) {
+    return { ok: false, error: "room missing" };
+  }
+  const quiz = getRoomQuiz(room);
+  if (quiz.active) {
+    return { ok: false, error: "quiz already active" };
+  }
+  const gate = ensureRoomEntryGate(room);
+  if (!gate.portalOpen) {
+    return { ok: false, error: "lobby not open" };
+  }
+  if (gate.admissionStartsAt > Date.now()) {
+    return { ok: false, error: "admission already in progress" };
+  }
+
+  const waitingPlayers = collectWaitingPlayers(room);
+  if (waitingPlayers.length <= 0) {
+    gate.portalOpen = false;
+    gate.lastAdmissionAt = Date.now();
+    return {
+      ok: false,
+      error: "no waiting players",
+      waitingPlayers: 0,
+      admittedPlayers: countPlayablePlayers(room)
+    };
+  }
+
+  const countdownMs = 3000;
+  gate.portalOpen = false;
+  gate.admissionStartsAt = Date.now() + countdownMs;
+  gate.pendingAdmissionIds = waitingPlayers.map((player) => String(player?.id ?? "")).filter(Boolean);
+  if (gate.admissionTimer) {
+    clearTimeout(gate.admissionTimer);
+    gate.admissionTimer = null;
+  }
+  gate.admissionTimer = setTimeout(() => {
+    const currentRoom = rooms.get(room.code);
+    if (!currentRoom) {
+      return;
+    }
+    const currentGate = ensureRoomEntryGate(currentRoom);
+    currentGate.admissionTimer = null;
+    const ids = Array.isArray(currentGate.pendingAdmissionIds) ? currentGate.pendingAdmissionIds : [];
+    const targets = ids
+      .map((id) => currentRoom.players.get(String(id)))
+      .filter(Boolean)
+      .filter((player) => !isPlayerHostModerator(currentRoom, player));
+
+    for (let index = 0; index < targets.length; index += 1) {
+      const player = targets[index];
+      const spawn = buildAdmissionSpawnPoint(index, targets.length);
+      player.admitted = true;
+      player.alive = true;
+      player.lastChoice = null;
+      player.lastChoiceReason = "admitted";
+      setPlayerAuthoritativeState(player, {
+        x: spawn.x,
+        y: spawn.y,
+        z: spawn.z,
+        yaw: 0,
+        pitch: 0
+      });
+      const targetSocket = io.sockets.sockets.get(player.id);
+      if (targetSocket) {
+        targetSocket.emit("player:correct", {
+          state: player.state,
+          reason: "entry-admitted"
+        });
+      }
+    }
+
+    currentGate.lastAdmissionAt = Date.now();
+    currentGate.admissionStartsAt = 0;
+    currentGate.pendingAdmissionIds = [];
+    io.to(currentRoom.code).emit("portal:lobby-admitted", {
+      admittedCount: targets.length,
+      at: currentGate.lastAdmissionAt
+    });
+    emitRoomUpdate(currentRoom);
+    emitQuizScore(currentRoom, "lobby-admit");
+  }, countdownMs);
+  gate.admissionTimer.unref?.();
+
+  gate.portalOpen = false;
+  gate.lastAdmissionAt = 0;
+  return {
+    ok: true,
+    waitingPlayers: countWaitingPlayers(room),
+    admittedCount: waitingPlayers.length,
+    admittedPlayers: countPlayablePlayers(room),
+    startsAt: gate.admissionStartsAt,
+    countdownMs
+  };
+}
+
 function clearQuizAutoStartTimer(quiz) {
   if (!quiz || typeof quiz !== "object") {
     return;
@@ -792,12 +1191,14 @@ function clearQuizLockTimer(quiz) {
 function resetQuizState(room) {
   const quiz = getRoomQuiz(room);
   clearQuizLockTimer(quiz);
+  clearEntryAdmissionTimer(room);
   quiz.active = false;
   quiz.phase = "idle";
-  quiz.autoMode = true;
+  quiz.autoMode = false;
   quiz.autoStartsAt = 0;
   quiz.hostId = room?.hostId ?? null;
   quiz.startedAt = 0;
+  quiz.prepareEndsAt = 0;
   quiz.endedAt = 0;
   quiz.questionIndex = -1;
   quiz.totalQuestions = 0;
@@ -810,15 +1211,28 @@ function resetQuizState(room) {
 
 function serializeRoom(room) {
   pruneRoomPlayers(room);
+  const gate = ensureRoomEntryGate(room);
   return {
     code: room.code,
     hostId: room.hostId,
+    portalTargetUrl: sanitizePortalTargetUrl(room?.portalTargetUrl ?? ""),
+    entryGate: {
+      portalOpen: gate.portalOpen === true,
+      waitingPlayers: countWaitingPlayers(room),
+      admittedPlayers: countPlayablePlayers(room),
+      openedAt: Number(gate.openedAt || 0),
+      lastAdmissionAt: Number(gate.lastAdmissionAt || 0),
+      admissionStartsAt: Number(gate.admissionStartsAt || 0),
+      admissionInProgress: Number(gate.admissionStartsAt || 0) > Date.now()
+    },
     players: Array.from(room.players.values()).map((player) => ({
       id: player.id,
       name: player.name,
       state: player.state ?? null,
       score: Number.isFinite(Number(player.score)) ? Math.max(0, Math.trunc(Number(player.score))) : 0,
       alive: Boolean(player.alive),
+      admitted: player.admitted !== false,
+      spectator: isPlayerHostModerator(room, player),
       lastChoice: player.lastChoice ?? null,
       lastChoiceReason: player.lastChoiceReason ?? null
     }))
@@ -865,12 +1279,24 @@ function isRoomHost(room, socketId) {
   return String(room.hostId ?? "") === String(socketId);
 }
 
+function pickNextHostId(room) {
+  if (!room?.players || room.players.size <= 0) {
+    return null;
+  }
+  for (const [socketId, player] of room.players.entries()) {
+    if (player?.isOwner === true) {
+      return socketId;
+    }
+  }
+  return room.players.keys().next().value ?? null;
+}
+
 function updateHost(room) {
   if (room.hostId && room.players.has(room.hostId)) {
     return false;
   }
   const previousHostId = room.hostId;
-  room.hostId = room.players.keys().next().value ?? null;
+  room.hostId = pickNextHostId(room);
   return previousHostId !== room.hostId;
 }
 
@@ -878,17 +1304,22 @@ function buildQuizLeaderboard(room) {
   const players = Array.from(room?.players?.values?.() ?? []);
   const board = players.map((player) => {
     const score = Number.isFinite(Number(player?.score)) ? Math.max(0, Math.trunc(Number(player.score))) : 0;
+    const spectator = isPlayerHostModerator(room, player);
     return {
       id: player?.id,
       name: player?.name,
       score,
       alive: Boolean(player?.alive),
+      spectator,
       lastChoice: player?.lastChoice ?? null,
       lastChoiceReason: player?.lastChoiceReason ?? null
     };
   });
 
   board.sort((left, right) => {
+    if (left.spectator !== right.spectator) {
+      return Number(left.spectator) - Number(right.spectator);
+    }
     if (right.score !== left.score) {
       return right.score - left.score;
     }
@@ -901,9 +1332,37 @@ function buildQuizLeaderboard(room) {
   return board;
 }
 
+function buildQuizRanking(room) {
+  const leaderboard = buildQuizLeaderboard(room).filter((entry) => entry?.spectator !== true);
+  const ranking = [];
+  let previousScore = null;
+  let currentRank = 0;
+
+  for (let index = 0; index < leaderboard.length; index += 1) {
+    const entry = leaderboard[index];
+    const score = Number(entry?.score) || 0;
+    if (previousScore === null || score !== previousScore) {
+      currentRank = index + 1;
+      previousScore = score;
+    }
+    ranking.push({
+      ...entry,
+      rank: currentRank
+    });
+  }
+
+  return ranking;
+}
+
 function countQuizSurvivors(room) {
   let survivors = 0;
   for (const player of room?.players?.values?.() ?? []) {
+    if (isPlayerHostModerator(room, player)) {
+      continue;
+    }
+    if (player?.admitted !== true) {
+      continue;
+    }
     if (Boolean(player?.alive)) {
       survivors += 1;
     }
@@ -923,6 +1382,7 @@ function emitQuizScore(room, reason = "update", targetSocket = null) {
     phase: String(quiz.phase ?? "idle"),
     autoMode: quiz.autoMode !== false,
     autoStartsAt: Number(quiz.autoStartsAt ?? 0),
+    prepareEndsAt: Number(quiz.prepareEndsAt ?? 0),
     hostId: quiz.hostId ?? room.hostId ?? null,
     questionIndex: Math.max(0, Number(quiz.questionIndex) + 1),
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
@@ -943,6 +1403,7 @@ function emitQuizScore(room, reason = "update", targetSocket = null) {
 function buildQuizStartPayload(quiz) {
   return {
     startedAt: Number(quiz.startedAt ?? Date.now()),
+    prepareEndsAt: Number(quiz.prepareEndsAt ?? 0),
     hostId: quiz.hostId ?? null,
     autoMode: quiz.autoMode !== false,
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
@@ -967,12 +1428,8 @@ function buildQuizQuestionPayload(quiz) {
 
 function buildQuizEndPayload(room, reason = "finished") {
   const quiz = getRoomQuiz(room);
-  const leaderboard = buildQuizLeaderboard(room);
-  const topScore = leaderboard.length > 0 ? Number(leaderboard[0].score) || 0 : 0;
-  const winners =
-    topScore > 0
-      ? leaderboard.filter((entry) => Number(entry.score) === topScore)
-      : leaderboard.filter((entry) => entry.alive);
+  const ranking = buildQuizRanking(room);
+  const winners = ranking.filter((entry) => Number(entry.rank) === 1);
 
   return {
     reason,
@@ -980,7 +1437,8 @@ function buildQuizEndPayload(room, reason = "finished") {
     questionIndex: Math.max(0, Number(quiz.questionIndex) + 1),
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
     winners,
-    leaderboard
+    leaderboard: ranking,
+    ranking
   };
 }
 
@@ -1000,7 +1458,7 @@ function emitQuizSnapshot(socket, room) {
       autoMode: quiz.autoMode !== false,
       startsAt: Number(quiz.autoStartsAt),
       delayMs: Math.max(0, Number(quiz.autoStartsAt) - Date.now()),
-      players: room.players.size,
+      players: countPlayablePlayers(room),
       minPlayers: QUIZ_AUTO_START_MIN_PLAYERS
     });
   }
@@ -1046,7 +1504,8 @@ function scheduleAutoQuizStart(
   if (quiz.active) {
     return;
   }
-  if (room.players.size < minPlayers) {
+  const playablePlayers = countPlayablePlayers(room);
+  if (playablePlayers < minPlayers) {
     clearQuizAutoStartTimer(quiz);
     return;
   }
@@ -1062,7 +1521,7 @@ function scheduleAutoQuizStart(
     startsAt: quiz.autoStartsAt,
     delayMs: safeDelay,
     reason,
-    players: room.players.size,
+    players: playablePlayers,
     minPlayers
   });
   emitQuizScore(room, "auto-countdown");
@@ -1078,14 +1537,14 @@ function scheduleAutoQuizStart(
     if (currentQuiz.autoMode === false || currentQuiz.active) {
       return;
     }
-    if (currentRoom.players.size < minPlayers) {
+    if (countPlayablePlayers(currentRoom) < minPlayers) {
       return;
     }
 
     const hostId =
       currentRoom.hostId && currentRoom.players.has(currentRoom.hostId)
         ? currentRoom.hostId
-        : currentRoom.players.keys().next().value ?? null;
+        : pickNextHostId(currentRoom);
     if (!currentQuiz.hostId || !currentRoom.players.has(currentQuiz.hostId)) {
       currentQuiz.hostId = hostId;
     }
@@ -1126,6 +1585,7 @@ function finishQuiz(room, reason = "finished") {
   quiz.active = false;
   quiz.phase = "ended";
   quiz.lockAt = 0;
+  quiz.prepareEndsAt = 0;
   quiz.endedAt = Date.now();
 
   const payload = buildQuizEndPayload(room, reason);
@@ -1171,6 +1631,11 @@ function evaluateQuizQuestion(room) {
     if (!player || !player.alive) {
       continue;
     }
+    if (isPlayerHostModerator(room, player)) {
+      player.lastChoice = null;
+      player.lastChoiceReason = "spectator";
+      continue;
+    }
 
     const judge = resolveQuizChoiceFromState(player.state);
     player.lastChoice = judge.choice;
@@ -1208,8 +1673,14 @@ function evaluateQuizQuestion(room) {
   quiz.lastResult = resultPayload;
   io.to(room.code).emit("quiz:result", resultPayload);
 
-  if (survivorCount <= 1) {
-    finishQuiz(room, survivorCount === 1 ? "winner" : "no-survivor");
+  if (survivorCount <= 0) {
+    finishQuiz(room, "no-survivor");
+    return;
+  }
+
+  const playablePlayers = countPlayablePlayers(room);
+  if (survivorCount === 1 && QUIZ_END_ON_SINGLE_SURVIVOR && playablePlayers > 1) {
+    finishQuiz(room, "winner");
     return;
   }
 
@@ -1293,13 +1764,56 @@ function scheduleQuizNextQuestion(room, delayMs = QUIZ_AUTO_NEXT_DELAY_MS) {
   }, safeDelay);
 }
 
+function scheduleQuizFirstQuestion(room, delayMs = QUIZ_PREPARE_DELAY_MS) {
+  if (!room) {
+    return 0;
+  }
+  const quiz = getRoomQuiz(room);
+  if (!quiz.active || quiz.phase !== "start") {
+    return 0;
+  }
+  if (quiz.nextTimer) {
+    clearTimeout(quiz.nextTimer);
+    quiz.nextTimer = null;
+  }
+
+  const safeDelay = Math.max(1600, Math.trunc(Number(delayMs) || QUIZ_PREPARE_DELAY_MS));
+  quiz.prepareEndsAt = Date.now() + safeDelay;
+  quiz.nextTimer = setTimeout(() => {
+    quiz.nextTimer = null;
+    const currentRoom = rooms.get(room.code);
+    if (!currentRoom) {
+      return;
+    }
+    const currentQuiz = getRoomQuiz(currentRoom);
+    if (!currentQuiz.active || currentQuiz.phase !== "start") {
+      return;
+    }
+    currentQuiz.prepareEndsAt = 0;
+    pushNextQuizQuestion(currentRoom, currentQuiz.lockSeconds);
+  }, safeDelay);
+
+  return safeDelay;
+}
+
 function startQuiz(room, hostSocketId, payload = {}) {
   if (!room) {
     return { ok: false, error: "room missing" };
   }
 
   const quiz = getRoomQuiz(room);
+  if (quiz.active) {
+    return { ok: false, error: "quiz already active" };
+  }
   clearQuizLockTimer(quiz);
+  ensureRoomEntryGate(room);
+  const waitingPlayers = countWaitingPlayers(room);
+  if (waitingPlayers > 0) {
+    return { ok: false, error: "players waiting admission" };
+  }
+  if (countPlayablePlayers(room) <= 0) {
+    return { ok: false, error: "no playable players" };
+  }
 
   const questions = sanitizeQuizQuestions(payload.questions);
   const lockSeconds = sanitizeQuizLockSeconds(payload.lockSeconds);
@@ -1309,14 +1823,15 @@ function startQuiz(room, hostSocketId, payload = {}) {
       ? hostSocketId
       : room.hostId && room.players.has(room.hostId)
         ? room.hostId
-        : room.players.keys().next().value ?? null;
+        : pickNextHostId(room);
 
   quiz.active = true;
-  quiz.phase = "idle";
+  quiz.phase = "start";
   quiz.autoMode = autoMode;
   quiz.autoStartsAt = 0;
   quiz.hostId = resolvedHostId;
   quiz.startedAt = Date.now();
+  quiz.prepareEndsAt = 0;
   quiz.endedAt = 0;
   quiz.questionIndex = -1;
   quiz.totalQuestions = questions.length;
@@ -1328,21 +1843,27 @@ function startQuiz(room, hostSocketId, payload = {}) {
 
   for (const player of room.players.values()) {
     initializePlayerForQuiz(player, true);
+    if (isPlayerHostModerator(room, player)) {
+      player.admitted = true;
+      player.lastChoiceReason = "spectator";
+    } else {
+      player.admitted = true;
+    }
   }
 
   const startPayload = buildQuizStartPayload(quiz);
-  io.to(room.code).emit("quiz:start", startPayload);
+  const prepareDelay = scheduleQuizFirstQuestion(room, payload.prepareDelayMs);
+  const startWithPrepare = {
+    ...startPayload,
+    prepareEndsAt: Number(quiz.prepareEndsAt || Date.now() + prepareDelay),
+    prepareDelayMs: prepareDelay
+  };
+  io.to(room.code).emit("quiz:start", startWithPrepare);
   emitQuizScore(room, "start");
-
-  const first = pushNextQuizQuestion(room, lockSeconds);
-  if (!first.ok) {
-    return first;
-  }
 
   return {
     ok: true,
-    start: startPayload,
-    question: first.question
+    start: startWithPrepare
   };
 }
 
@@ -1358,7 +1879,7 @@ function reconcileQuizAfterRosterChange(room, reason = "roster-change") {
   }
 
   if (!quiz.hostId || !room.players.has(quiz.hostId)) {
-    quiz.hostId = room.hostId ?? room.players.keys().next().value ?? null;
+    quiz.hostId = room.hostId ?? pickNextHostId(room);
   }
 
   if (!quiz.active) {
@@ -1373,7 +1894,7 @@ function reconcileQuizAfterRosterChange(room, reason = "roster-change") {
   }
 
   const survivors = countQuizSurvivors(room);
-  if (survivors <= 1) {
+  if (survivors <= 0) {
     finishQuiz(room, "player-left");
     return;
   }
@@ -1398,6 +1919,7 @@ function pruneRoomPlayers(room) {
     updateHost(room);
     reconcileQuizAfterRosterChange(room, "prune");
     if (!room.persistent && room.players.size === 0) {
+      clearEntryAdmissionTimer(room);
       resetQuizState(room);
       rooms.delete(room.code);
     }
@@ -1433,6 +1955,7 @@ function leaveCurrentRoom(socket) {
   reconcileQuizAfterRosterChange(room, "leave");
 
   if (!room.persistent && room.players.size === 0) {
+    clearEntryAdmissionTimer(room);
     resetQuizState(room);
     rooms.delete(room.code);
   }
@@ -1444,6 +1967,15 @@ function leaveCurrentRoom(socket) {
 }
 
 function pickOrCreateRoomForQuickJoin(preferredCode = null) {
+  if (WORKER_SINGLE_ROOM_MODE) {
+    const workerRoom =
+      getRoom(WORKER_FIXED_ROOM_CODE) ?? createMatchRoom(WORKER_FIXED_ROOM_CODE, true);
+    if (!isRoomJoinable(workerRoom)) {
+      return null;
+    }
+    return workerRoom;
+  }
+
   const candidate = findJoinableRoom(preferredCode);
   if (candidate) {
     return candidate;
@@ -1470,8 +2002,28 @@ function joinRoom(socket, room, nameOverride = null) {
   if (socket.data.roomCode === room.code && room.players.has(socket.id)) {
     const existing = room.players.get(socket.id);
     existing.name = name;
+    existing.isOwner = existing.isOwner === true || socket.data.ownerClaim === true;
     ensurePlayerNetState(existing);
+    if (socket.data.ownerClaim === true && room.hostId !== socket.id) {
+      room.hostId = socket.id;
+      const quizState = getRoomQuiz(room);
+      quizState.hostId = socket.id;
+      emitRoomUpdate(room);
+      emitQuizScore(room, "owner-claim");
+    }
     const quiz = getRoomQuiz(room);
+    const gate = ensureRoomEntryGate(room);
+    if (isPlayerHostModerator(room, existing)) {
+      existing.admitted = true;
+    } else if (quiz.active) {
+      existing.admitted = false;
+    } else if (gate.admissionStartsAt > Date.now()) {
+      existing.admitted = false;
+    } else if (gate.portalOpen) {
+      existing.admitted = false;
+    } else if (existing.admitted !== false) {
+      existing.admitted = true;
+    }
     if (!quiz.active && quiz.autoMode !== false) {
       scheduleAutoQuizStart(room, {
         delayMs: QUIZ_AUTO_START_DELAY_MS,
@@ -1493,6 +2045,7 @@ function joinRoom(socket, room, nameOverride = null) {
   }
 
   const quiz = getRoomQuiz(room);
+  const gate = ensureRoomEntryGate(room);
   const joinAsAlive = !quiz.active;
   const initialState = sanitizePlayerState();
 
@@ -1502,14 +2055,33 @@ function joinRoom(socket, room, nameOverride = null) {
     state: initialState,
     score: 0,
     alive: joinAsAlive,
+    admitted: true,
+    isOwner: socket.data.ownerClaim === true,
     lastChoice: null,
     lastChoiceReason: null,
     net: createPlayerNetState(initialState)
   });
 
-  updateHost(room);
-  if (!quiz.hostId) {
-    quiz.hostId = room.hostId ?? null;
+  if (socket.data.ownerClaim === true) {
+    room.hostId = socket.id;
+  } else {
+    updateHost(room);
+  }
+  if (!quiz.hostId || socket.data.ownerClaim === true) {
+    quiz.hostId = room.hostId ?? socket.id;
+  }
+
+  const joined = room.players.get(socket.id);
+  if (joined) {
+    if (isPlayerHostModerator(room, joined)) {
+      joined.admitted = true;
+    } else if (quiz.active) {
+      joined.admitted = false;
+    } else if (gate.admissionStartsAt > Date.now()) {
+      joined.admitted = false;
+    } else {
+      joined.admitted = !gate.portalOpen;
+    }
   }
 
   socket.join(room.code);
@@ -1547,6 +2119,8 @@ const httpServer = createServer((req, res) => {
       capacityPerRoom: MAX_ROOM_PLAYERS,
       maxActiveRooms: MAX_ACTIVE_ROOMS,
       tickRate: SERVER_TICK_RATE,
+      workerSingleRoomMode: WORKER_SINGLE_ROOM_MODE,
+      workerRoomCode: WORKER_SINGLE_ROOM_MODE ? WORKER_FIXED_ROOM_CODE : null,
       topRoom: topRoom
         ? {
             code: topRoom.code,
@@ -1578,6 +2152,8 @@ const httpServer = createServer((req, res) => {
       capacityPerRoom: MAX_ROOM_PLAYERS,
       maxActiveRooms: MAX_ACTIVE_ROOMS,
       tickRate: SERVER_TICK_RATE,
+      workerSingleRoomMode: WORKER_SINGLE_ROOM_MODE,
+      workerRoomCode: WORKER_SINGLE_ROOM_MODE ? WORKER_FIXED_ROOM_CODE : null,
       health: "/health"
     });
     return;
@@ -1605,12 +2181,40 @@ const roomTickInterval = setInterval(() => {
 roomTickInterval.unref?.();
 
 io.on("connection", (socket) => {
-  playerCount += 1;
   socket.data.playerName = `PLAYER_${Math.floor(Math.random() * 9000 + 1000)}`;
   socket.data.roomCode = null;
   socket.data.deltaCache = new Map();
+  socket.data.ownerClaim = false;
+
+  if (WORKER_SINGLE_ROOM_MODE && REQUIRE_JOIN_TOKEN) {
+    const token = String(
+      socket.handshake?.auth?.token ??
+        socket.handshake?.query?.token ??
+        socket.handshake?.headers?.["x-room-token"] ??
+        ""
+    ).trim();
+    const verified = validateJoinTokenForWorker(token);
+    if (!verified?.ok) {
+      socket.emit("auth:error", {
+        code: "invalid-room-token",
+        reason: verified?.error ?? "invalid token"
+      });
+      socket.disconnect(true);
+      return;
+    }
+    socket.data.playerName = sanitizeName(verified.payload?.name ?? socket.data.playerName);
+    socket.data.ownerClaim = Boolean(verified.payload?.ownerClaim);
+  }
+
+  playerCount += 1;
 
   console.log(`[+] player connected (${playerCount}) ${socket.id}`);
+
+  socket.emit("server:role", {
+    role: "worker",
+    singleRoomMode: WORKER_SINGLE_ROOM_MODE,
+    roomCode: WORKER_SINGLE_ROOM_MODE ? WORKER_FIXED_ROOM_CODE : null
+  });
 
   const initialRoom = pickOrCreateRoomForQuickJoin();
   if (initialRoom) {
@@ -1658,6 +2262,20 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const net = ensurePlayerNetState(player);
+    const seq = Number(payload?.s);
+    if (Number.isFinite(seq)) {
+      const safeSeq = Math.trunc(seq);
+      const previousSeq = Number(net.lastSeq);
+      if (Number.isFinite(previousSeq) && previousSeq >= 0) {
+        // Drop stale/out-of-order sync packets to reduce correction jitter.
+        if (safeSeq <= previousSeq && previousSeq - safeSeq < 1_000_000) {
+          return;
+        }
+      }
+      net.lastSeq = safeSeq;
+    }
+
     const sanitized = sanitizePlayerState(payload);
     const movementResult = applyAuthoritativeMovement(player, sanitized);
     if (
@@ -1665,9 +2283,8 @@ io.on("connection", (socket) => {
       movementResult.correctionDistance >= SERVER_CORRECTION_MIN_DISTANCE
     ) {
       const now = Date.now();
-      const net = ensurePlayerNetState(player);
       const cooldownElapsed = now - Number(net.lastCorrectionAt || 0);
-      if (cooldownElapsed >= 90) {
+      if (cooldownElapsed >= SERVER_CORRECTION_COOLDOWN_MS) {
         net.lastCorrectionAt = now;
         socket.emit("player:correct", {
           state: movementResult.nextState,
@@ -1689,8 +2306,16 @@ io.on("connection", (socket) => {
       ack(ackFn, { ok: false, error: "host only" });
       return;
     }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
 
-    const started = startQuiz(room, socket.id, { ...payload, autoMode: true });
+    const started = startQuiz(room, socket.id, {
+      ...payload,
+      autoMode: false,
+      prepareDelayMs: payload?.prepareDelayMs
+    });
     ack(ackFn, started);
   });
 
@@ -1704,6 +2329,10 @@ io.on("connection", (socket) => {
 
     if (!isRoomHost(room, socket.id)) {
       ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
       return;
     }
 
@@ -1721,6 +2350,10 @@ io.on("connection", (socket) => {
 
     if (!isRoomHost(room, socket.id)) {
       ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
       return;
     }
 
@@ -1746,6 +2379,10 @@ io.on("connection", (socket) => {
       ack(ackFn, { ok: false, error: "host only" });
       return;
     }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
 
     const quiz = getRoomQuiz(room);
     if (!quiz.active) {
@@ -1753,9 +2390,35 @@ io.on("connection", (socket) => {
       return;
     }
 
-    quiz.autoMode = true;
+    quiz.autoMode = false;
     finishQuiz(room, "stopped-by-host");
     ack(ackFn, { ok: true });
+  });
+
+  socket.on("room:claim-host", (ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const previousHostId = room.hostId ?? null;
+    room.hostId = socket.id;
+    const quiz = getRoomQuiz(room);
+    quiz.hostId = socket.id;
+
+    emitRoomUpdate(room);
+    emitQuizScore(room, "host-claim");
+    ack(ackFn, {
+      ok: true,
+      hostId: socket.id,
+      changed: String(previousHostId ?? "") !== String(socket.id)
+    });
   });
 
   socket.on("quiz:state", (ackFn) => {
@@ -1774,6 +2437,7 @@ io.on("connection", (socket) => {
         phase: quiz.phase,
         autoMode: quiz.autoMode !== false,
         autoStartsAt: Number(quiz.autoStartsAt ?? 0),
+        prepareEndsAt: Number(quiz.prepareEndsAt ?? 0),
         hostId: quiz.hostId ?? room.hostId ?? null,
         questionIndex: Math.max(0, Number(quiz.questionIndex) + 1),
         totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
@@ -1794,6 +2458,18 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:quick-join", (payload = {}, ackFn) => {
+    applySocketOwnerAccess(socket, payload?.ownerKey);
+    if (WORKER_SINGLE_ROOM_MODE) {
+      const workerRoom =
+        getRoom(WORKER_FIXED_ROOM_CODE) ?? createMatchRoom(WORKER_FIXED_ROOM_CODE, true);
+      if (!workerRoom || workerRoom.players.size >= MAX_ROOM_PLAYERS) {
+        ack(ackFn, { ok: false, error: "room full" });
+        return;
+      }
+      ack(ackFn, joinRoom(socket, workerRoom, payload.name));
+      return;
+    }
+
     const preferredCode = sanitizeRoomCode(payload.roomCode ?? payload.code);
     const room = pickOrCreateRoomForQuickJoin(preferredCode);
     if (!room) {
@@ -1804,6 +2480,12 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:create", (payload = {}, ackFn) => {
+    applySocketOwnerAccess(socket, payload?.ownerKey);
+    if (WORKER_SINGLE_ROOM_MODE) {
+      ack(ackFn, { ok: false, error: "create disabled in worker mode" });
+      return;
+    }
+
     if (rooms.size >= MAX_ACTIVE_ROOMS) {
       ack(ackFn, { ok: false, error: "room limit reached" });
       return;
@@ -1818,6 +2500,23 @@ io.on("connection", (socket) => {
   });
 
   socket.on("room:join", (payload = {}, ackFn) => {
+    applySocketOwnerAccess(socket, payload?.ownerKey);
+    if (WORKER_SINGLE_ROOM_MODE) {
+      const requested = sanitizeRoomCode(payload.code ?? payload.roomCode);
+      if (requested && requested !== WORKER_FIXED_ROOM_CODE) {
+        ack(ackFn, { ok: false, error: "room mismatch" });
+        return;
+      }
+      const workerRoom =
+        getRoom(WORKER_FIXED_ROOM_CODE) ?? createMatchRoom(WORKER_FIXED_ROOM_CODE, true);
+      if (!workerRoom || workerRoom.players.size >= MAX_ROOM_PLAYERS) {
+        ack(ackFn, { ok: false, error: "room full" });
+        return;
+      }
+      ack(ackFn, joinRoom(socket, workerRoom, payload.name));
+      return;
+    }
+
     const code = sanitizeRoomCode(payload.code ?? payload.roomCode);
     if (!code) {
       ack(ackFn, { ok: false, error: "room code required" });
@@ -1829,6 +2528,95 @@ io.on("connection", (socket) => {
       return;
     }
     ack(ackFn, joinRoom(socket, room, payload.name));
+  });
+
+  socket.on("portal:lobby-open", (ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const opened = openEntryGate(room);
+    if (!opened?.ok) {
+      ack(ackFn, opened);
+      return;
+    }
+
+    emitRoomUpdate(room);
+    emitQuizScore(room, "lobby-open");
+    ack(ackFn, opened);
+  });
+
+  socket.on("portal:lobby-start", (ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const admitted = startEntryAdmission(room);
+    if (!admitted?.ok) {
+      emitRoomUpdate(room);
+      ack(ackFn, admitted);
+      return;
+    }
+
+    emitRoomUpdate(room);
+    emitQuizScore(room, "lobby-admit-countdown");
+    ack(ackFn, admitted);
+  });
+
+  socket.on("portal:set-target", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const rawTargetUrl = String(payload?.targetUrl ?? "").trim();
+    const nextTargetUrl = sanitizePortalTargetUrl(rawTargetUrl);
+    if (rawTargetUrl && !nextTargetUrl) {
+      ack(ackFn, { ok: false, error: "invalid portal target" });
+      return;
+    }
+    room.portalTargetUrl = nextTargetUrl;
+    const updatePayload = {
+      targetUrl: nextTargetUrl,
+      updatedBy: socket.id,
+      updatedAt: Date.now()
+    };
+
+    io.to(room.code).emit("portal:target:update", updatePayload);
+    emitRoomUpdate(room);
+    ack(ackFn, { ok: true, ...updatePayload });
   });
 
   socket.on("room:leave", (ackFn) => {
@@ -1869,7 +2657,17 @@ httpServer.on("error", (error) => {
 
 httpServer.listen(PORT, () => {
   console.log(`Chat server running on http://localhost:${PORT}`);
+  if (WORKER_SINGLE_ROOM_MODE) {
+    console.log(
+      `Room worker mode (${WORKER_FIXED_ROOM_CODE}, capacity ${MAX_ROOM_PLAYERS}, token ${
+        REQUIRE_JOIN_TOKEN ? "required" : "optional"
+      })`
+    );
+    return;
+  }
   console.log(
     `Match rooms enabled (${ROOM_CODE_PREFIX}-xxxxx, capacity ${MAX_ROOM_PLAYERS}, max rooms ${MAX_ACTIVE_ROOMS})`
   );
 });
+
+

@@ -1,8 +1,8 @@
-import { GAME_CONSTANTS } from "../../../config/gameConstants.js";
+﻿import { GAME_CONSTANTS } from "../../../config/gameConstants.js";
 
 export const BASE_VOID_PACK = {
   id: "base-void",
-  name: "Base Void",
+  name: "\uAE30\uBCF8 \uACF5\uC911 \uACBD\uAE30\uC7A5",
   world: {
     skyColor: 0xa8d4f5,
     fogDensity: 0.0022,
@@ -69,24 +69,24 @@ export const BASE_VOID_PACK = {
       aoTextureUrl: "",
       repeatX: 1,
       repeatY: 1,
-      size: 260,
-      color: 0xb0b5bb,
-      roughness: 0.9,
+      size: 130,
+      color: 0xc4cad1,
+      roughness: 0.82,
       metalness: 0,
-      emissive: 0x383e44,
-      emissiveIntensity: 0.06,
+      emissive: 0x49515a,
+      emissiveIntensity: 0.08,
       normalScale: [1, 1],
       aoIntensity: 0,
-      undersideColor: 0xa4aab0,
-      undersideEmissive: 0x33393f,
-      undersideEmissiveIntensity: 0.06,
+      undersideColor: 0xb4bac2,
+      undersideEmissive: 0x3d454e,
+      undersideEmissiveIntensity: 0.08,
       undersideOffsetY: -0.12
     },
     boundary: {
       enabled: true,
-      halfExtent: 132,
+      halfExtent: 66,
       height: 14,
-      thickness: 2.2,
+      thickness: 1.6,
       color: 0x6f757d,
       roughness: 0.82,
       metalness: 0.03,
@@ -95,9 +95,9 @@ export const BASE_VOID_PACK = {
     },
     floatingArena: {
       enabled: true,
-      radiusTop: 142,
-      radiusBottom: 166,
-      thickness: 30,
+      radiusTop: 71,
+      radiusBottom: 83,
+      thickness: 15,
       topOffsetY: -0.9,
       rockColor: 0x4c535e,
       rockRoughness: 0.92,
@@ -110,32 +110,101 @@ export const BASE_VOID_PACK = {
       enabled: true,
       width: 34,
       height: 11,
-      centerY: 10.4,
-      poleHeight: 10,
-      position: [0, 0, 0],
-      lines: ["OX QUIZ 10", "MAX 50 PLAYERS"]
+      centerY: 11.2,
+      poleHeight: 11,
+      position: [0, 0, -32],
+      lines: ["OX \uD034\uC988 10", "\uCD5C\uB300 50\uBA85"]
     },
     oxArena: {
       enabled: true,
-      dividerWidth: 2.2,
-      dividerDepth: 118,
+      dividerWidth: 1.3,
+      dividerDepth: 58,
       dividerHeight: 0.24,
       dividerColor: 0x1f252d,
       oZone: {
-        centerX: -34,
-        width: 62,
-        depth: 112,
+        centerX: -17,
+        width: 31,
+        depth: 56,
         color: 0x2e8f62,
         emissive: 0x104f36
       },
       xZone: {
-        centerX: 34,
-        width: 62,
-        depth: 112,
+        centerX: 17,
+        width: 31,
+        depth: 56,
         color: 0x9b3840,
         emissive: 0x5b1b20
       },
-      textY: 0.09
+      textY: 0.09,
+      backWall: {
+        enabled: true,
+        centerZ: -42,
+        centerY: 8.8,
+        width: 74,
+        height: 17.6,
+        thickness: 1.5,
+        color: 0x56606c,
+        roughness: 0.86,
+        metalness: 0.06,
+        emissive: 0x1d2631,
+        emissiveIntensity: 0.12
+      },
+      ads: {
+        enabled: false,
+        textureUrl: "/assets/graphics/world/ads/ox-ad-wall.png",
+        columns: 4,
+        rows: 2,
+        boardWidth: 14.6,
+        boardHeight: 4.8,
+        gapX: 1.4,
+        gapY: 1.3,
+        marginX: 3.6,
+        centerY: 10.8,
+        offsetZ: 0.12,
+        frameThickness: 0.24,
+        frameColor: 0x1b222b
+      }
+    },
+    spectatorStands: {
+      enabled: true,
+      tiers: 3,
+      tierDepth: 4.2,
+      tierHeight: 1.34,
+      tierGap: 0.2,
+      inset: 2.2,
+      baseY: 0.24,
+      color: 0x6a727e,
+      roughness: 0.8,
+      metalness: 0.06,
+      emissive: 0x242d37,
+      emissiveIntensity: 0.12,
+      ads: {
+        enabled: true,
+        textureUrl: "/assets/graphics/world/ads/ox-ad-wall.png",
+        boardWidth: 8.6,
+        boardHeight: 2.6,
+        boardDepth: 0.3,
+        y: 1.3,
+        gap: 1.5,
+        frontInset: 2.2,
+        frameColor: 0x111821,
+        frameThickness: 0.28
+      }
+    },
+    megaAdScreen: {
+      enabled: true,
+      width: 46,
+      height: 20,
+      centerY: 19,
+      poleHeight: 19,
+      position: [0, 0, 56],
+      heading: Math.PI,
+      screenGlow: 0.24,
+      frameColor: 0x1e2630,
+      frameEmissive: 0x101820,
+      frameEmissiveIntensity: 0.24,
+      poleColor: 0x4f5a67,
+      supportColor: 0x37414d
     },
     chalk: {
       enabled: false,
@@ -284,3 +353,4 @@ export const BASE_VOID_PACK = {
     staleTimeoutMs: GAME_CONSTANTS.REMOTE_STALE_TIMEOUT_MS
   }
 };
+
