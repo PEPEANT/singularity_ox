@@ -191,6 +191,18 @@ const ADMISSION_SPAWN_CENTER_Z = 14;
 const ADMISSION_SPAWN_RING_START = 2.4;
 const ADMISSION_SPAWN_RING_STEP = 2.35;
 const ADMISSION_SPAWN_PER_RING = 10;
+const QUIZ_SPECTATOR_ARENA_MARGIN = 1.1;
+const QUIZ_SPECTATOR_ARENA_EXIT_PADDING = 1.4;
+const QUIZ_ARENA_MIN_X =
+  Math.min(QUIZ_O_ZONE.minX, QUIZ_X_ZONE.minX) - QUIZ_SPECTATOR_ARENA_MARGIN;
+const QUIZ_ARENA_MAX_X =
+  Math.max(QUIZ_O_ZONE.maxX, QUIZ_X_ZONE.maxX) + QUIZ_SPECTATOR_ARENA_MARGIN;
+const QUIZ_ARENA_MIN_Z = QUIZ_ACTIVE_MIN_Z - QUIZ_SPECTATOR_ARENA_MARGIN;
+const QUIZ_ARENA_MAX_Z = QUIZ_ACTIVE_MAX_Z + QUIZ_SPECTATOR_ARENA_MARGIN;
+const QUIZ_SPECTATOR_SPAWN_CENTER_X = 0;
+const QUIZ_SPECTATOR_SPAWN_CENTER_Z = Math.min(QUIZ_ARENA_MIN_Z - 12, -36);
+const QUIZ_SPECTATOR_SPAWN_MIN_RADIUS = 6;
+const QUIZ_SPECTATOR_SPAWN_MAX_RADIUS = 14;
 
 const rooms = new Map();
 let playerCount = 0;
@@ -651,6 +663,118 @@ function buildAdmissionSpawnPoint(index, total) {
     y: ADMISSION_SPAWN_Y,
     z: Number((ADMISSION_SPAWN_CENTER_Z + Math.sin(angle) * radius).toFixed(3))
   };
+}
+
+function hashStringToUnit(rawValue = "") {
+  const text = String(rawValue ?? "");
+  let hash = 2166136261 >>> 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash / 4294967295;
+}
+
+function buildQuizSpectatorSpawnPoint(playerId = "") {
+  const id = String(playerId ?? "");
+  const angle = hashStringToUnit(id) * Math.PI * 2;
+  const radiusMix = hashStringToUnit(`${id}:radius`);
+  const radius =
+    QUIZ_SPECTATOR_SPAWN_MIN_RADIUS +
+    (QUIZ_SPECTATOR_SPAWN_MAX_RADIUS - QUIZ_SPECTATOR_SPAWN_MIN_RADIUS) * radiusMix;
+
+  let x = QUIZ_SPECTATOR_SPAWN_CENTER_X + Math.cos(angle) * radius;
+  let z = QUIZ_SPECTATOR_SPAWN_CENTER_Z + Math.sin(angle) * radius;
+  const maxSpectatorZ = QUIZ_ARENA_MIN_Z - QUIZ_SPECTATOR_ARENA_EXIT_PADDING;
+  if (z > maxSpectatorZ) {
+    z = maxSpectatorZ;
+  }
+
+  return sanitizePlayerState({
+    x: Number(x.toFixed(3)),
+    y: ADMISSION_SPAWN_Y,
+    z: Number(z.toFixed(3)),
+    yaw: Math.PI,
+    pitch: -0.04
+  });
+}
+
+function isInsideQuizArena(state = {}) {
+  const x = Number(state?.x);
+  const z = Number(state?.z);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) {
+    return false;
+  }
+  return x >= QUIZ_ARENA_MIN_X && x <= QUIZ_ARENA_MAX_X && z >= QUIZ_ARENA_MIN_Z && z <= QUIZ_ARENA_MAX_Z;
+}
+
+function projectStateOutsideQuizArena(state = {}) {
+  const current = sanitizePlayerState(state);
+  if (!isInsideQuizArena(current)) {
+    return { corrected: false, state: current };
+  }
+
+  const distanceLeft = Math.abs(current.x - QUIZ_ARENA_MIN_X);
+  const distanceRight = Math.abs(QUIZ_ARENA_MAX_X - current.x);
+  const distanceBack = Math.abs(current.z - QUIZ_ARENA_MIN_Z);
+  const distanceFront = Math.abs(QUIZ_ARENA_MAX_Z - current.z);
+  const minDistance = Math.min(distanceLeft, distanceRight, distanceBack, distanceFront);
+
+  const next = {
+    ...current
+  };
+  if (minDistance === distanceLeft) {
+    next.x = QUIZ_ARENA_MIN_X - QUIZ_SPECTATOR_ARENA_EXIT_PADDING;
+  } else if (minDistance === distanceRight) {
+    next.x = QUIZ_ARENA_MAX_X + QUIZ_SPECTATOR_ARENA_EXIT_PADDING;
+  } else if (minDistance === distanceBack) {
+    next.z = QUIZ_ARENA_MIN_Z - QUIZ_SPECTATOR_ARENA_EXIT_PADDING;
+  } else {
+    next.z = QUIZ_ARENA_MAX_Z + QUIZ_SPECTATOR_ARENA_EXIT_PADDING;
+  }
+  next.y = Math.max(ADMISSION_SPAWN_Y, Number(current.y) || ADMISSION_SPAWN_Y);
+  return {
+    corrected: true,
+    state: sanitizePlayerState(next)
+  };
+}
+
+function isRestrictedFromQuizArena(room, player) {
+  if (!room || !player) {
+    return false;
+  }
+  const quiz = getRoomQuiz(room);
+  const quizActive = Boolean(quiz?.active);
+  if (player.admitted !== true) {
+    return true;
+  }
+  if (player.alive === false) {
+    return true;
+  }
+  return quizActive && isPlayerHostModerator(room, player);
+}
+
+function relocatePlayerToSpectatorZone(room, player, reason = "spectator-zone") {
+  if (!room || !player) {
+    return false;
+  }
+  const current = sanitizePlayerState(player.state ?? {});
+  const target = buildQuizSpectatorSpawnPoint(player.id);
+  const distance = Math.hypot(
+    Number(target.x) - Number(current.x),
+    Number(target.y) - Number(current.y),
+    Number(target.z) - Number(current.z)
+  );
+  setPlayerAuthoritativeState(player, target);
+
+  const targetSocket = io?.sockets?.sockets?.get(player.id);
+  if (targetSocket && distance >= 0.05) {
+    targetSocket.emit("player:correct", {
+      state: player.state,
+      reason
+    });
+  }
+  return distance >= 0.05;
 }
 
 function normalizeVec3Magnitude(x, y, z, maxLength) {
@@ -1210,6 +1334,10 @@ function openEntryGate(room) {
     }
     player.admitted = false;
     player.awaitingAdmission = true;
+    player.alive = false;
+    player.lastChoice = null;
+    player.lastChoiceReason = "spectator";
+    relocatePlayerToSpectatorZone(room, player, "entry-waiting");
   }
 
   return {
@@ -1281,6 +1409,7 @@ function startEntryAdmission(room) {
     player.alive = false;
     player.lastChoice = null;
     player.lastChoiceReason = "spectator";
+    relocatePlayerToSpectatorZone(room, player, "entry-overflow-spectator");
   }
 
   const countdownMs = 3000;
@@ -1905,6 +2034,8 @@ function evaluateQuizQuestion(room) {
       correctPlayerIds.push(player.id);
     } else {
       player.alive = false;
+      player.lastChoiceReason = judge.reason || "spectator";
+      relocatePlayerToSpectatorZone(room, player, "quiz-eliminated");
       eliminatedPlayerIds.push(player.id);
       eliminatedPlayers.push({
         id: player.id,
@@ -2141,6 +2272,7 @@ function startQuiz(room, hostSocketId, payload = {}) {
       player.admitted = true;
       player.awaitingAdmission = false;
       player.lastChoiceReason = "spectator";
+      relocatePlayerToSpectatorZone(room, player, "quiz-host-spectator");
     } else {
       player.awaitingAdmission = false;
       if (player.admitted === true) {
@@ -2149,6 +2281,7 @@ function startQuiz(room, hostSocketId, payload = {}) {
         player.admitted = false;
         player.alive = false;
         player.lastChoiceReason = "spectator";
+        relocatePlayerToSpectatorZone(room, player, "quiz-spectator");
       }
     }
   }
@@ -2330,21 +2463,28 @@ function joinRoom(socket, room, nameOverride = null) {
     } else if (quiz.active) {
       existing.admitted = false;
       existing.awaitingAdmission = false;
+      existing.alive = false;
       addNextPriorityPlayer(room, existing.id);
     } else if (gate.admissionStartsAt > Date.now()) {
       existing.admitted = false;
       existing.awaitingAdmission = false;
+      existing.alive = false;
       addNextPriorityPlayer(room, existing.id);
     } else if (gate.portalOpen) {
       existing.admitted = false;
       existing.awaitingAdmission = true;
+      existing.alive = false;
     } else if (existing.admitted === false) {
       existing.awaitingAdmission = false;
+      existing.alive = false;
       addNextPriorityPlayer(room, existing.id);
     } else {
       existing.admitted = true;
       existing.awaitingAdmission = false;
       removeNextPriorityPlayer(room, existing.id);
+    }
+    if (isRestrictedFromQuizArena(room, existing)) {
+      relocatePlayerToSpectatorZone(room, existing, "join-spectator");
     }
     if (!quiz.active && quiz.autoMode !== false) {
       scheduleAutoQuizStart(room, {
@@ -2406,18 +2546,24 @@ function joinRoom(socket, room, nameOverride = null) {
     } else if (quiz.active) {
       joined.admitted = false;
       joined.awaitingAdmission = false;
+      joined.alive = false;
       addNextPriorityPlayer(room, joined.id);
     } else if (gate.admissionStartsAt > Date.now()) {
       joined.admitted = false;
       joined.awaitingAdmission = false;
+      joined.alive = false;
       addNextPriorityPlayer(room, joined.id);
     } else if (gate.portalOpen) {
       joined.admitted = false;
       joined.awaitingAdmission = true;
+      joined.alive = false;
     } else {
       joined.admitted = true;
       joined.awaitingAdmission = false;
       removeNextPriorityPlayer(room, joined.id);
+    }
+    if (isRestrictedFromQuizArena(room, joined)) {
+      relocatePlayerToSpectatorZone(room, joined, "join-spectator");
     }
   }
 
@@ -2627,6 +2773,31 @@ io.on("connection", (socket) => {
 
     const sanitized = sanitizePlayerState(payload);
     const movementResult = applyAuthoritativeMovement(player, sanitized);
+    if (isRestrictedFromQuizArena(room, player)) {
+      const forcedOutside = projectStateOutsideQuizArena(player.state);
+      if (forcedOutside.corrected) {
+        const correctedState = forcedOutside.state;
+        const correctionDistance = Math.hypot(
+          Number(correctedState.x) - Number(player.state?.x || 0),
+          Number(correctedState.y) - Number(player.state?.y || 0),
+          Number(correctedState.z) - Number(player.state?.z || 0)
+        );
+        setPlayerAuthoritativeState(player, correctedState);
+        const now = Date.now();
+        const cooldownElapsed = now - Number(net.lastCorrectionAt || 0);
+        if (
+          correctionDistance >= SERVER_CORRECTION_MIN_DISTANCE &&
+          cooldownElapsed >= SERVER_CORRECTION_COOLDOWN_MS
+        ) {
+          net.lastCorrectionAt = now;
+          socket.emit("player:correct", {
+            state: player.state,
+            reason: "quiz-spectator-zone"
+          });
+        }
+        return;
+      }
+    }
     if (
       movementResult.clamped &&
       movementResult.correctionDistance >= SERVER_CORRECTION_MIN_DISTANCE

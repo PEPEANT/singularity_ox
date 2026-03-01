@@ -337,6 +337,31 @@ export class GameRuntime {
       arenaBackWallCenterY + arenaBackWallHeight * 0.58,
       arenaBackWallCenterZ + 6.2
     );
+    const oZoneConfig = this.worldContent?.oxArena?.oZone ?? {};
+    const xZoneConfig = this.worldContent?.oxArena?.xZone ?? {};
+    const readZone = (zone, fallbackCenterX) => {
+      const centerX = Number.isFinite(Number(zone?.centerX)) ? Number(zone.centerX) : fallbackCenterX;
+      const centerZ = Number.isFinite(Number(zone?.centerZ)) ? Number(zone.centerZ) : 0;
+      const width = Math.max(8, Number(zone?.width) || 20);
+      const depth = Math.max(8, Number(zone?.depth) || 20);
+      return {
+        minX: centerX - width * 0.5,
+        maxX: centerX + width * 0.5,
+        minZ: centerZ - depth * 0.5,
+        maxZ: centerZ + depth * 0.5
+      };
+    };
+    const oZone = readZone(oZoneConfig, -17);
+    const xZone = readZone(xZoneConfig, 17);
+    const spectatorArenaMargin = 1.1;
+    this.spectatorArenaGuard = {
+      enabled: true,
+      minX: Math.min(oZone.minX, xZone.minX) - spectatorArenaMargin,
+      maxX: Math.max(oZone.maxX, xZone.maxX) + spectatorArenaMargin,
+      minZ: Math.min(oZone.minZ, xZone.minZ) - spectatorArenaMargin,
+      maxZ: Math.max(oZone.maxZ, xZone.maxZ) + spectatorArenaMargin,
+      exitPadding: 1.4
+    };
     this.oxTrapdoors = {
       o: null,
       x: null
@@ -1947,6 +1972,7 @@ export class GameRuntime {
     this.localSpectatorMode = true;
     this.verticalVelocity = 0;
     this.playerPosition.copy(this.spectatorSpawn);
+    this.enforceSpectatorArenaGuard();
     this.yaw = this.getLookYaw(this.playerPosition, this.tempVecA.set(0, GAME_CONSTANTS.PLAYER_HEIGHT, 0));
     this.pitch = -0.08;
     this.lastSafePosition.set(this.playerPosition.x, GAME_CONSTANTS.PLAYER_HEIGHT, this.playerPosition.z);
@@ -1969,6 +1995,7 @@ export class GameRuntime {
     this.spectatorFollowIndex = -1;
     this.verticalVelocity = 0;
     this.playerPosition.y = Math.max(this.playerPosition.y, this.spectatorSpawn.y - 1.2);
+    this.enforceSpectatorArenaGuard();
     this.onGround = false;
     this.appendChatLine(
       "시스템",
@@ -2037,6 +2064,40 @@ export class GameRuntime {
     this.appendChatLine("시스템", `${targetName} 관전 중`, "system");
   }
 
+  enforceSpectatorArenaGuard() {
+    if (!this.localSpectatorMode) {
+      return false;
+    }
+    const guard = this.spectatorArenaGuard;
+    if (!guard?.enabled) {
+      return false;
+    }
+
+    const x = Number(this.playerPosition.x) || 0;
+    const z = Number(this.playerPosition.z) || 0;
+    if (x < guard.minX || x > guard.maxX || z < guard.minZ || z > guard.maxZ) {
+      return false;
+    }
+
+    const distanceLeft = Math.abs(x - guard.minX);
+    const distanceRight = Math.abs(guard.maxX - x);
+    const distanceBack = Math.abs(z - guard.minZ);
+    const distanceFront = Math.abs(guard.maxZ - z);
+    const minDistance = Math.min(distanceLeft, distanceRight, distanceBack, distanceFront);
+    const pad = Number(guard.exitPadding) || 1.4;
+
+    if (minDistance === distanceLeft) {
+      this.playerPosition.x = guard.minX - pad;
+    } else if (minDistance === distanceRight) {
+      this.playerPosition.x = guard.maxX + pad;
+    } else if (minDistance === distanceBack) {
+      this.playerPosition.z = guard.minZ - pad;
+    } else {
+      this.playerPosition.z = guard.maxZ + pad;
+    }
+    return true;
+  }
+
   updateLocalEliminationDrop(delta) {
     if (!this.localEliminationDrop.active) {
       return false;
@@ -2072,6 +2133,7 @@ export class GameRuntime {
         );
         const alpha = THREE.MathUtils.clamp(1 - Math.exp(-8 * delta), 0, 1);
         this.playerPosition.lerp(this.tempVecA, alpha);
+        this.enforceSpectatorArenaGuard();
         this.yaw = lerpAngle(this.yaw, lookYaw, alpha);
         this.pitch = THREE.MathUtils.lerp(this.pitch, -0.18, alpha);
         this.camera.position.copy(this.playerPosition);
@@ -2119,6 +2181,7 @@ export class GameRuntime {
     const worldLimit = this.getBoundaryHardLimit();
     this.playerPosition.x = THREE.MathUtils.clamp(this.playerPosition.x, -worldLimit, worldLimit);
     this.playerPosition.z = THREE.MathUtils.clamp(this.playerPosition.z, -worldLimit, worldLimit);
+    this.enforceSpectatorArenaGuard();
     this.playerPosition.y = THREE.MathUtils.clamp(this.playerPosition.y, 4, 72);
     this.verticalVelocity = 0;
     this.onGround = false;
