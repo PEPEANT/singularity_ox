@@ -92,6 +92,7 @@ const QUIZ_MIN_LOCK_SECONDS = 3;
 const QUIZ_MAX_LOCK_SECONDS = 60;
 const QUIZ_MAX_QUESTIONS = 50;
 const QUIZ_TEXT_MAX_LENGTH = 180;
+const QUIZ_EXPLANATION_MAX_LENGTH = 720;
 const QUIZ_AUTO_NEXT_DELAY_MS = 3200;
 const QUIZ_PREPARE_DELAY_MS = 3000;
 const QUIZ_AUTO_START_DELAY_MS = 12000;
@@ -199,6 +200,7 @@ function createQuizState() {
     active: false,
     phase: "idle",
     autoMode: false,
+    autoFinish: true,
     autoStartsAt: 0,
     autoStartTimer: null,
     hostId: null,
@@ -234,6 +236,17 @@ function createRoom(code, persistent = false) {
     },
     persistent,
     createdAt: Date.now(),
+    quizConfig: {
+      questions: FALLBACK_QUIZ_QUESTIONS.map((question, index) => ({
+        id: String(question?.id ?? `Q${index + 1}`),
+        text: String(question?.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH),
+        answer: normalizeQuizAnswer(question?.answer) ?? "O",
+        explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH)
+      })),
+      endPolicy: {
+        autoFinish: true
+      }
+    },
     quiz: createQuizState(),
     tick: 0
   };
@@ -367,6 +380,41 @@ function getRoomQuiz(room) {
     room.quiz = createQuizState();
   }
   return room.quiz;
+}
+
+function getDefaultQuizConfigQuestions() {
+  return FALLBACK_QUIZ_QUESTIONS.map((question, index) => ({
+    id: String(question?.id ?? `Q${index + 1}`),
+    text: String(question?.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH) || `Question ${index + 1}`,
+    answer: normalizeQuizAnswer(question?.answer) ?? "O",
+    explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH)
+  }));
+}
+
+function ensureRoomQuizConfig(room) {
+  if (!room || typeof room !== "object") {
+    return {
+      questions: getDefaultQuizConfigQuestions(),
+      endPolicy: { autoFinish: true }
+    };
+  }
+  if (!room.quizConfig || typeof room.quizConfig !== "object") {
+    room.quizConfig = {
+      questions: getDefaultQuizConfigQuestions(),
+      endPolicy: { autoFinish: true }
+    };
+  }
+  const safeQuestions = sanitizeQuizQuestions(room.quizConfig.questions, {
+    fallbackToDefault: true,
+    minQuestions: 1,
+    maxQuestions: QUIZ_MAX_QUESTIONS
+  });
+  room.quizConfig.questions = safeQuestions;
+  if (!room.quizConfig.endPolicy || typeof room.quizConfig.endPolicy !== "object") {
+    room.quizConfig.endPolicy = { autoFinish: true };
+  }
+  room.quizConfig.endPolicy.autoFinish = room.quizConfig.endPolicy.autoFinish !== false;
+  return room.quizConfig;
 }
 
 function ensureRoomEntryGate(room) {
@@ -919,12 +967,21 @@ function sanitizeQuizQuestion(rawQuestion = {}, index = 0) {
     .slice(0, 24);
   const id = idValue || `Q${index + 1}`;
 
-  return { id, text, answer };
+  const explanation = String(
+    rawQuestion.explanation ?? rawQuestion.commentary ?? rawQuestion.desc ?? ""
+  )
+    .trim()
+    .slice(0, QUIZ_EXPLANATION_MAX_LENGTH);
+
+  return { id, text, answer, explanation };
 }
 
-function sanitizeQuizQuestions(rawQuestions) {
+function sanitizeQuizQuestions(
+  rawQuestions,
+  { fallbackToDefault = true, minQuestions = 1, maxQuestions = QUIZ_MAX_QUESTIONS } = {}
+) {
   if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
-    return FALLBACK_QUIZ_QUESTIONS.map((question) => ({ ...question }));
+    return fallbackToDefault ? getDefaultQuizConfigQuestions() : [];
   }
 
   const questions = [];
@@ -934,13 +991,13 @@ function sanitizeQuizQuestions(rawQuestions) {
       continue;
     }
     questions.push(question);
-    if (questions.length >= QUIZ_MAX_QUESTIONS) {
+    if (questions.length >= Math.max(1, Math.trunc(Number(maxQuestions) || QUIZ_MAX_QUESTIONS))) {
       break;
     }
   }
 
-  if (questions.length === 0) {
-    return FALLBACK_QUIZ_QUESTIONS.map((question) => ({ ...question }));
+  if (questions.length < Math.max(0, Math.trunc(Number(minQuestions) || 0))) {
+    return fallbackToDefault ? getDefaultQuizConfigQuestions() : [];
   }
 
   return questions;
@@ -1333,6 +1390,7 @@ function resetQuizState(room) {
   quiz.active = false;
   quiz.phase = "idle";
   quiz.autoMode = false;
+  quiz.autoFinish = true;
   quiz.autoStartsAt = 0;
   quiz.hostId = room?.hostId ?? null;
   quiz.startedAt = 0;
@@ -1525,6 +1583,7 @@ function emitQuizScore(room, reason = "update", targetSocket = null) {
     active: Boolean(quiz.active),
     phase: String(quiz.phase ?? "idle"),
     autoMode: quiz.autoMode !== false,
+    autoFinish: quiz.autoFinish !== false,
     autoStartsAt: Number(quiz.autoStartsAt ?? 0),
     prepareEndsAt: Number(quiz.prepareEndsAt ?? 0),
     hostId: quiz.hostId ?? room.hostId ?? null,
@@ -1550,6 +1609,7 @@ function buildQuizStartPayload(quiz) {
     prepareEndsAt: Number(quiz.prepareEndsAt ?? 0),
     hostId: quiz.hostId ?? null,
     autoMode: quiz.autoMode !== false,
+    autoFinish: quiz.autoFinish !== false,
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
     lockSeconds: sanitizeQuizLockSeconds(quiz.lockSeconds)
   };
@@ -1570,6 +1630,27 @@ function buildQuizQuestionPayload(quiz) {
   };
 }
 
+function buildQuizReviewPayload(quiz) {
+  const safeQuestions = Array.isArray(quiz?.questions) ? quiz.questions : [];
+  const rawQuestionIndex = Number(quiz?.questionIndex);
+  const resolvedQuestionIndex = Number.isFinite(rawQuestionIndex) ? Math.trunc(rawQuestionIndex) : -1;
+  const answeredCount = Math.max(
+    0,
+    Math.min(
+      safeQuestions.length,
+      resolvedQuestionIndex + 1
+    )
+  );
+  const usedQuestions = safeQuestions.slice(0, answeredCount);
+  return usedQuestions.map((question, index) => ({
+    id: String(question?.id ?? `Q${index + 1}`),
+    index: index + 1,
+    text: String(question?.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH),
+    answer: normalizeQuizAnswer(question?.answer) ?? "O",
+    explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH)
+  }));
+}
+
 function buildQuizEndPayload(room, reason = "finished") {
   const quiz = getRoomQuiz(room);
   const ranking = buildQuizRanking(room);
@@ -1582,7 +1663,31 @@ function buildQuizEndPayload(room, reason = "finished") {
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
     winners,
     leaderboard: ranking,
-    ranking
+    ranking,
+    review: buildQuizReviewPayload(quiz)
+  };
+}
+
+function buildQuizConfigPayload(room) {
+  const config = ensureRoomQuizConfig(room);
+  const questions = sanitizeQuizQuestions(config.questions, {
+    fallbackToDefault: true,
+    minQuestions: 1,
+    maxQuestions: QUIZ_MAX_QUESTIONS
+  });
+  config.questions = questions;
+  return {
+    questions: questions.map((question, index) => ({
+      id: String(question?.id ?? `Q${index + 1}`),
+      text: String(question?.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH),
+      answer: normalizeQuizAnswer(question?.answer) ?? "O",
+      explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH)
+    })),
+    slotCount: questions.length,
+    maxQuestions: QUIZ_MAX_QUESTIONS,
+    endPolicy: {
+      autoFinish: config?.endPolicy?.autoFinish !== false
+    }
   };
 }
 
@@ -1695,7 +1800,8 @@ function scheduleAutoQuizStart(
 
     const started = startQuiz(currentRoom, currentQuiz.hostId ?? hostId, {
       lockSeconds: currentQuiz.lockSeconds,
-      autoMode: true
+      autoMode: true,
+      autoFinish: ensureRoomQuizConfig(currentRoom)?.endPolicy?.autoFinish !== false
     });
     if (!started?.ok) {
       scheduleAutoQuizStart(currentRoom, { delayMs: QUIZ_AUTO_START_DELAY_MS, reason: "auto-retry" });
@@ -1816,20 +1922,36 @@ function evaluateQuizQuestion(room) {
 
   quiz.lastResult = resultPayload;
   io.to(room.code).emit("quiz:result", resultPayload);
+  const autoFinish = quiz.autoFinish !== false;
 
   if (survivorCount <= 0) {
-    finishQuiz(room, "no-survivor");
+    if (autoFinish) {
+      finishQuiz(room, "no-survivor");
+    } else {
+      quiz.phase = "waiting-next";
+      emitQuizScore(room, "result-no-survivor-manual");
+    }
     return;
   }
 
   const playablePlayers = countPlayablePlayers(room);
   if (survivorCount === 1 && QUIZ_END_ON_SINGLE_SURVIVOR && playablePlayers > 1) {
-    finishQuiz(room, "winner");
+    if (autoFinish) {
+      finishQuiz(room, "winner");
+    } else {
+      quiz.phase = "waiting-next";
+      emitQuizScore(room, "result-winner-manual");
+    }
     return;
   }
 
   if (quiz.questionIndex + 1 >= quiz.totalQuestions) {
-    finishQuiz(room, "all-questions-complete");
+    if (autoFinish) {
+      finishQuiz(room, "all-questions-complete");
+    } else {
+      quiz.phase = "waiting-next";
+      emitQuizScore(room, "result-all-complete-manual");
+    }
     return;
   }
 
@@ -1855,7 +1977,12 @@ function pushNextQuizQuestion(room, lockSecondsOverride = null) {
 
   const nextIndex = quiz.questionIndex + 1;
   if (nextIndex >= quiz.questions.length) {
-    finishQuiz(room, "all-questions-complete");
+    if (quiz.autoFinish !== false) {
+      finishQuiz(room, "all-questions-complete");
+      return { ok: false, error: "no more questions" };
+    }
+    quiz.phase = "waiting-next";
+    emitQuizScore(room, "manual-no-more-questions");
     return { ok: false, error: "no more questions" };
   }
 
@@ -1951,6 +2078,7 @@ function startQuiz(room, hostSocketId, payload = {}) {
   }
   clearQuizLockTimer(quiz);
   ensureRoomEntryGate(room);
+  const quizConfig = ensureRoomQuizConfig(room);
   const waitingPlayers = countWaitingPlayers(room);
   if (waitingPlayers > 0) {
     return { ok: false, error: "players waiting admission" };
@@ -1959,9 +2087,19 @@ function startQuiz(room, hostSocketId, payload = {}) {
     return { ok: false, error: "no playable players" };
   }
 
-  const questions = sanitizeQuizQuestions(payload.questions);
+  const questionSource = Array.isArray(payload?.questions)
+    ? payload.questions
+    : quizConfig.questions;
+  const questions = sanitizeQuizQuestions(questionSource, {
+    fallbackToDefault: true,
+    minQuestions: 1,
+    maxQuestions: QUIZ_MAX_QUESTIONS
+  });
   const lockSeconds = sanitizeQuizLockSeconds(payload.lockSeconds);
   const autoMode = payload.autoMode !== false;
+  const autoFinish = Object.prototype.hasOwnProperty.call(payload ?? {}, "autoFinish")
+    ? payload.autoFinish !== false
+    : quizConfig?.endPolicy?.autoFinish !== false;
   const resolvedHostId =
     hostSocketId && room.players.has(hostSocketId)
       ? hostSocketId
@@ -1972,6 +2110,7 @@ function startQuiz(room, hostSocketId, payload = {}) {
   quiz.active = true;
   quiz.phase = "start";
   quiz.autoMode = autoMode;
+  quiz.autoFinish = autoFinish;
   quiz.autoStartsAt = 0;
   quiz.hostId = resolvedHostId;
   quiz.startedAt = Date.now();
@@ -2622,6 +2761,7 @@ io.on("connection", (socket) => {
         active: Boolean(quiz.active),
         phase: quiz.phase,
         autoMode: quiz.autoMode !== false,
+        autoFinish: quiz.autoFinish !== false,
         autoStartsAt: Number(quiz.autoStartsAt ?? 0),
         prepareEndsAt: Number(quiz.prepareEndsAt ?? 0),
         hostId: quiz.hostId ?? room.hostId ?? null,
@@ -2637,6 +2777,73 @@ io.on("connection", (socket) => {
         leaderboard: buildQuizLeaderboard(room)
       }
     });
+  });
+
+  socket.on("quiz:config:get", (ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    ack(ackFn, {
+      ok: true,
+      config: buildQuizConfigPayload(room)
+    });
+  });
+
+  socket.on("quiz:config:set", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const quiz = getRoomQuiz(room);
+    if (quiz.active) {
+      ack(ackFn, { ok: false, error: "quiz already active" });
+      return;
+    }
+
+    const config = ensureRoomQuizConfig(room);
+    const rawQuestions = Array.isArray(payload?.questions) ? payload.questions : null;
+    if (rawQuestions) {
+      const sanitized = sanitizeQuizQuestions(rawQuestions, {
+        fallbackToDefault: false,
+        minQuestions: 1,
+        maxQuestions: QUIZ_MAX_QUESTIONS
+      });
+      if (!Array.isArray(sanitized) || sanitized.length <= 0) {
+        ack(ackFn, { ok: false, error: "invalid question config" });
+        return;
+      }
+      config.questions = sanitized;
+    }
+
+    if (payload?.endPolicy && typeof payload.endPolicy === "object") {
+      config.endPolicy.autoFinish = payload.endPolicy.autoFinish !== false;
+    } else if (Object.prototype.hasOwnProperty.call(payload ?? {}, "autoFinish")) {
+      config.endPolicy.autoFinish = payload.autoFinish !== false;
+    }
+    config.endPolicy.autoFinish = config.endPolicy.autoFinish !== false;
+    quiz.autoFinish = config.endPolicy.autoFinish;
+
+    const response = {
+      ok: true,
+      config: buildQuizConfigPayload(room)
+    };
+    io.to(room.code).emit("quiz:config:update", response.config);
+    emitQuizScore(room, "config-update");
+    ack(ackFn, response);
   });
 
   socket.on("room:list", () => {

@@ -238,6 +238,7 @@ export class GameRuntime {
       active: false,
       phase: "idle",
       autoMode: false,
+      autoFinish: true,
       autoStartsAt: 0,
       prepareEndsAt: 0,
       hostId: null,
@@ -302,6 +303,8 @@ export class GameRuntime {
     this.quizHostBtnEl = document.getElementById("quiz-host-btn");
     this.quizStartBtnEl = document.getElementById("quiz-start-btn");
     this.quizStopBtnEl = document.getElementById("quiz-stop-btn");
+    this.quizConfigBtnEl = document.getElementById("quiz-config-btn");
+    this.quizReviewBtnEl = document.getElementById("quiz-review-btn");
     this.portalLobbyOpenBtnEl = document.getElementById("portal-open-btn");
     this.portalLobbyStartBtnEl = document.getElementById("portal-admit-btn");
     this.quizNextBtnEl = document.getElementById("quiz-next-btn");
@@ -328,6 +331,22 @@ export class GameRuntime {
     this.lobbySlotSpectatorsEl = document.getElementById("lobby-slot-spectators");
     this.portalTransitionEl = document.getElementById("portal-transition");
     this.portalTransitionTextEl = document.getElementById("portal-transition-text");
+    this.quizConfigModalEl = document.getElementById("quiz-config-modal");
+    this.quizConfigCloseBtnEl = document.getElementById("quiz-config-close-btn");
+    this.quizConfigSaveBtnEl = document.getElementById("quiz-config-save-btn");
+    this.quizConfigResetBtnEl = document.getElementById("quiz-config-reset-btn");
+    this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
+    this.quizAutoFinishInputEl = document.getElementById("quiz-auto-finish-input");
+    this.quizQuestionListEl = document.getElementById("quiz-question-list");
+    this.quizConfigStatusEl = document.getElementById("quiz-config-status");
+    this.quizReviewModalEl = document.getElementById("quiz-review-modal");
+    this.quizReviewCloseBtnEl = document.getElementById("quiz-review-close-btn");
+    this.quizReviewPrevBtnEl = document.getElementById("quiz-review-prev-btn");
+    this.quizReviewNextBtnEl = document.getElementById("quiz-review-next-btn");
+    this.quizReviewIndexEl = document.getElementById("quiz-review-index");
+    this.quizReviewQuestionEl = document.getElementById("quiz-review-question");
+    this.quizReviewAnswerEl = document.getElementById("quiz-review-answer");
+    this.quizReviewExplanationEl = document.getElementById("quiz-review-explanation");
     this.boundaryWarningEl = document.getElementById("boundary-warning");
     this.roundOverlayEl = document.getElementById("round-overlay");
     this.roundOverlayCanvasEl = document.getElementById("round-overlay-canvas");
@@ -374,6 +393,11 @@ export class GameRuntime {
     this.mobileLookLastY = 0;
     this.mobileEventsBound = false;
     this.mobileHoldResetters = [];
+    this.quizConfig = this.buildDefaultQuizConfig(10);
+    this.quizConfigLoading = false;
+    this.quizConfigSaving = false;
+    this.quizReviewItems = [];
+    this.quizReviewIndex = 0;
 
     const hubFlowConfig = this.worldContent?.hubFlow ?? {};
     const bridgeConfig = hubFlowConfig?.bridge ?? {};
@@ -4566,6 +4590,12 @@ export class GameRuntime {
     this.quizStopBtnEl?.addEventListener("click", () => {
       this.requestQuizStop();
     });
+    this.quizConfigBtnEl?.addEventListener("click", () => {
+      this.openQuizConfigModal();
+    });
+    this.quizReviewBtnEl?.addEventListener("click", () => {
+      this.openQuizReviewModal();
+    });
     this.portalLobbyOpenBtnEl?.addEventListener("click", () => {
       this.requestPortalLobbyOpen();
     });
@@ -4580,6 +4610,30 @@ export class GameRuntime {
     });
     this.portalTargetSaveBtnEl?.addEventListener("click", () => {
       this.requestPortalTargetSave();
+    });
+    this.quizConfigCloseBtnEl?.addEventListener("click", () => {
+      this.closeQuizConfigModal();
+    });
+    this.quizConfigSaveBtnEl?.addEventListener("click", () => {
+      this.requestQuizConfigSave();
+    });
+    this.quizConfigResetBtnEl?.addEventListener("click", () => {
+      this.resetQuizConfigEditor();
+    });
+    this.quizSlotCountInputEl?.addEventListener("change", () => {
+      this.applyQuizSlotCountChange();
+    });
+    this.quizSlotCountInputEl?.addEventListener("input", () => {
+      this.applyQuizSlotCountChange();
+    });
+    this.quizReviewCloseBtnEl?.addEventListener("click", () => {
+      this.closeQuizReviewModal();
+    });
+    this.quizReviewPrevBtnEl?.addEventListener("click", () => {
+      this.moveQuizReview(-1);
+    });
+    this.quizReviewNextBtnEl?.addEventListener("click", () => {
+      this.moveQuizReview(1);
     });
     this.lobbyFormEl?.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -4607,6 +4661,12 @@ export class GameRuntime {
     }
     if (!this.quizStopBtnEl) {
       this.quizStopBtnEl = document.getElementById("quiz-stop-btn");
+    }
+    if (!this.quizConfigBtnEl) {
+      this.quizConfigBtnEl = document.getElementById("quiz-config-btn");
+    }
+    if (!this.quizReviewBtnEl) {
+      this.quizReviewBtnEl = document.getElementById("quiz-review-btn");
     }
     if (!this.portalLobbyOpenBtnEl) {
       this.portalLobbyOpenBtnEl = document.getElementById("portal-open-btn");
@@ -4685,6 +4745,54 @@ export class GameRuntime {
     }
     if (!this.portalTransitionTextEl) {
       this.portalTransitionTextEl = document.getElementById("portal-transition-text");
+    }
+    if (!this.quizConfigModalEl) {
+      this.quizConfigModalEl = document.getElementById("quiz-config-modal");
+    }
+    if (!this.quizConfigCloseBtnEl) {
+      this.quizConfigCloseBtnEl = document.getElementById("quiz-config-close-btn");
+    }
+    if (!this.quizConfigSaveBtnEl) {
+      this.quizConfigSaveBtnEl = document.getElementById("quiz-config-save-btn");
+    }
+    if (!this.quizConfigResetBtnEl) {
+      this.quizConfigResetBtnEl = document.getElementById("quiz-config-reset-btn");
+    }
+    if (!this.quizSlotCountInputEl) {
+      this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
+    }
+    if (!this.quizAutoFinishInputEl) {
+      this.quizAutoFinishInputEl = document.getElementById("quiz-auto-finish-input");
+    }
+    if (!this.quizQuestionListEl) {
+      this.quizQuestionListEl = document.getElementById("quiz-question-list");
+    }
+    if (!this.quizConfigStatusEl) {
+      this.quizConfigStatusEl = document.getElementById("quiz-config-status");
+    }
+    if (!this.quizReviewModalEl) {
+      this.quizReviewModalEl = document.getElementById("quiz-review-modal");
+    }
+    if (!this.quizReviewCloseBtnEl) {
+      this.quizReviewCloseBtnEl = document.getElementById("quiz-review-close-btn");
+    }
+    if (!this.quizReviewPrevBtnEl) {
+      this.quizReviewPrevBtnEl = document.getElementById("quiz-review-prev-btn");
+    }
+    if (!this.quizReviewNextBtnEl) {
+      this.quizReviewNextBtnEl = document.getElementById("quiz-review-next-btn");
+    }
+    if (!this.quizReviewIndexEl) {
+      this.quizReviewIndexEl = document.getElementById("quiz-review-index");
+    }
+    if (!this.quizReviewQuestionEl) {
+      this.quizReviewQuestionEl = document.getElementById("quiz-review-question");
+    }
+    if (!this.quizReviewAnswerEl) {
+      this.quizReviewAnswerEl = document.getElementById("quiz-review-answer");
+    }
+    if (!this.quizReviewExplanationEl) {
+      this.quizReviewExplanationEl = document.getElementById("quiz-review-explanation");
     }
     if (!this.boundaryWarningEl) {
       this.boundaryWarningEl = document.getElementById("boundary-warning");
@@ -5450,6 +5558,8 @@ export class GameRuntime {
       this.setRosterPinned(false);
       this.refreshRosterPanel();
       this.syncGameplayUiForFlow();
+      this.closeQuizConfigModal();
+      this.closeQuizReviewModal();
       if (this.lobbyEnabled) {
         this.lobbyJoinInFlight = false;
         this.showLobbyScreen("연결이 끊겼습니다. 재연결 중...");
@@ -5477,6 +5587,7 @@ export class GameRuntime {
       this.hud.setStatus(this.getStatusText());
       this.refreshRosterPanel();
       this.syncGameplayUiForFlow();
+      this.closeQuizConfigModal();
       if (this.lobbyEnabled) {
         this.lobbyJoinInFlight = false;
         this.showLobbyScreen("서버 연결에 실패했습니다. 잠시 후 다시 시도하세요.");
@@ -5551,6 +5662,10 @@ export class GameRuntime {
 
     socket.on("quiz:score", (payload = {}) => {
       this.handleQuizScore(payload);
+    });
+
+    socket.on("quiz:config:update", (payload = {}) => {
+      this.handleQuizConfigUpdate(payload);
     });
 
     socket.on("quiz:end", (payload = {}) => {
@@ -6226,6 +6341,7 @@ export class GameRuntime {
     this.quizState.active = false;
     this.quizState.phase = "idle";
     this.quizState.autoMode = false;
+    this.quizState.autoFinish = true;
     this.quizState.autoStartsAt = 0;
     this.quizState.prepareEndsAt = 0;
     this.quizState.hostId = null;
@@ -6245,6 +6361,7 @@ export class GameRuntime {
     this.resetTrapdoors();
     this.centerBillboardLastCountdown = null;
     this.hideRoundOverlay();
+    this.closeQuizReviewModal();
     this.renderCenterBillboard({
       kicker: "실시간",
       title: "메가 OX 퀴즈",
@@ -6286,6 +6403,7 @@ export class GameRuntime {
     this.quizState.active = true;
     this.quizState.phase = "start";
     this.quizState.autoMode = payload.autoMode !== false;
+    this.quizState.autoFinish = payload.autoFinish !== false;
     this.quizState.autoStartsAt = 0;
     this.quizState.prepareEndsAt = Math.max(
       0,
@@ -6299,6 +6417,8 @@ export class GameRuntime {
     this.quizState.lockAt = 0;
     this.quizState.questionText = "";
     this.localQuizAlive = true;
+    this.closeQuizReviewModal();
+    this.setQuizReviewItems([]);
     this.ensureLocalGameplayPosition();
     this.resetTrapdoors();
     this.centerBillboardLastCountdown = null;
@@ -6427,6 +6547,9 @@ export class GameRuntime {
     }
     if (hasOwn("autoMode")) {
       this.quizState.autoMode = payload.autoMode !== false;
+    }
+    if (hasOwn("autoFinish")) {
+      this.quizState.autoFinish = payload.autoFinish !== false;
     }
     if (hasOwn("autoStartsAt")) {
       this.quizState.autoStartsAt = Math.max(0, Math.trunc(Number(payload.autoStartsAt) || 0));
@@ -6561,6 +6684,7 @@ export class GameRuntime {
     this.quizState.lockAt = 0;
     this.quizState.prepareEndsAt = 0;
     this.centerBillboardLastCountdown = null;
+    this.setQuizReviewItems(payload?.review);
     this.showRoundOverlay({
       title: "게임이 종료되었습니다",
       subtitle:
@@ -6584,6 +6708,13 @@ export class GameRuntime {
     });
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
+    if (this.quizReviewItems.length > 0) {
+      window.setTimeout(() => {
+        if (this.quizState.phase === "ended" && this.quizReviewItems.length > 0) {
+          this.openQuizReviewModal();
+        }
+      }, 900);
+    }
   }
 
   syncQuizBillboard(force = false) {
@@ -6716,6 +6847,7 @@ export class GameRuntime {
       "lobby not open": "포탈 대기실이 열려 있지 않습니다.",
       "admission already in progress": "이미 입장 카운트다운이 진행 중입니다.",
       "no waiting players": "현재 입장 대기 인원이 없습니다.",
+      "invalid question config": "문항 설정 형식이 올바르지 않습니다.",
       unauthorized: "권한이 없습니다.",
       "invalid portal target": "포탈 링크 형식이 잘못되었습니다. http(s) 주소만 허용됩니다.",
       "all-questions-complete": "모든 문제가 종료되었습니다.",
@@ -6737,6 +6869,352 @@ export class GameRuntime {
       ended: "종료"
     };
     return phaseKorMap[phase] ?? phase;
+  }
+
+  normalizeQuizAnswerChoice(raw) {
+    const value = String(raw ?? "")
+      .trim()
+      .toUpperCase();
+    return value === "X" ? "X" : "O";
+  }
+
+  createDefaultQuizQuestion(index = 0) {
+    const order = Math.max(0, Math.trunc(Number(index) || 0)) + 1;
+    return {
+      id: `Q${order}`,
+      text: `문항 ${order}`,
+      answer: "O",
+      explanation: ""
+    };
+  }
+
+  buildDefaultQuizConfig(slotCount = 10) {
+    const count = Math.max(1, Math.min(50, Math.trunc(Number(slotCount) || 10)));
+    const questions = [];
+    for (let i = 0; i < count; i += 1) {
+      questions.push(this.createDefaultQuizQuestion(i));
+    }
+    return {
+      maxQuestions: 50,
+      questions,
+      endPolicy: {
+        autoFinish: true
+      }
+    };
+  }
+
+  normalizeQuizConfigPayload(payload = {}) {
+    const sourceQuestions = Array.isArray(payload?.questions) ? payload.questions : [];
+    const maxQuestions = Math.max(
+      1,
+      Math.min(50, Math.trunc(Number(payload?.maxQuestions) || this.quizConfig?.maxQuestions || 50))
+    );
+    const questions = sourceQuestions
+      .map((entry, index) => {
+        const text = String(entry?.text ?? "")
+          .trim()
+          .slice(0, 180);
+        return {
+          id: String(entry?.id ?? `Q${index + 1}`)
+            .trim()
+            .slice(0, 24) || `Q${index + 1}`,
+          text: text || `문항 ${index + 1}`,
+          answer: this.normalizeQuizAnswerChoice(entry?.answer),
+          explanation: String(entry?.explanation ?? "")
+            .trim()
+            .slice(0, 720)
+        };
+      })
+      .slice(0, maxQuestions);
+    const finalQuestions = questions.length > 0 ? questions : this.buildDefaultQuizConfig(10).questions;
+    return {
+      maxQuestions,
+      questions: finalQuestions,
+      endPolicy: {
+        autoFinish: payload?.endPolicy?.autoFinish !== false
+      }
+    };
+  }
+
+  setQuizConfigStatus(message, isError = false) {
+    if (!this.quizConfigStatusEl) {
+      return;
+    }
+    const text = String(message ?? "").trim();
+    this.quizConfigStatusEl.textContent = text || "문항과 정답/해설을 편집하세요.";
+    this.quizConfigStatusEl.classList.toggle("error", Boolean(isError));
+  }
+
+  collectQuizConfigQuestionsFromEditor() {
+    if (!this.quizQuestionListEl) {
+      return [];
+    }
+    const rows = Array.from(this.quizQuestionListEl.querySelectorAll(".quiz-question-row"));
+    return rows
+      .map((row, index) => {
+        const textEl = row.querySelector(".quiz-question-text");
+        const answerEl = row.querySelector(".quiz-question-answer");
+        const explanationEl = row.querySelector(".quiz-question-explanation");
+        const text = String(textEl?.value ?? "")
+          .trim()
+          .slice(0, 180);
+        return {
+          id: `Q${index + 1}`,
+          text: text || `문항 ${index + 1}`,
+          answer: this.normalizeQuizAnswerChoice(answerEl?.value),
+          explanation: String(explanationEl?.value ?? "")
+            .trim()
+            .slice(0, 720)
+        };
+      });
+  }
+
+  renderQuizConfigEditor() {
+    this.resolveUiElements();
+    if (!this.quizQuestionListEl) {
+      return;
+    }
+    const questions = Array.isArray(this.quizConfig?.questions) ? this.quizConfig.questions : [];
+    const maxQuestions = Math.max(1, Math.min(50, Math.trunc(Number(this.quizConfig?.maxQuestions) || 50)));
+    const safeQuestions = questions.slice(0, maxQuestions);
+    if (safeQuestions.length <= 0) {
+      safeQuestions.push(this.createDefaultQuizQuestion(0));
+    }
+    this.quizConfig.questions = safeQuestions;
+    this.quizConfig.maxQuestions = maxQuestions;
+
+    if (this.quizSlotCountInputEl) {
+      this.quizSlotCountInputEl.max = String(maxQuestions);
+      this.quizSlotCountInputEl.value = String(safeQuestions.length);
+    }
+    if (this.quizAutoFinishInputEl) {
+      this.quizAutoFinishInputEl.checked = this.quizConfig?.endPolicy?.autoFinish !== false;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < safeQuestions.length; index += 1) {
+      const question = safeQuestions[index];
+      const row = document.createElement("div");
+      row.className = "quiz-question-row";
+      row.dataset.index = String(index);
+
+      const order = document.createElement("div");
+      order.className = "quiz-question-order";
+      order.textContent = String(index + 1);
+
+      const fields = document.createElement("div");
+      fields.className = "quiz-question-fields";
+
+      const textInput = document.createElement("input");
+      textInput.className = "quiz-question-text";
+      textInput.type = "text";
+      textInput.maxLength = 180;
+      textInput.placeholder = `문항 ${index + 1}`;
+      textInput.value = String(question?.text ?? "").slice(0, 180);
+
+      const explanationInput = document.createElement("textarea");
+      explanationInput.className = "quiz-question-explanation";
+      explanationInput.maxLength = 720;
+      explanationInput.placeholder = "해설 (게임 종료 후 표시)";
+      explanationInput.value = String(question?.explanation ?? "").slice(0, 720);
+
+      fields.append(textInput, explanationInput);
+
+      const answerSelect = document.createElement("select");
+      answerSelect.className = "quiz-question-answer";
+      const optionO = document.createElement("option");
+      optionO.value = "O";
+      optionO.textContent = "정답 O";
+      const optionX = document.createElement("option");
+      optionX.value = "X";
+      optionX.textContent = "정답 X";
+      answerSelect.append(optionO, optionX);
+      answerSelect.value = this.normalizeQuizAnswerChoice(question?.answer);
+
+      row.append(order, fields, answerSelect);
+      fragment.appendChild(row);
+    }
+    this.quizQuestionListEl.replaceChildren(fragment);
+  }
+
+  applyQuizSlotCountChange() {
+    const maxQuestions = Math.max(1, Math.min(50, Math.trunc(Number(this.quizConfig?.maxQuestions) || 50)));
+    const raw = Number(this.quizSlotCountInputEl?.value ?? this.quizConfig?.questions?.length ?? 10);
+    const targetCount = Math.max(1, Math.min(maxQuestions, Math.trunc(raw || 1)));
+    const currentQuestions = this.collectQuizConfigQuestionsFromEditor();
+    const nextQuestions = currentQuestions.slice(0, targetCount);
+    while (nextQuestions.length < targetCount) {
+      nextQuestions.push(this.createDefaultQuizQuestion(nextQuestions.length));
+    }
+    this.quizConfig.questions = nextQuestions;
+    this.renderQuizConfigEditor();
+    this.setQuizConfigStatus(`문항 슬롯을 ${targetCount}개로 맞췄습니다.`);
+  }
+
+  resetQuizConfigEditor() {
+    const slotCount = Math.max(
+      1,
+      Math.min(50, Math.trunc(Number(this.quizSlotCountInputEl?.value) || 10))
+    );
+    this.quizConfig = this.buildDefaultQuizConfig(slotCount);
+    this.renderQuizConfigEditor();
+    this.setQuizConfigStatus("기본 문항 템플릿으로 초기화했습니다.");
+  }
+
+  openQuizConfigModal() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 문항 설정 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("SYSTEM", "방장만 문항 설정을 열 수 있습니다.", "system");
+      return;
+    }
+    this.resolveUiElements();
+    this.quizConfigModalEl?.classList.remove("hidden");
+    this.fetchQuizConfig();
+  }
+
+  closeQuizConfigModal() {
+    this.quizConfigModalEl?.classList.add("hidden");
+  }
+
+  fetchQuizConfig() {
+    if (!this.socket || !this.networkConnected) {
+      this.setQuizConfigStatus("오프라인 상태에서는 문항 설정을 불러올 수 없습니다.", true);
+      return;
+    }
+    if (this.quizConfigLoading) {
+      return;
+    }
+    this.quizConfigLoading = true;
+    this.setQuizConfigStatus("설정 불러오는 중...");
+    this.socket.emit("quiz:config:get", (response = {}) => {
+      this.quizConfigLoading = false;
+      if (!response?.ok) {
+        this.setQuizConfigStatus(`불러오기 실패: ${this.translateQuizError(response?.error)}`, true);
+        return;
+      }
+      this.handleQuizConfigUpdate(response?.config ?? {});
+      this.setQuizConfigStatus("문항 설정을 불러왔습니다.");
+    });
+  }
+
+  requestQuizConfigSave() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 문항 저장 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.setQuizConfigStatus("오프라인 상태에서는 저장할 수 없습니다.", true);
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.setQuizConfigStatus("방장만 문항 설정을 저장할 수 있습니다.", true);
+      return;
+    }
+    if (this.quizConfigSaving) {
+      return;
+    }
+
+    const questions = this.collectQuizConfigQuestionsFromEditor();
+    if (questions.length <= 0) {
+      this.setQuizConfigStatus("최소 1개 이상의 문항이 필요합니다.", true);
+      return;
+    }
+    const autoFinish = this.quizAutoFinishInputEl?.checked !== false;
+    const payload = {
+      questions,
+      endPolicy: {
+        autoFinish
+      }
+    };
+    this.quizConfigSaving = true;
+    this.setQuizConfigStatus("문항 설정 저장 중...");
+    this.socket.emit("quiz:config:set", payload, (response = {}) => {
+      this.quizConfigSaving = false;
+      if (!response?.ok) {
+        this.setQuizConfigStatus(`저장 실패: ${this.translateQuizError(response?.error)}`, true);
+        return;
+      }
+      this.handleQuizConfigUpdate(response?.config ?? {});
+      this.setQuizConfigStatus("문항/종료 설정 저장 완료");
+      this.appendChatLine("SYSTEM", "문항/종료 설정이 저장되었습니다.", "system");
+    });
+  }
+
+  handleQuizConfigUpdate(payload = {}) {
+    this.quizConfig = this.normalizeQuizConfigPayload(payload);
+    this.quizState.autoFinish = this.quizConfig?.endPolicy?.autoFinish !== false;
+    if (!this.quizConfigModalEl?.classList.contains("hidden")) {
+      this.renderQuizConfigEditor();
+    }
+    this.updateQuizControlUi();
+  }
+
+  setQuizReviewItems(items = []) {
+    const rows = Array.isArray(items) ? items : [];
+    this.quizReviewItems = rows
+      .map((entry, index) => ({
+        index: Math.max(1, Math.trunc(Number(entry?.index) || index + 1)),
+        text: String(entry?.text ?? "").trim().slice(0, 180),
+        answer: this.normalizeQuizAnswerChoice(entry?.answer),
+        explanation: String(entry?.explanation ?? "").trim().slice(0, 720)
+      }))
+      .filter((entry) => entry.text.length > 0);
+    this.quizReviewIndex = 0;
+    this.renderQuizReview();
+  }
+
+  renderQuizReview() {
+    const total = this.quizReviewItems.length;
+    const safeIndex = Math.max(0, Math.min(total - 1, this.quizReviewIndex));
+    this.quizReviewIndex = safeIndex;
+    const current = total > 0 ? this.quizReviewItems[safeIndex] : null;
+    if (this.quizReviewIndexEl) {
+      this.quizReviewIndexEl.textContent = total > 0 ? `${safeIndex + 1} / ${total}` : "0 / 0";
+    }
+    if (this.quizReviewQuestionEl) {
+      this.quizReviewQuestionEl.textContent = current
+        ? `문항 ${current.index}. ${current.text}`
+        : "해설 데이터가 없습니다.";
+    }
+    if (this.quizReviewAnswerEl) {
+      this.quizReviewAnswerEl.textContent = `정답: ${current?.answer ?? "-"}`;
+    }
+    if (this.quizReviewExplanationEl) {
+      this.quizReviewExplanationEl.textContent = `해설: ${current?.explanation || "등록된 해설이 없습니다."}`;
+    }
+    if (this.quizReviewPrevBtnEl) {
+      this.quizReviewPrevBtnEl.disabled = total <= 0 || safeIndex <= 0;
+    }
+    if (this.quizReviewNextBtnEl) {
+      this.quizReviewNextBtnEl.disabled = total <= 0 || safeIndex >= total - 1;
+    }
+  }
+
+  openQuizReviewModal() {
+    this.resolveUiElements();
+    if (!Array.isArray(this.quizReviewItems) || this.quizReviewItems.length <= 0) {
+      this.appendChatLine("SYSTEM", "표시할 해설 데이터가 없습니다.", "system");
+      return;
+    }
+    this.quizReviewModalEl?.classList.remove("hidden");
+    this.renderQuizReview();
+  }
+
+  closeQuizReviewModal() {
+    this.quizReviewModalEl?.classList.add("hidden");
+  }
+
+  moveQuizReview(delta = 0) {
+    const total = this.quizReviewItems.length;
+    if (total <= 0) {
+      return;
+    }
+    const next = Math.max(0, Math.min(total - 1, this.quizReviewIndex + Math.trunc(Number(delta) || 0)));
+    this.quizReviewIndex = next;
+    this.renderQuizReview();
   }
 
   updateQuizControlUi() {
@@ -6777,6 +7255,13 @@ export class GameRuntime {
     this.quizStartBtnEl &&
       (this.quizStartBtnEl.disabled = !canControl || active || waitingPlayers > 0 || admissionInProgress);
     this.quizStopBtnEl && (this.quizStopBtnEl.disabled = !canControl || !active);
+    if (this.quizConfigBtnEl) {
+      this.quizConfigBtnEl.disabled =
+        !canControl || active || admissionInProgress || this.quizConfigLoading || this.quizConfigSaving;
+    }
+    if (this.quizReviewBtnEl) {
+      this.quizReviewBtnEl.disabled = this.quizReviewItems.length <= 0;
+    }
     if (this.portalLobbyOpenBtnEl) {
       this.portalLobbyOpenBtnEl.disabled = !canControl || active || portalOpen || admissionInProgress;
     }
@@ -6810,7 +7295,7 @@ export class GameRuntime {
       }
       const phaseKor = this.formatQuizPhase(phase);
       if (active) {
-        this.quizControlsNoteEl.textContent = `모드: 수동(호스팅) | 단계: ${phaseKor} | 문항 ${Math.max(0, this.quizState.questionIndex)}/${Math.max(0, this.quizState.totalQuestions)}`;
+        this.quizControlsNoteEl.textContent = `모드: 수동(호스팅) | 단계: ${phaseKor} | 문항 ${Math.max(0, this.quizState.questionIndex)}/${Math.max(0, this.quizState.totalQuestions)} | 종료 ${this.quizState.autoFinish ? "자동" : "수동"}`;
       } else {
         if (admissionInProgress) {
           this.quizControlsNoteEl.textContent =
@@ -6845,6 +7330,7 @@ export class GameRuntime {
       }
       this.quizState.hostId = String(response?.hostId ?? this.localPlayerId ?? "");
       this.appendChatLine("SYSTEM", "호스팅 권한을 획득했습니다.", "system");
+      this.fetchQuizConfig();
       this.updateQuizControlUi();
     });
   }
@@ -6938,13 +7424,20 @@ export class GameRuntime {
       this.appendChatLine("SYSTEM", "오프라인 상태에서는 시작할 수 없습니다.", "system");
       return;
     }
-    this.socket.emit("quiz:start", { lockSeconds: 15 }, (response = {}) => {
-      if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `시작 실패: ${this.translateQuizError(response?.error)}`, "system");
-        return;
+    this.socket.emit(
+      "quiz:start",
+      {
+        lockSeconds: 15,
+        autoFinish: this.quizConfig?.endPolicy?.autoFinish !== false
+      },
+      (response = {}) => {
+        if (!response?.ok) {
+          this.appendChatLine("SYSTEM", `시작 실패: ${this.translateQuizError(response?.error)}`, "system");
+          return;
+        }
+        this.appendChatLine("SYSTEM", "방장이 퀴즈를 시작했습니다.", "system");
       }
-      this.appendChatLine("SYSTEM", "방장이 퀴즈를 시작했습니다.", "system");
-    });
+    );
   }
 
   requestQuizStop() {

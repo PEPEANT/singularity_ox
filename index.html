@@ -46,6 +46,10 @@
         <button id="quiz-stop-btn" type="button">중지</button>
       </div>
       <div class="quiz-controls-row">
+        <button id="quiz-config-btn" type="button">문항/종료 설정</button>
+        <button id="quiz-review-btn" type="button">해설 보기</button>
+      </div>
+      <div class="quiz-controls-row">
         <button id="portal-open-btn" type="button">포탈 열기</button>
         <button id="portal-admit-btn" type="button">입장 시작</button>
       </div>
@@ -183,6 +187,46 @@
       <div id="entry-wait-panel">
         <h2>입장 대기 중</h2>
         <p id="entry-wait-text">방장이 입장 시작을 누를 때까지 대기하세요.</p>
+      </div>
+    </div>
+
+    <div id="quiz-config-modal" class="hidden" aria-modal="true" role="dialog" aria-labelledby="quiz-config-title">
+      <div id="quiz-config-panel">
+        <div class="quiz-modal-head">
+          <h2 id="quiz-config-title">문항/종료 설정</h2>
+          <button id="quiz-config-close-btn" type="button">닫기</button>
+        </div>
+        <div class="quiz-config-toolbar">
+          <label for="quiz-slot-count-input">문항 슬롯</label>
+          <input id="quiz-slot-count-input" type="number" min="1" max="50" step="1" value="10" />
+          <label class="quiz-checkbox">
+            <input id="quiz-auto-finish-input" type="checkbox" checked />
+            <span>자동 종료</span>
+          </label>
+          <button id="quiz-config-reset-btn" type="button">기본값</button>
+        </div>
+        <p id="quiz-config-status">문항과 정답/해설을 편집하세요.</p>
+        <div id="quiz-question-list"></div>
+        <div class="quiz-config-actions">
+          <button id="quiz-config-save-btn" type="button">저장</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="quiz-review-modal" class="hidden" aria-modal="true" role="dialog" aria-labelledby="quiz-review-title">
+      <div id="quiz-review-panel">
+        <div class="quiz-modal-head">
+          <h2 id="quiz-review-title">게임 해설</h2>
+          <button id="quiz-review-close-btn" type="button">닫기</button>
+        </div>
+        <p id="quiz-review-index">0 / 0</p>
+        <p id="quiz-review-question">해설 데이터가 없습니다.</p>
+        <p id="quiz-review-answer">정답: -</p>
+        <p id="quiz-review-explanation">해설: -</p>
+        <div class="quiz-config-actions">
+          <button id="quiz-review-prev-btn" type="button">이전</button>
+          <button id="quiz-review-next-btn" type="button">다음</button>
+        </div>
       </div>
     </div>
 
