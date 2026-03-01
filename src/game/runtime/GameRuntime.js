@@ -88,6 +88,9 @@ const MOVEMENT_KEY_CODES = new Set([
 ]);
 const QUIZ_CONFIG_DRAFT_STORAGE_PREFIX = "singularity_ox.quiz_config_draft.v1";
 const QUIZ_CONFIG_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 21;
+const QUIZ_MIN_TIME_LIMIT_SECONDS = 30;
+const QUIZ_MAX_TIME_LIMIT_SECONDS = 3600;
+const QUIZ_DEFAULT_TIME_LIMIT_SECONDS = 30;
 const CHAT_BUBBLE_MIN_LIFETIME_MS = 9000;
 const MOBILE_CHAT_PREVIEW_MIN_LIFETIME_MS = 7000;
 
@@ -8362,13 +8365,26 @@ export class GameRuntime {
     return value === "X" ? "X" : "O";
   }
 
+  normalizeQuizTimeLimitSeconds(raw, fallback = QUIZ_DEFAULT_TIME_LIMIT_SECONDS) {
+    const fallbackSeconds = Math.max(
+      QUIZ_MIN_TIME_LIMIT_SECONDS,
+      Math.min(QUIZ_MAX_TIME_LIMIT_SECONDS, Math.trunc(Number(fallback) || QUIZ_DEFAULT_TIME_LIMIT_SECONDS))
+    );
+    const seconds = Math.trunc(Number(raw));
+    if (!Number.isFinite(seconds)) {
+      return fallbackSeconds;
+    }
+    return Math.max(QUIZ_MIN_TIME_LIMIT_SECONDS, Math.min(QUIZ_MAX_TIME_LIMIT_SECONDS, seconds));
+  }
+
   createDefaultQuizQuestion(index = 0) {
     const order = Math.max(0, Math.trunc(Number(index) || 0)) + 1;
     return {
       id: `Q${order}`,
       text: `문항 ${order}`,
       answer: "O",
-      explanation: ""
+      explanation: "",
+      timeLimitSeconds: QUIZ_DEFAULT_TIME_LIMIT_SECONDS
     };
   }
 
@@ -8399,6 +8415,10 @@ export class GameRuntime {
         const text = String(entry?.text ?? "")
           .trim()
           .slice(0, 180);
+        const fallbackTimeLimit = this.normalizeQuizTimeLimitSeconds(
+          this.quizConfig?.questions?.[index]?.timeLimitSeconds,
+          QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+        );
         return {
           id: String(entry?.id ?? `Q${index + 1}`)
             .trim()
@@ -8407,7 +8427,11 @@ export class GameRuntime {
           answer: this.normalizeQuizAnswerChoice(entry?.answer),
           explanation: String(entry?.explanation ?? "")
             .trim()
-            .slice(0, 720)
+            .slice(0, 720),
+          timeLimitSeconds: this.normalizeQuizTimeLimitSeconds(
+            entry?.timeLimitSeconds ?? entry?.lockSeconds,
+            fallbackTimeLimit
+          )
         };
       })
       .slice(0, maxQuestions);
@@ -8589,6 +8613,11 @@ export class GameRuntime {
         const textEl = row.querySelector(".quiz-question-text");
         const answerEl = row.querySelector(".quiz-question-answer");
         const explanationEl = row.querySelector(".quiz-question-explanation");
+        const timeLimitEl = row.querySelector(".quiz-question-time");
+        const fallbackTimeLimit = this.normalizeQuizTimeLimitSeconds(
+          this.quizConfig?.questions?.[index]?.timeLimitSeconds,
+          QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+        );
         const text = String(textEl?.value ?? "")
           .trim()
           .slice(0, 180);
@@ -8598,7 +8627,8 @@ export class GameRuntime {
           answer: this.normalizeQuizAnswerChoice(answerEl?.value),
           explanation: String(explanationEl?.value ?? "")
             .trim()
-            .slice(0, 720)
+            .slice(0, 720),
+          timeLimitSeconds: this.normalizeQuizTimeLimitSeconds(timeLimitEl?.value, fallbackTimeLimit)
         };
       });
   }
@@ -8668,8 +8698,24 @@ export class GameRuntime {
       optionX.textContent = "정답 X";
       answerSelect.append(optionO, optionX);
       answerSelect.value = this.normalizeQuizAnswerChoice(question?.answer);
+      const side = document.createElement("div");
+      side.className = "quiz-question-side";
+      const timeLimitWrap = document.createElement("label");
+      timeLimitWrap.className = "quiz-question-time-wrap";
+      timeLimitWrap.textContent = "시간(초)";
+      const timeLimitInput = document.createElement("input");
+      timeLimitInput.className = "quiz-question-time";
+      timeLimitInput.type = "number";
+      timeLimitInput.min = String(QUIZ_MIN_TIME_LIMIT_SECONDS);
+      timeLimitInput.max = String(QUIZ_MAX_TIME_LIMIT_SECONDS);
+      timeLimitInput.step = "1";
+      timeLimitInput.value = String(
+        this.normalizeQuizTimeLimitSeconds(question?.timeLimitSeconds, QUIZ_DEFAULT_TIME_LIMIT_SECONDS)
+      );
+      timeLimitWrap.appendChild(timeLimitInput);
+      side.append(answerSelect, timeLimitWrap);
 
-      row.append(order, fields, answerSelect);
+      row.append(order, fields, side);
       fragment.appendChild(row);
     }
     this.quizQuestionListEl.replaceChildren(fragment);
@@ -9195,7 +9241,6 @@ export class GameRuntime {
     this.socket.emit(
       "quiz:start",
       {
-        lockSeconds: 15,
         autoFinish: this.quizConfig?.endPolicy?.autoFinish !== false
       },
       (response = {}) => {

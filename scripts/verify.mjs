@@ -222,23 +222,37 @@ async function checkSocketServer() {
     c1.emit("player:sync", { x: -10, y: 1.72, z: 0, yaw: 0, pitch: 0 });
     c2.emit("player:sync", { x: -12, y: 1.72, z: 0, yaw: 0, pitch: 0 });
 
+    let hostClient = c1;
     let quizStartAck = await emitAck(c1, "quiz:start", {
-      lockSeconds: 2,
       questions: [
-        { id: "VERIFY_Q1", text: "verify 1", answer: "O" },
-        { id: "VERIFY_Q2", text: "verify 2", answer: "O" }
+        { id: "VERIFY_Q1", text: "verify 1", answer: "O", timeLimitSeconds: 30 },
+        { id: "VERIFY_Q2", text: "verify 2", answer: "O", timeLimitSeconds: 30 }
       ]
     });
     if (!quizStartAck?.ok) {
+      hostClient = c2;
       quizStartAck = await emitAck(c2, "quiz:start", {
-        lockSeconds: 2,
         questions: [
-          { id: "VERIFY_Q1", text: "verify 1", answer: "O" },
-          { id: "VERIFY_Q2", text: "verify 2", answer: "O" }
+          { id: "VERIFY_Q1", text: "verify 1", answer: "O", timeLimitSeconds: 30 },
+          { id: "VERIFY_Q2", text: "verify 2", answer: "O", timeLimitSeconds: 30 }
         ]
       });
     }
     assert(quizStartAck?.ok === true, `quiz:start failed: ${JSON.stringify(quizStartAck)}`);
+
+    await waitFor(() => quizQuestion >= 1, 8000);
+    c1.emit("player:sync", { x: -10, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+    c2.emit("player:sync", { x: -12, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+    await sleep(120);
+    const forceLockAck1 = await emitAck(hostClient, "quiz:force-lock");
+    assert(forceLockAck1?.ok === true, `first quiz:force-lock failed: ${JSON.stringify(forceLockAck1)}`);
+
+    await waitFor(() => quizResult >= 1 && quizQuestion >= 2, 12000);
+    c1.emit("player:sync", { x: -10, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+    c2.emit("player:sync", { x: -12, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+    await sleep(120);
+    const forceLockAck2 = await emitAck(hostClient, "quiz:force-lock");
+    assert(forceLockAck2?.ok === true, `second quiz:force-lock failed: ${JSON.stringify(forceLockAck2)}`);
 
     await waitFor(() => quizEnd >= 1 && quizResult >= 2, 16000);
     assert(quizStart >= 1, "quiz:start event was not received");

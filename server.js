@@ -87,9 +87,9 @@ const SERVER_MAX_TELEPORT_DISTANCE = 18;
 const SERVER_CORRECTION_MIN_DISTANCE = 0.22;
 const SERVER_CORRECTION_COOLDOWN_MS = 140;
 
-const QUIZ_DEFAULT_LOCK_SECONDS = 15;
-const QUIZ_MIN_LOCK_SECONDS = 3;
-const QUIZ_MAX_LOCK_SECONDS = 60;
+const QUIZ_DEFAULT_LOCK_SECONDS = 30;
+const QUIZ_MIN_LOCK_SECONDS = 30;
+const QUIZ_MAX_LOCK_SECONDS = 3600;
 const QUIZ_MAX_QUESTIONS = 50;
 const QUIZ_TEXT_MAX_LENGTH = 180;
 const QUIZ_EXPLANATION_MAX_LENGTH = 720;
@@ -258,7 +258,8 @@ function createRoom(code, persistent = false) {
         id: String(question?.id ?? `Q${index + 1}`),
         text: String(question?.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH),
         answer: normalizeQuizAnswer(question?.answer) ?? "O",
-        explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH)
+        explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH),
+        timeLimitSeconds: sanitizeQuizLockSeconds(question?.timeLimitSeconds ?? question?.lockSeconds)
       })),
       endPolicy: {
         autoFinish: true,
@@ -422,7 +423,8 @@ function getDefaultQuizConfigQuestions() {
     id: String(question?.id ?? `Q${index + 1}`),
     text: String(question?.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH) || `Question ${index + 1}`,
     answer: normalizeQuizAnswer(question?.answer) ?? "O",
-    explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH)
+    explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH),
+    timeLimitSeconds: sanitizeQuizLockSeconds(question?.timeLimitSeconds ?? question?.lockSeconds)
   }));
 }
 
@@ -1122,7 +1124,9 @@ function sanitizeQuizQuestion(rawQuestion = {}, index = 0) {
     .trim()
     .slice(0, QUIZ_EXPLANATION_MAX_LENGTH);
 
-  return { id, text, answer, explanation };
+  const timeLimitSeconds = sanitizeQuizLockSeconds(rawQuestion.timeLimitSeconds ?? rawQuestion.lockSeconds);
+
+  return { id, text, answer, explanation, timeLimitSeconds };
 }
 
 function sanitizeQuizQuestions(
@@ -1840,6 +1844,7 @@ function buildQuizQuestionPayload(quiz) {
   return {
     id: question.id,
     text: question.text,
+    timeLimitSeconds: sanitizeQuizLockSeconds(question?.timeLimitSeconds),
     index: Math.max(1, Number(quiz.questionIndex) + 1),
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
     lockAt: Number(quiz.lockAt ?? 0)
@@ -1898,7 +1903,8 @@ function buildQuizConfigPayload(room) {
       id: String(question?.id ?? `Q${index + 1}`),
       text: String(question?.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH),
       answer: normalizeQuizAnswer(question?.answer) ?? "O",
-      explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH)
+      explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH),
+      timeLimitSeconds: sanitizeQuizLockSeconds(question?.timeLimitSeconds ?? question?.lockSeconds)
     })),
     slotCount: questions.length,
     maxQuestions: QUIZ_MAX_QUESTIONS,
@@ -2017,7 +2023,6 @@ function scheduleAutoQuizStart(
     }
 
     const started = startQuiz(currentRoom, currentQuiz.hostId ?? hostId, {
-      lockSeconds: currentQuiz.lockSeconds,
       autoMode: true,
       autoFinish: ensureRoomQuizConfig(currentRoom)?.endPolicy?.autoFinish !== false
     });
@@ -2312,7 +2317,7 @@ function pushNextQuizQuestion(room, lockSecondsOverride = null) {
   quiz.lastResult = null;
 
   const lockSeconds = sanitizeQuizLockSeconds(
-    lockSecondsOverride == null ? quiz.lockSeconds : lockSecondsOverride
+    lockSecondsOverride == null ? nextQuestion?.timeLimitSeconds : lockSecondsOverride
   );
   quiz.lockSeconds = lockSeconds;
   scheduleQuizLock(room, lockSeconds);
@@ -2350,7 +2355,7 @@ function scheduleQuizNextQuestion(room, delayMs = QUIZ_AUTO_NEXT_DELAY_MS) {
     if (!quiz.active || quiz.phase !== "waiting-next") {
       return;
     }
-    pushNextQuizQuestion(room, quiz.lockSeconds);
+    pushNextQuizQuestion(room);
   }, safeDelay);
 }
 
@@ -2380,7 +2385,7 @@ function scheduleQuizFirstQuestion(room, delayMs = QUIZ_PREPARE_DELAY_MS) {
       return;
     }
     currentQuiz.prepareEndsAt = 0;
-    pushNextQuizQuestion(currentRoom, currentQuiz.lockSeconds);
+    pushNextQuizQuestion(currentRoom);
   }, safeDelay);
 
   return safeDelay;
@@ -2414,7 +2419,10 @@ function startQuiz(room, hostSocketId, payload = {}) {
     minQuestions: 1,
     maxQuestions: QUIZ_MAX_QUESTIONS
   });
-  const lockSeconds = sanitizeQuizLockSeconds(payload.lockSeconds);
+  const hasLockSecondsOverride = Object.prototype.hasOwnProperty.call(payload ?? {}, "lockSeconds");
+  const lockSeconds = hasLockSecondsOverride
+    ? sanitizeQuizLockSeconds(payload.lockSeconds)
+    : sanitizeQuizLockSeconds(questions[0]?.timeLimitSeconds);
   const autoMode = payload.autoMode !== false;
   const autoFinish = Object.prototype.hasOwnProperty.call(payload ?? {}, "autoFinish")
     ? payload.autoFinish !== false

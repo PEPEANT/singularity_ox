@@ -784,7 +784,7 @@ body.mobile-roster-focus #mobile-look-pad {
 
 .quiz-question-row {
   display: grid;
-  grid-template-columns: 34px 1fr 82px;
+  grid-template-columns: 34px 1fr 108px;
   gap: 6px;
   padding: 7px;
   border: 1px solid rgba(146, 193, 226, 0.48);
@@ -804,9 +804,16 @@ body.mobile-roster-focus #mobile-look-pad {
   gap: 5px;
 }
 
+.quiz-question-side {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+}
+
 .quiz-question-fields input,
 .quiz-question-fields textarea,
-.quiz-question-answer {
+.quiz-question-answer,
+.quiz-question-time {
   width: 100%;
   border: 1px solid rgba(158, 201, 233, 0.62);
   border-radius: 7px;
@@ -829,6 +836,19 @@ body.mobile-roster-focus #mobile-look-pad {
 
 .quiz-question-answer {
   height: 30px;
+  padding: 0 7px;
+}
+
+.quiz-question-time-wrap {
+  display: grid;
+  gap: 4px;
+  color: #c5e2f8;
+  font: 700 0.54rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.05em;
+}
+
+.quiz-question-time {
+  height: 28px;
   padding: 0 7px;
 }
 
@@ -1836,7 +1856,7 @@ body.mobile-chat-focus #chat-header {
   }
 
   .quiz-question-row {
-    grid-template-columns: 28px 1fr 66px;
+    grid-template-columns: 28px 1fr 86px;
     gap: 5px;
     padding: 6px;
   }
