@@ -108,6 +108,7 @@ const CHAT_HISTORY_MAX_ENTRIES = Math.max(
 );
 const BILLBOARD_MEDIA_URL_MAX_LENGTH = 420;
 const BILLBOARD_MEDIA_VISUAL_TYPES = new Set(["none", "video", "image"]);
+const ROOM_QUIZ_CONFIG_CACHE_LIMIT = Math.max(24, MAX_ACTIVE_ROOMS * 6);
 
 const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
   Object.freeze({
@@ -211,6 +212,8 @@ const QUIZ_SPECTATOR_SPAWN_MIN_RADIUS = 2.6;
 const QUIZ_SPECTATOR_SPAWN_MAX_RADIUS = 6.4;
 
 const rooms = new Map();
+const roomQuizConfigCache = new Map();
+let latestQuizConfigSnapshot = null;
 let playerCount = 0;
 
 function createQuizState() {
@@ -238,7 +241,7 @@ function createQuizState() {
 }
 
 function createRoom(code, persistent = false) {
-  return {
+  const room = {
     code,
     hostId: null,
     players: new Map(),
@@ -272,6 +275,8 @@ function createRoom(code, persistent = false) {
     quiz: createQuizState(),
     tick: 0
   };
+  applyCachedQuizConfigToRoom(room);
+  return room;
 }
 
 function sanitizeRoomCode(rawCode) {
@@ -429,6 +434,76 @@ function getDefaultQuizConfigQuestions() {
     explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH),
     timeLimitSeconds: sanitizeQuizLockSeconds(question?.timeLimitSeconds ?? question?.lockSeconds)
   }));
+}
+
+function cloneQuizConfig(rawConfig = null) {
+  const source = rawConfig && typeof rawConfig === "object" ? rawConfig : {};
+  const questions = sanitizeQuizQuestions(source.questions, {
+    fallbackToDefault: true,
+    minQuestions: 1,
+    maxQuestions: QUIZ_MAX_QUESTIONS
+  }).map((question) => ({
+    id: String(question?.id ?? "").slice(0, 24),
+    text: String(question?.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH),
+    answer: normalizeQuizAnswer(question?.answer) ?? "O",
+    explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH),
+    timeLimitSeconds: sanitizeQuizLockSeconds(question?.timeLimitSeconds ?? question?.lockSeconds)
+  }));
+  return {
+    questions,
+    endPolicy: {
+      autoFinish: source?.endPolicy?.autoFinish !== false,
+      showOppositeBillboard: source?.endPolicy?.showOppositeBillboard !== false
+    }
+  };
+}
+
+function trimRoomQuizConfigCache() {
+  while (roomQuizConfigCache.size > ROOM_QUIZ_CONFIG_CACHE_LIMIT) {
+    const oldestKey = roomQuizConfigCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    roomQuizConfigCache.delete(oldestKey);
+  }
+}
+
+function rememberRoomQuizConfig(room) {
+  if (!room || typeof room !== "object") {
+    return;
+  }
+  const code = sanitizeRoomCode(room.code);
+  const snapshot = cloneQuizConfig(room.quizConfig);
+  if (code) {
+    roomQuizConfigCache.set(code, snapshot);
+    trimRoomQuizConfigCache();
+  }
+  latestQuizConfigSnapshot = snapshot;
+}
+
+function resolveCachedQuizConfigForRoom(roomCode) {
+  const code = sanitizeRoomCode(roomCode);
+  if (code && roomQuizConfigCache.has(code)) {
+    return cloneQuizConfig(roomQuizConfigCache.get(code));
+  }
+  if (
+    latestQuizConfigSnapshot &&
+    (WORKER_SINGLE_ROOM_MODE || ROOM_OWNER_KEY || roomQuizConfigCache.size <= 1)
+  ) {
+    return cloneQuizConfig(latestQuizConfigSnapshot);
+  }
+  return null;
+}
+
+function applyCachedQuizConfigToRoom(room) {
+  if (!room || typeof room !== "object") {
+    return;
+  }
+  const cached = resolveCachedQuizConfigForRoom(room.code);
+  if (!cached) {
+    return;
+  }
+  room.quizConfig = cached;
 }
 
 function ensureRoomQuizConfig(room) {
@@ -2645,6 +2720,7 @@ function pruneRoomPlayers(room) {
     updateHost(room);
     reconcileQuizAfterRosterChange(room, "prune");
     if (!room.persistent && room.players.size === 0) {
+      rememberRoomQuizConfig(room);
       clearEntryAdmissionTimer(room);
       resetQuizState(room);
       rooms.delete(room.code);
@@ -2684,6 +2760,7 @@ function leaveCurrentRoom(socket) {
   reconcileQuizAfterRosterChange(room, "leave");
 
   if (!room.persistent && room.players.size === 0) {
+    rememberRoomQuizConfig(room);
     clearEntryAdmissionTimer(room);
     resetQuizState(room);
     rooms.delete(room.code);
@@ -3356,6 +3433,7 @@ io.on("connection", (socket) => {
       config.endPolicy.showOppositeBillboard = payload.showOppositeBillboard !== false;
     }
     config.endPolicy.showOppositeBillboard = config.endPolicy.showOppositeBillboard !== false;
+    rememberRoomQuizConfig(room);
     quiz.autoFinish = config.endPolicy.autoFinish;
 
     const response = {
