@@ -1397,15 +1397,18 @@ body.mobile-roster-focus #mobile-look-pad {
 }
 
 #chat-close-btn {
-  display: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
   height: 30px;
-  padding: 0 10px;
+  padding: 0;
   border: 1px solid rgba(176, 210, 240, 0.68);
-  border-radius: 8px;
+  border-radius: 999px;
   background: rgba(16, 35, 53, 0.9);
   color: #eef8ff;
-  font: 700 0.68rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
-  letter-spacing: 0.03em;
+  font: 800 1rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0;
 }
 
 #chat-log {
@@ -1692,9 +1695,9 @@ body.mobile-chat-focus #chat-header {
   }
 
   #chat-close-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+    width: 34px;
+    height: 34px;
+    font-size: 1.1rem;
   }
 
   body.mobile-chat-focus #chat-input {
