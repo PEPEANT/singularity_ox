@@ -402,6 +402,7 @@ export class GameRuntime {
     this.recentChatEventSignatures = new Map();
     this.toolUiEl = document.getElementById("tool-ui");
     this.chatUiEl = document.getElementById("chat-ui");
+    this.orientationLockOverlayEl = document.getElementById("orientation-lock-overlay");
     this.quizControlsEl = document.getElementById("quiz-controls");
     this.quizHostBtnEl = document.getElementById("quiz-host-btn");
     this.quizStartBtnEl = document.getElementById("quiz-start-btn");
@@ -1867,7 +1868,44 @@ export class GameRuntime {
     return aspect < 1 ? MOBILE_RUNTIME_SETTINGS.fovPortrait : MOBILE_RUNTIME_SETTINGS.fovLandscape;
   }
 
+  isMobilePortraitLocked() {
+    if (!this.mobileEnabled || typeof window === "undefined") {
+      return false;
+    }
+    const width = Number(window.innerWidth) || 0;
+    const height = Number(window.innerHeight) || 0;
+    if (width <= 0 || height <= 0) {
+      return false;
+    }
+    return height > width;
+  }
+
+  syncOrientationLockUi() {
+    this.resolveUiElements();
+    const locked = this.isMobilePortraitLocked();
+    this.orientationLockOverlayEl?.classList.toggle("hidden", !locked);
+    this.orientationLockOverlayEl?.setAttribute("aria-hidden", locked ? "false" : "true");
+    if (typeof document !== "undefined" && document.body) {
+      document.body.classList.toggle("mobile-orientation-lock", locked);
+    }
+    return locked;
+  }
+
+  tryLockLandscapeOrientation() {
+    if (!this.mobileEnabled || typeof screen === "undefined") {
+      return;
+    }
+    const orientation = screen.orientation;
+    if (!orientation || typeof orientation.lock !== "function") {
+      return;
+    }
+    orientation.lock("landscape").catch(() => {});
+  }
+
   canMovePlayer() {
+    if (this.isMobilePortraitLocked()) {
+      return false;
+    }
     if (this.isLobbyBlockingGameplay()) {
       return false;
     }
@@ -1888,6 +1926,9 @@ export class GameRuntime {
   }
 
   canUseGameplayControls() {
+    if (this.isMobilePortraitLocked()) {
+      return false;
+    }
     return (
       !this.isLobbyBlockingGameplay() &&
       !this.localAdmissionWaiting &&
@@ -1946,6 +1987,7 @@ export class GameRuntime {
           maybePromise
             .then(() => {
               this.fullscreenPending = false;
+              this.tryLockLandscapeOrientation();
             })
             .catch(() => {
               this.fullscreenPending = true;
@@ -1956,6 +1998,7 @@ export class GameRuntime {
       if (typeof root.webkitRequestFullscreen === "function") {
         root.webkitRequestFullscreen();
         this.fullscreenPending = !this.isFullscreenActive();
+        this.tryLockLandscapeOrientation();
       }
     } catch {
       this.fullscreenPending = true;
@@ -4835,6 +4878,7 @@ export class GameRuntime {
           return;
         }
         this.requestAppFullscreen({ fromGesture: true });
+        this.tryLockLandscapeOrientation();
         this.mobileModeLocked = true;
         if (!this.mobileEnabled) {
           this.mobileEnabled = true;
@@ -5197,6 +5241,9 @@ export class GameRuntime {
     }
     if (!this.chatUiEl) {
       this.chatUiEl = document.getElementById("chat-ui");
+    }
+    if (!this.orientationLockOverlayEl) {
+      this.orientationLockOverlayEl = document.getElementById("orientation-lock-overlay");
     }
     if (!this.quizControlsEl) {
       this.quizControlsEl = document.getElementById("quiz-controls");
@@ -5755,8 +5802,9 @@ export class GameRuntime {
 
   updateMobileControlUi() {
     this.resolveUiElements();
+    const orientationLocked = this.syncOrientationLockUi();
     const showMobileUi =
-      this.mobileEnabled && !this.isLobbyBlockingGameplay() && !this.localAdmissionWaiting;
+      this.mobileEnabled && !orientationLocked && !this.isLobbyBlockingGameplay() && !this.localAdmissionWaiting;
     const canUseMobileChat = this.mobileEnabled && this.canUseGameplayControls();
     this.mobileControlsEl?.classList.toggle("hidden", !showMobileUi);
     this.mobileLookPadEl?.classList.toggle("hidden", !showMobileUi);

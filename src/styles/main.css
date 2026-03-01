@@ -42,6 +42,52 @@ canvas {
   touch-action: none;
 }
 
+#orientation-lock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(6, 16, 28, 0.96);
+  color: #e7f5ff;
+  text-align: center;
+}
+
+.orientation-lock-panel {
+  width: min(88vw, 360px);
+  padding: 20px 18px;
+  border: 1px solid rgba(169, 208, 238, 0.7);
+  border-radius: 14px;
+  background: rgba(11, 28, 45, 0.92);
+  box-shadow: 0 18px 34px rgba(2, 8, 14, 0.52);
+}
+
+.orientation-lock-panel h2 {
+  margin: 0 0 8px;
+  color: #f0f8ff;
+  font: 800 1rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.06em;
+}
+
+.orientation-lock-panel p {
+  margin: 0;
+  color: rgba(212, 234, 252, 0.9);
+  font: 700 0.82rem/1.4 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+body.mobile-orientation-lock #mobile-controls,
+body.mobile-orientation-lock #mobile-look-pad,
+body.mobile-orientation-lock #chat-ui,
+body.mobile-orientation-lock #tool-ui,
+body.mobile-orientation-lock #quiz-controls,
+body.mobile-orientation-lock #player-roster-panel,
+body.mobile-orientation-lock #hub-flow-ui {
+  opacity: 0;
+  pointer-events: none;
+}
+
 #hud-ui {
   position: fixed;
   top: 14px;
