@@ -427,10 +427,15 @@ function toRoomSummary(room, source = "local") {
     source === "local"
       ? room.endpoint || resolveWorkerEndpointForHealth(room.port)
       : String(room.endpoint ?? "").trim();
+  const ownerPresent =
+    room?.ownerPresent === true ||
+    room?.hostOwner === true ||
+    room?.lastHealth?.topRoom?.ownerPresent === true;
   return {
     code: sanitizeRoomCode(room.code),
     count,
     capacity: Number(room.capacity ?? MAX_ROOM_PLAYERS),
+    ownerPresent,
     endpoint,
     ready: room.ready !== false,
     createdAt: Number(room.createdAt ?? Date.now()),
@@ -454,6 +459,10 @@ async function collectLocalRooms({ refresh = true } = {}) {
 
 function sortRoomsByPriority(rooms) {
   rooms.sort((left, right) => {
+    const ownerDelta = Number(right?.ownerPresent === true) - Number(left?.ownerPresent === true);
+    if (ownerDelta !== 0) {
+      return ownerDelta;
+    }
     const playersDelta = Number(right.count || 0) - Number(left.count || 0);
     if (playersDelta !== 0) {
       return playersDelta;

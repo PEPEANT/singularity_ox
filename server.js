@@ -351,6 +351,18 @@ function isRoomJoinable(room) {
   return room.players.size < MAX_ROOM_PLAYERS;
 }
 
+function roomHasOwnerPresence(room) {
+  if (!room?.players || room.players.size <= 0) {
+    return false;
+  }
+  for (const player of room.players.values()) {
+    if (player?.isOwner === true) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function findJoinableRoom(preferredCode = null) {
   if (WORKER_SINGLE_ROOM_MODE) {
     const workerRoom =
@@ -376,6 +388,11 @@ function findJoinableRoom(preferredCode = null) {
   }
 
   candidates.sort((left, right) => {
+    const leftOwner = roomHasOwnerPresence(left) ? 1 : 0;
+    const rightOwner = roomHasOwnerPresence(right) ? 1 : 0;
+    if (leftOwner !== rightOwner) {
+      return rightOwner - leftOwner;
+    }
     const deltaPlayers = right.players.size - left.players.size;
     if (deltaPlayers !== 0) {
       return deltaPlayers;
@@ -1588,12 +1605,17 @@ function summarizeRooms() {
       count: room.players.size,
       capacity: MAX_ROOM_PLAYERS,
       hostName: room.players.get(room.hostId)?.name ?? "AUTO",
+      ownerPresent: roomHasOwnerPresence(room),
       quizActive: Boolean(room.quiz?.active),
       createdAt: Number(room.createdAt || 0)
     });
   }
 
   summary.sort((left, right) => {
+    const ownerDelta = Number(right.ownerPresent === true) - Number(left.ownerPresent === true);
+    if (ownerDelta !== 0) {
+      return ownerDelta;
+    }
     const playersDelta = right.count - left.count;
     if (playersDelta !== 0) {
       return playersDelta;
@@ -2767,6 +2789,7 @@ const httpServer = createServer((req, res) => {
             code: topRoom.code,
             players: topRoom.count,
             capacity: topRoom.capacity,
+            ownerPresent: topRoom.ownerPresent === true,
             hostName: topRoom.hostName,
             quiz: topRoomQuiz
               ? {
