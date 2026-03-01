@@ -305,47 +305,68 @@ canvas {
 }
 
 #mobile-move-pad {
+  position: relative;
   width: 170px;
   height: 170px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-  gap: 8px;
   pointer-events: auto;
+  border: 1px solid rgba(150, 192, 226, 0.42);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(31, 58, 84, 0.62), rgba(8, 20, 33, 0.92) 68%),
+    rgba(8, 20, 33, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(128, 170, 205, 0.2);
+}
+
+#mobile-move-pad::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(169, 208, 238, 0.4);
+  border-radius: 50%;
+  background: rgba(10, 25, 39, 0.8);
+  pointer-events: none;
 }
 
 .mobile-move-btn {
+  position: absolute;
+  width: 56px;
+  height: 56px;
   border: 1px solid rgba(167, 204, 233, 0.62);
   border-radius: 50%;
   background: rgba(10, 24, 40, 0.86);
   color: #e6f5ff;
   font: 800 0.95rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
   letter-spacing: 0.02em;
-  width: 100%;
-  height: 100%;
-  aspect-ratio: 1 / 1;
   padding: 0;
   pointer-events: auto;
 }
 
 .mobile-move-btn.up {
-  grid-column: 2;
-  grid-row: 1;
+  left: 50%;
+  top: 8px;
+  transform: translateX(-50%);
 }
 
 .mobile-move-btn.left {
-  grid-column: 1;
-  grid-row: 2;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .mobile-move-btn.right {
-  grid-column: 3;
-  grid-row: 2;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .mobile-move-btn.down {
-  grid-column: 2;
-  grid-row: 3;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
 }
 
 #mobile-action-pad {
@@ -414,6 +435,15 @@ canvas {
 
 #mobile-look-pad.active {
   background: rgba(17, 40, 62, 0.08);
+}
+
+body.mobile-chat-focus #mobile-move-pad,
+body.mobile-chat-focus #mobile-jump-btn,
+body.mobile-chat-focus #mobile-run-btn,
+body.mobile-chat-focus #mobile-roster-btn,
+body.mobile-chat-focus #mobile-look-pad {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .quiz-controls-head {
@@ -1667,7 +1697,33 @@ canvas {
   #mobile-move-pad {
     width: 156px;
     height: 156px;
-    gap: 7px;
+  }
+
+  #mobile-move-pad::after {
+    width: 34px;
+    height: 34px;
+  }
+
+  .mobile-move-btn {
+    width: 50px;
+    height: 50px;
+    font-size: 0.9rem;
+  }
+
+  .mobile-move-btn.up {
+    top: 7px;
+  }
+
+  .mobile-move-btn.left {
+    left: 7px;
+  }
+
+  .mobile-move-btn.right {
+    right: 7px;
+  }
+
+  .mobile-move-btn.down {
+    bottom: 7px;
   }
 
   #mobile-action-pad {

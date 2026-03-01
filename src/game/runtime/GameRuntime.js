@@ -4722,6 +4722,10 @@ export class GameRuntime {
       });
       this.chatInputEl.addEventListener("blur", () => {
         this.setChatOpen(false);
+        if (this.mobileEnabled) {
+          this.mobileChatPanelVisible = false;
+          this.applyMobileChatUi();
+        }
       });
     }
     this.chatSendBtnEl?.addEventListener("click", (event) => {
@@ -5387,6 +5391,9 @@ export class GameRuntime {
       this.releaseMobileInputs();
       this.mobileLookPointerId = null;
       this.mobileLookPadEl?.classList.remove("active");
+      if (typeof document !== "undefined" && document.body) {
+        document.body.classList.remove("mobile-chat-focus");
+      }
       if (!this.rosterVisibleByTab) {
         this.setRosterPinned(false);
       }
@@ -5399,6 +5406,10 @@ export class GameRuntime {
     const canUseMobileChat = this.mobileEnabled && this.canUseGameplayControls();
     const showChatPanel = !this.mobileEnabled || (canUseMobileChat && this.mobileChatPanelVisible);
     this.chatUiEl?.classList.toggle("mobile-chat-hidden", this.mobileEnabled && !showChatPanel);
+    if (typeof document !== "undefined" && document.body) {
+      const mobileChatFocus = this.mobileEnabled && this.chatOpen && canUseMobileChat;
+      document.body.classList.toggle("mobile-chat-focus", mobileChatFocus);
+    }
     if (this.mobileChatToggleBtnEl) {
       this.mobileChatToggleBtnEl.disabled = !canUseMobileChat;
       this.mobileChatToggleBtnEl.classList.toggle("active", this.mobileEnabled && showChatPanel);
@@ -8461,8 +8472,12 @@ export class GameRuntime {
           return;
         }
         this.chatInputEl.value = "";
-        this.setChatOpen(false);
-        this.chatInputEl.blur();
+        if (this.mobileEnabled) {
+          this.hideMobileChatPanel();
+        } else {
+          this.setChatOpen(false);
+          this.chatInputEl.blur();
+        }
       }
     );
   }
