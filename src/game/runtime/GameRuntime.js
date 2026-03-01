@@ -124,6 +124,7 @@ const MOVEMENT_KEY_CODES = new Set([
 ]);
 const QUIZ_CONFIG_DRAFT_STORAGE_PREFIX = "singularity_ox.quiz_config_draft.v1";
 const QUIZ_CONFIG_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 21;
+const LAST_ROOM_CODE_STORAGE_KEY = "singularity_ox.last_room_code.v1";
 const QUIZ_MIN_TIME_LIMIT_SECONDS = 30;
 const QUIZ_MAX_TIME_LIMIT_SECONDS = 3600;
 const QUIZ_DEFAULT_TIME_LIMIT_SECONDS = 30;
@@ -2716,6 +2717,10 @@ export class GameRuntime {
     }
 
     const joinPayload = { name: nextName };
+    const preferredRoomCode = this.getPreferredRoomCodeForJoin();
+    if (preferredRoomCode) {
+      joinPayload.roomCode = preferredRoomCode;
+    }
     if (this.ownerAccessEnabled) {
       joinPayload.ownerKey = this.ownerAccessKey;
     }
@@ -2744,6 +2749,41 @@ export class GameRuntime {
       }
     });
     this.pendingPlayerNameSync = false;
+  }
+
+  getPreferredRoomCodeForJoin() {
+    const directCode = String(
+      this.currentRoomCode || this.socketAuth?.roomCode || this.queryParams?.get?.("room") || ""
+    )
+      .trim()
+      .toUpperCase();
+    if (directCode) {
+      return directCode;
+    }
+    if (typeof window === "undefined" || !window.localStorage) {
+      return "";
+    }
+    try {
+      return String(window.localStorage.getItem(LAST_ROOM_CODE_STORAGE_KEY) ?? "")
+        .trim()
+        .toUpperCase();
+    } catch {
+      return "";
+    }
+  }
+
+  persistPreferredRoomCode(rawCode) {
+    const roomCode = String(rawCode ?? "")
+      .trim()
+      .toUpperCase();
+    if (!roomCode || typeof window === "undefined" || !window.localStorage) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(LAST_ROOM_CODE_STORAGE_KEY, roomCode);
+    } catch {
+      // ignore storage write failures
+    }
   }
 
   setupSky(sunDirection) {
@@ -7494,6 +7534,9 @@ export class GameRuntime {
     this.currentRoomCode = String(room?.code ?? this.currentRoomCode ?? "")
       .trim()
       .toUpperCase();
+    if (this.currentRoomCode) {
+      this.persistPreferredRoomCode(this.currentRoomCode);
+    }
     const previousHostId = String(this.quizState.hostId ?? "");
     const wasAdmissionInProgress =
       this.entryGateState?.admissionInProgress === true || this.getAdmissionCountdownSeconds() > 0;

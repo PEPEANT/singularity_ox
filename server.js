@@ -2782,6 +2782,17 @@ function pickOrCreateRoomForQuickJoin(preferredCode = null) {
     return workerRoom;
   }
 
+  const preferred = sanitizeRoomCode(preferredCode);
+  if (preferred) {
+    const preferredRoom = getRoom(preferred);
+    if (preferredRoom && isRoomJoinable(preferredRoom)) {
+      return preferredRoom;
+    }
+    if (!preferredRoom && rooms.size < MAX_ACTIVE_ROOMS) {
+      return createMatchRoom(preferred);
+    }
+  }
+
   const candidate = findJoinableRoom(preferredCode);
   if (candidate) {
     return candidate;
