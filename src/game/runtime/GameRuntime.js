@@ -39,17 +39,17 @@ const CENTER_BILLBOARD_BASE_HEIGHT = 512;
 const OPPOSITE_BILLBOARD_BASE_WIDTH = 1280;
 const OPPOSITE_BILLBOARD_BASE_HEIGHT = 720;
 const DYNAMIC_RESOLUTION_SETTINGS = Object.freeze({
-  sampleWindowSeconds: 1.2,
-  downshiftFps: 41,
-  upshiftFps: 61,
-  downshiftStep: 0.08,
-  upshiftStep: 0.06,
-  downshiftCooldownSeconds: 3.2,
-  upshiftCooldownSeconds: 3.6,
-  idleCooldownSeconds: 1.6,
-  ratioEpsilon: 0.05,
-  stableSamplesRequired: 4,
-  applyDelaySeconds: 0.3
+  sampleWindowSeconds: 1.35,
+  downshiftFps: 36,
+  upshiftFps: 55,
+  downshiftStep: 0.06,
+  upshiftStep: 0.05,
+  downshiftCooldownSeconds: 4.2,
+  upshiftCooldownSeconds: 2.8,
+  idleCooldownSeconds: 1.8,
+  ratioEpsilon: 0.04,
+  stableSamplesRequired: 5,
+  applyDelaySeconds: 0.45
 });
 const ROUND_OVERLAY_SETTINGS = Object.freeze({
   prepareDurationSeconds: 3.2,
@@ -59,7 +59,7 @@ const ROUND_OVERLAY_SETTINGS = Object.freeze({
   fireworkParticleCountMax: 44
 });
 const MOBILE_RUNTIME_SETTINGS = Object.freeze({
-  maxPixelRatio: 1.35,
+  maxPixelRatio: 1.45,
   minNetworkSyncInterval: 0.12,
   lookSensitivityX: 0.0106,
   lookSensitivityY: 0.0094,
@@ -7490,7 +7490,6 @@ export class GameRuntime {
     }
 
     this.appendChatLine(senderName, text, "remote");
-    this.notifyMobileIncomingChat(`${senderName}: ${text}`);
 
     let remote = null;
     if (senderId) {
@@ -9358,6 +9357,8 @@ export class GameRuntime {
 
     const line = document.createElement("p");
     line.className = `chat-line ${type}`;
+    let mobilePreviewText = "";
+    let isRemoteChatLine = false;
 
     if (type === "system") {
       line.textContent = String(text ?? "").trim();
@@ -9367,6 +9368,8 @@ export class GameRuntime {
       if (!safeText) {
         return false;
       }
+      mobilePreviewText = type === "self" ? `나: ${safeText}` : `${safeName}: ${safeText}`;
+      isRemoteChatLine = type === "remote";
 
       const nameEl = document.createElement("span");
       nameEl.className = "chat-name";
@@ -9383,6 +9386,13 @@ export class GameRuntime {
       this.chatLogEl.firstElementChild?.remove();
     }
     this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+    if (this.mobileEnabled && mobilePreviewText) {
+      if (isRemoteChatLine) {
+        this.notifyMobileIncomingChat(mobilePreviewText);
+      } else {
+        this.showMobileChatPreview(mobilePreviewText);
+      }
+    }
     return true;
   }
 
@@ -9436,11 +9446,11 @@ export class GameRuntime {
           );
           return;
         }
-        this.appendChatLine(senderName, text, "self");
         if (this.mobileEnabled) {
           this.hideMobileChatPanel();
-          this.showMobileChatPreview(`\uB098: ${text}`);
+          this.appendChatLine(senderName, text, "self");
         } else {
+          this.appendChatLine(senderName, text, "self");
           this.setChatOpen(false);
           this.chatInputEl.blur();
         }

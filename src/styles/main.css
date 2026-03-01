@@ -341,9 +341,9 @@ canvas {
 #mobile-chat-preview {
   position: fixed;
   left: max(16px, env(safe-area-inset-left));
-  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 136px);
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 142px);
   z-index: 47;
-  max-width: min(60vw, 280px);
+  max-width: min(72vw, 320px);
   max-height: min(34vh, 138px);
   display: grid;
   gap: 3px;
@@ -356,6 +356,7 @@ canvas {
   letter-spacing: 0.02em;
   overflow: hidden auto;
   pointer-events: none;
+  box-shadow: 0 8px 20px rgba(3, 10, 17, 0.4);
 }
 
 .mobile-chat-preview-line {
@@ -1826,8 +1827,8 @@ body.mobile-chat-focus #chat-header {
 
   #mobile-chat-preview {
     left: max(8px, env(safe-area-inset-left));
-    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 130px);
-    max-width: min(66vw, 250px);
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 136px);
+    max-width: min(74vw, 300px);
     max-height: min(32vh, 124px);
     font-size: 0.58rem;
   }
