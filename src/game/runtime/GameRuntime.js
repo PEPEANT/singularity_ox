@@ -334,18 +334,7 @@ export class GameRuntime {
     this.spectatorFollowId = null;
     this.spectatorFollowIndex = -1;
     this.spectatorFollowOffset = new THREE.Vector3(0, 2.5, 6.8);
-    const arenaBackWall = this.worldContent?.oxArena?.backWall ?? {};
-    const arenaBackWallCenterX = Number.isFinite(Number(arenaBackWall?.centerX))
-      ? Number(arenaBackWall.centerX)
-      : 0;
-    const arenaBackWallCenterZ = Number.isFinite(Number(arenaBackWall?.centerZ))
-      ? Number(arenaBackWall.centerZ)
-      : -32;
-    this.spectatorSpawn = new THREE.Vector3(
-      arenaBackWallCenterX,
-      GAME_CONSTANTS.PLAYER_HEIGHT,
-      arenaBackWallCenterZ + 6.2
-    );
+    this.spectatorSpawn = new THREE.Vector3(0, GAME_CONSTANTS.PLAYER_HEIGHT, -32);
     const oZoneConfig = this.worldContent?.oxArena?.oZone ?? {};
     const xZoneConfig = this.worldContent?.oxArena?.xZone ?? {};
     const readZone = (zone, fallbackCenterX) => {
@@ -371,6 +360,11 @@ export class GameRuntime {
       maxZ: Math.max(oZone.maxZ, xZone.maxZ) + spectatorArenaMargin,
       exitPadding: 1.4
     };
+    this.spectatorSpawn.set(
+      this.spectatorArenaGuard.minX - 8,
+      GAME_CONSTANTS.PLAYER_HEIGHT,
+      this.spectatorArenaGuard.minZ - 7
+    );
     this.oxTrapdoors = {
       o: null,
       x: null

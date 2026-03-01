@@ -203,10 +203,10 @@ const QUIZ_ARENA_MAX_X =
   Math.max(QUIZ_O_ZONE.maxX, QUIZ_X_ZONE.maxX) + QUIZ_SPECTATOR_ARENA_MARGIN;
 const QUIZ_ARENA_MIN_Z = QUIZ_ACTIVE_MIN_Z - QUIZ_SPECTATOR_ARENA_MARGIN;
 const QUIZ_ARENA_MAX_Z = QUIZ_ACTIVE_MAX_Z + QUIZ_SPECTATOR_ARENA_MARGIN;
-const QUIZ_SPECTATOR_SPAWN_CENTER_X = 0;
-const QUIZ_SPECTATOR_SPAWN_CENTER_Z = Math.min(QUIZ_ARENA_MIN_Z - 12, -36);
-const QUIZ_SPECTATOR_SPAWN_MIN_RADIUS = 6;
-const QUIZ_SPECTATOR_SPAWN_MAX_RADIUS = 14;
+const QUIZ_SPECTATOR_SPAWN_CENTER_X = QUIZ_ARENA_MIN_X - 10;
+const QUIZ_SPECTATOR_SPAWN_CENTER_Z = QUIZ_ARENA_MIN_Z - 10;
+const QUIZ_SPECTATOR_SPAWN_MIN_RADIUS = 2.6;
+const QUIZ_SPECTATOR_SPAWN_MAX_RADIUS = 6.4;
 
 const rooms = new Map();
 let playerCount = 0;
@@ -709,7 +709,11 @@ function buildQuizSpectatorSpawnPoint(playerId = "") {
 
   let x = QUIZ_SPECTATOR_SPAWN_CENTER_X + Math.cos(angle) * radius;
   let z = QUIZ_SPECTATOR_SPAWN_CENTER_Z + Math.sin(angle) * radius;
+  const minSpectatorX = QUIZ_ARENA_MIN_X - QUIZ_SPECTATOR_ARENA_EXIT_PADDING;
   const maxSpectatorZ = QUIZ_ARENA_MIN_Z - QUIZ_SPECTATOR_ARENA_EXIT_PADDING;
+  if (x > minSpectatorX) {
+    x = minSpectatorX;
+  }
   if (z > maxSpectatorZ) {
     z = maxSpectatorZ;
   }
