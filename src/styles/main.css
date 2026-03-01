@@ -47,13 +47,13 @@ canvas {
   left: 14px;
   z-index: 36;
   display: grid;
-  gap: 6px;
-  min-width: 112px;
-  padding: 10px 12px;
-  border: 1px solid var(--hud-border);
-  border-radius: 11px;
-  background: var(--hud-bg);
-  backdrop-filter: blur(5px);
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
 }
 
 .hud-row {
@@ -308,8 +308,8 @@ canvas {
 
 #mobile-move-pad {
   position: relative;
-  width: 148px;
-  height: 148px;
+  width: 132px;
+  height: 132px;
   pointer-events: auto;
   border: 1px solid rgba(150, 192, 226, 0.42);
   border-radius: 50%;
@@ -323,8 +323,8 @@ canvas {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 52px;
-  height: 52px;
+  width: 44px;
+  height: 44px;
   transform: translate(-50%, -50%);
   border: 1px solid rgba(183, 217, 243, 0.72);
   border-radius: 50%;
@@ -341,7 +341,7 @@ canvas {
 #mobile-chat-preview {
   position: fixed;
   left: max(16px, env(safe-area-inset-left));
-  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 156px);
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 136px);
   z-index: 47;
   max-width: min(60vw, 280px);
   padding: 7px 10px;
@@ -1803,18 +1803,18 @@ body.mobile-chat-focus #chat-header {
   }
 
   #mobile-move-pad {
-    width: 138px;
-    height: 138px;
+    width: 122px;
+    height: 122px;
   }
 
   #mobile-move-thumb {
-    width: 46px;
-    height: 46px;
+    width: 40px;
+    height: 40px;
   }
 
   #mobile-chat-preview {
     left: max(8px, env(safe-area-inset-left));
-    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 146px);
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 130px);
     max-width: min(66vw, 250px);
     font-size: 0.58rem;
   }

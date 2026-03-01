@@ -40,15 +40,15 @@ const OPPOSITE_BILLBOARD_BASE_WIDTH = 1280;
 const OPPOSITE_BILLBOARD_BASE_HEIGHT = 720;
 const DYNAMIC_RESOLUTION_SETTINGS = Object.freeze({
   sampleWindowSeconds: 1.05,
-  downshiftFps: 45,
-  upshiftFps: 62,
-  downshiftStep: 0.1,
-  upshiftStep: 0.05,
-  downshiftCooldownSeconds: 1.2,
-  upshiftCooldownSeconds: 2,
-  idleCooldownSeconds: 0.6,
+  downshiftFps: 43,
+  upshiftFps: 61,
+  downshiftStep: 0.06,
+  upshiftStep: 0.04,
+  downshiftCooldownSeconds: 2.2,
+  upshiftCooldownSeconds: 2.6,
+  idleCooldownSeconds: 1.2,
   ratioEpsilon: 0.03,
-  stableSamplesRequired: 2
+  stableSamplesRequired: 3
 });
 const ROUND_OVERLAY_SETTINGS = Object.freeze({
   prepareDurationSeconds: 3.2,
@@ -58,19 +58,19 @@ const ROUND_OVERLAY_SETTINGS = Object.freeze({
   fireworkParticleCountMax: 44
 });
 const MOBILE_RUNTIME_SETTINGS = Object.freeze({
-  maxPixelRatio: 1.12,
+  maxPixelRatio: 1.2,
   minNetworkSyncInterval: 0.12,
-  lookSensitivityX: 0.0072,
-  lookSensitivityY: 0.0062,
-  fovLandscape: 86,
-  fovPortrait: 94,
+  lookSensitivityX: 0.0092,
+  lookSensitivityY: 0.0082,
+  fovLandscape: 92,
+  fovPortrait: 100,
   hudRefreshIntervalSeconds: 0.32,
   roundOverlaySpawnIntervalSeconds: 0.46,
   roundOverlayParticleScale: 0.58
 });
 const DESKTOP_RUNTIME_SETTINGS = Object.freeze({
   maxPixelRatio: 1.5,
-  orientationCorrectionInputLockMs: 140
+  orientationCorrectionInputLockMs: 260
 });
 const MOVEMENT_KEY_CODES = new Set([
   "KeyW",
@@ -3187,25 +3187,31 @@ export class GameRuntime {
     frame.receiveShadow = true;
     group.add(frame);
 
-    const video = document.createElement("video");
-    const configuredUrl = String(config.videoUrl ?? "").trim();
-    video.src = configuredUrl || MEGA_AD_VIDEO_URL;
-    video.preload = this.mobileEnabled ? "metadata" : "auto";
-    video.loop = true;
-    video.muted = true;
-    video.playsInline = true;
-    video.autoplay = true;
-    video.crossOrigin = "anonymous";
-    video.disablePictureInPicture = true;
-    video.setAttribute("playsinline", "");
-    video.setAttribute("webkit-playsinline", "");
-    video.setAttribute("disablePictureInPicture", "");
+    const allowMobileVideo = config.mobileVideoEnabled === true;
+    const useVideoTexture = !this.mobileEnabled || allowMobileVideo;
+    let video = null;
+    let videoTexture = null;
+    if (useVideoTexture) {
+      video = document.createElement("video");
+      const configuredUrl = String(config.videoUrl ?? "").trim();
+      video.src = configuredUrl || MEGA_AD_VIDEO_URL;
+      video.preload = this.mobileEnabled ? "metadata" : "auto";
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.autoplay = true;
+      video.crossOrigin = "anonymous";
+      video.disablePictureInPicture = true;
+      video.setAttribute("playsinline", "");
+      video.setAttribute("webkit-playsinline", "");
+      video.setAttribute("disablePictureInPicture", "");
 
-    const videoTexture = new THREE.VideoTexture(video);
-    videoTexture.colorSpace = THREE.SRGBColorSpace;
-    videoTexture.minFilter = THREE.LinearFilter;
-    videoTexture.magFilter = THREE.LinearFilter;
-    videoTexture.generateMipmaps = false;
+      videoTexture = new THREE.VideoTexture(video);
+      videoTexture.colorSpace = THREE.SRGBColorSpace;
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
+      videoTexture.generateMipmaps = false;
+    }
 
     const textCanvas = document.createElement("canvas");
     const textScale = this.mobileEnabled ? 0.5 : 0.72;
@@ -3221,7 +3227,7 @@ export class GameRuntime {
 
     const screenMaterial = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      map: videoTexture,
+      map: useVideoTexture ? videoTexture : textTexture,
       roughness: 0.2,
       metalness: 0.06,
       emissive: 0x3a5f84,
@@ -3309,10 +3315,12 @@ export class GameRuntime {
     this.applyOppositeBillboardMode();
 
     const attemptPlay = () => {
-      video.play().catch(() => {});
+      video?.play().catch(() => {});
     };
-    video.addEventListener("canplay", attemptPlay, { once: true });
-    attemptPlay();
+    if (video) {
+      video.addEventListener("canplay", attemptPlay, { once: true });
+      attemptPlay();
+    }
   }
 
   applyOppositeBillboardMode() {
@@ -3324,13 +3332,16 @@ export class GameRuntime {
       this.quizOppositeBillboardEnabled !== false &&
       this.quizOppositeBillboardResultVisible === true &&
       Boolean(this.megaAdTextTexture);
-    const nextMap = useText ? this.megaAdTextTexture : this.megaAdVideoTexture;
+    const hasVideo = Boolean(this.megaAdVideoTexture && this.megaAdVideoEl);
+    const nextMap = useText
+      ? this.megaAdTextTexture
+      : this.megaAdVideoTexture ?? this.megaAdTextTexture;
     if (this.megaAdScreenMaterial.map !== nextMap) {
       this.megaAdScreenMaterial.map = nextMap ?? null;
       this.megaAdScreenMaterial.needsUpdate = true;
     }
 
-    if (useText) {
+    if (useText || !hasVideo) {
       this.megaAdVideoEl?.pause?.();
     } else {
       this.kickMegaAdVideoPlayback();
@@ -6999,7 +7010,7 @@ export class GameRuntime {
       nextY - this.playerPosition.y,
       nextZ - this.playerPosition.z
     );
-    const correctionIgnoreDistance = this.mobileEnabled ? 0.1 : 0.24;
+    const correctionIgnoreDistance = this.mobileEnabled ? 0.12 : 0.32;
     if (distance < correctionIgnoreDistance) {
       return;
     }
@@ -7008,8 +7019,8 @@ export class GameRuntime {
       this.playerPosition.set(nextX, nextY, nextZ);
     } else {
       const blend = this.mobileEnabled
-        ? THREE.MathUtils.clamp(0.12 + (distance / 2.6) * 0.28, 0.12, 0.4)
-        : THREE.MathUtils.clamp(0.08 + (distance / 2.6) * 0.2, 0.08, 0.28);
+        ? THREE.MathUtils.clamp(0.1 + (distance / 2.6) * 0.25, 0.1, 0.35)
+        : THREE.MathUtils.clamp(0.05 + (distance / 2.6) * 0.16, 0.05, 0.21);
       this.playerPosition.lerp(this.serverCorrectionTarget.set(nextX, nextY, nextZ), blend);
     }
     let correctedYawOrPitch = false;
@@ -7018,7 +7029,12 @@ export class GameRuntime {
       this.pointerLocked &&
       performance.now() - this.lastLookInputAt <
         DESKTOP_RUNTIME_SETTINGS.orientationCorrectionInputLockMs;
-    const blockOrientationCorrection = recentLookInput && distance < 1.8;
+    const movingInput = this.hasLocalMovementIntent();
+    const blockOrientationCorrection =
+      !this.mobileEnabled &&
+      this.pointerLocked &&
+      (recentLookInput || movingInput) &&
+      distance < 3.4;
     if (!blockOrientationCorrection && Number.isFinite(Number(state.yaw))) {
       const nextYaw = Number(state.yaw);
       const yawBlend = distance >= 2.6 ? 1 : this.mobileEnabled ? 0.33 : 0.24;
@@ -7208,6 +7224,25 @@ export class GameRuntime {
     this.measurePerformanceSection("billboard", () => this.updateQuizBillboardPulse(delta));
     this.measurePerformanceSection("hud", () => this.updateHud(delta));
     this.measurePerformanceSection("roundOverlay", () => this.updateRoundOverlay(delta));
+  }
+
+  hasLocalMovementIntent() {
+    const keyboardMove =
+      this.keys.has("KeyW") ||
+      this.keys.has("ArrowUp") ||
+      this.keys.has("KeyS") ||
+      this.keys.has("ArrowDown") ||
+      this.keys.has("KeyA") ||
+      this.keys.has("ArrowLeft") ||
+      this.keys.has("KeyD") ||
+      this.keys.has("ArrowRight");
+    if (keyboardMove) {
+      return true;
+    }
+    if (!this.mobileEnabled) {
+      return false;
+    }
+    return Math.abs(this.mobileMoveVectorX) > 0.06 || Math.abs(this.mobileMoveVectorY) > 0.06;
   }
 
   updateMovement(delta) {
@@ -9438,8 +9473,13 @@ export class GameRuntime {
     const moveDistanceSq = dx * dx + dy * dy + dz * dz;
     const yawDelta = Math.abs(Math.atan2(Math.sin(this.yaw - reference.yaw), Math.cos(this.yaw - reference.yaw)));
     const pitchDelta = Math.abs(this.pitch - reference.pitch);
+    const recentLookInput =
+      !this.mobileEnabled &&
+      this.pointerLocked &&
+      performance.now() - this.lastLookInputAt <
+        DESKTOP_RUNTIME_SETTINGS.orientationCorrectionInputLockMs;
     const movedEnough = moveDistanceSq >= 0.12;
-    const turnedEnough = yawDelta >= 0.035 || pitchDelta >= 0.024;
+    const turnedEnough = !recentLookInput && (yawDelta >= 0.035 || pitchDelta >= 0.024);
     if (!movedEnough && !turnedEnough) {
       this.shadowRefreshClock = RUNTIME_TUNING.SHADOW_UPDATE_INTERVAL_SECONDS * 0.7;
       return;
