@@ -1,4 +1,4 @@
-﻿import * as THREE from "three";
+import * as THREE from "three";
 import { io } from "socket.io-client";
 import { Sky } from "three/addons/objects/Sky.js";
 import { Water } from "three/addons/objects/Water.js";
@@ -1864,7 +1864,7 @@ export class GameRuntime {
     this.verticalVelocity = -1.4;
     this.keys.clear();
     this.appendChatLine(
-      "SYSTEM",
+      "시스템",
       `탈락했습니다 (${String(reasonLabel)}). 관전자 구역으로 이동합니다...`,
       "system"
     );
@@ -1881,7 +1881,7 @@ export class GameRuntime {
     this.pitch = -0.08;
     this.lastSafePosition.set(this.playerPosition.x, GAME_CONSTANTS.PLAYER_HEIGHT, this.playerPosition.z);
     this.appendChatLine(
-      "SYSTEM",
+      "시스템",
       "관전 모드: WASD 이동, SPACE/CTRL 상하 이동, V로 생존자 관전 전환",
       "system"
     );
@@ -1901,7 +1901,7 @@ export class GameRuntime {
     this.playerPosition.y = Math.max(this.playerPosition.y, this.spectatorSpawn.y - 1.2);
     this.onGround = false;
     this.appendChatLine(
-      "SYSTEM",
+      "시스템",
       "진행자 관전 모드가 활성화되었습니다. 진행자는 탈락하지 않습니다.",
       "system"
     );
@@ -1942,7 +1942,7 @@ export class GameRuntime {
     if (candidates.length === 0) {
       this.spectatorFollowId = null;
       this.spectatorFollowIndex = -1;
-      this.appendChatLine("SYSTEM", "관전할 생존자가 없습니다.", "system");
+      this.appendChatLine("시스템", "관전할 생존자가 없습니다.", "system");
       return;
     }
 
@@ -1955,7 +1955,7 @@ export class GameRuntime {
       if (nextIndex >= candidates.length) {
         this.spectatorFollowId = null;
         this.spectatorFollowIndex = -1;
-        this.appendChatLine("SYSTEM", "자유 관전 모드로 전환합니다.", "system");
+        this.appendChatLine("시스템", "자유 관전 모드로 전환합니다.", "system");
         return;
       }
       this.spectatorFollowIndex = nextIndex;
@@ -1964,7 +1964,7 @@ export class GameRuntime {
 
     const target = this.remotePlayers.get(this.spectatorFollowId);
     const targetName = this.formatPlayerName(target?.name);
-    this.appendChatLine("SYSTEM", `${targetName} 관전 중`, "system");
+    this.appendChatLine("시스템", `${targetName} 관전 중`, "system");
   }
 
   updateLocalEliminationDrop(delta) {
@@ -5291,6 +5291,15 @@ export class GameRuntime {
       this.mobileRosterBtnEl.classList.toggle("active", this.rosterPinned);
       this.mobileRosterBtnEl.textContent = this.rosterPinned ? "닫기" : "인원";
     }
+    const mobileRosterFocus = this.mobileEnabled && visible;
+    if (typeof document !== "undefined" && document.body) {
+      document.body.classList.toggle("mobile-roster-focus", mobileRosterFocus);
+    }
+    if (mobileRosterFocus) {
+      this.releaseMobileInputs();
+      this.mobileLookPointerId = null;
+      this.mobileLookPadEl?.classList.remove("active");
+    }
   }
 
   refreshRosterPanel(players = null) {
@@ -5495,6 +5504,7 @@ export class GameRuntime {
       this.mobileLookPadEl?.classList.remove("active");
       if (typeof document !== "undefined" && document.body) {
         document.body.classList.remove("mobile-chat-focus");
+        document.body.classList.remove("mobile-roster-focus");
       }
       if (!this.rosterVisibleByTab) {
         this.setRosterPinned(false);
@@ -6364,7 +6374,7 @@ export class GameRuntime {
 
     socket.on("auth:error", (payload = {}) => {
       const reason = String(payload?.reason ?? "인증 실패");
-      this.appendChatLine("SYSTEM", `접속 인증 실패: ${reason}`, "system");
+      this.appendChatLine("시스템", `접속 인증 실패: ${reason}`, "system");
     });
 
     socket.on("room:update", (room) => {
@@ -6661,7 +6671,7 @@ export class GameRuntime {
     if (previousHostId && previousHostId !== nextHostId) {
       if (!nextHostId) {
         this.appendChatLine(
-          "SYSTEM",
+          "시스템",
           "진행자 권한이 비어 있습니다. 오너가 호스팅 권한을 다시 가져와야 합니다.",
           "system"
         );
@@ -6670,7 +6680,7 @@ export class GameRuntime {
           (entry) => String(entry?.id ?? "") === nextHostId
         );
         const nextHostName = this.formatPlayerName(nextHostPlayer?.name ?? "진행자");
-        this.appendChatLine("SYSTEM", `진행자가 ${nextHostName}(으)로 변경되었습니다.`, "system");
+        this.appendChatLine("시스템", `진행자가 ${nextHostName}(으)로 변경되었습니다.`, "system");
       }
     }
     if (
@@ -6687,7 +6697,7 @@ export class GameRuntime {
     if (!wasAdmissionInProgress && nowAdmissionInProgress) {
       const countdownSeconds = this.getAdmissionCountdownSeconds();
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         countdownSeconds > 0
           ? `입장 카운트다운이 시작되었습니다. ${countdownSeconds}초 후 이동합니다.`
           : "입장 처리를 시작합니다.",
@@ -6697,16 +6707,16 @@ export class GameRuntime {
     if (wasAdmissionWaiting && !this.localAdmissionWaiting) {
       if (!localAdmitted && !localHostSpectator && !localQueuedForAdmission) {
         this.appendChatLine(
-          "SYSTEM",
+          "시스템",
           "참가 슬롯이 가득 차 관전 모드로 전환되었습니다. 다음 판 우선권이 적용됩니다.",
           "system"
         );
       } else {
-        this.appendChatLine("SYSTEM", "입장이 시작되었습니다. 경기장으로 진입합니다.", "system");
+        this.appendChatLine("시스템", "입장이 시작되었습니다. 경기장으로 진입합니다.", "system");
       }
     }
     if (!wasAdmissionWaiting && this.localAdmissionWaiting) {
-      this.appendChatLine("SYSTEM", "현재 포탈 대기실 상태입니다. 진행자를 기다려주세요.", "system");
+      this.appendChatLine("시스템", "현재 포탈 대기실 상태입니다. 진행자를 기다려주세요.", "system");
     }
     this.syncGameplayUiForFlow();
     this.refreshRosterPanel(players);
@@ -7117,12 +7127,12 @@ export class GameRuntime {
 
   handleChatBlocked(payload = {}) {
     const reason = this.translateQuizError(payload?.reason ?? payload?.code ?? "chat blocked");
-    this.appendChatLine("SYSTEM", `채팅이 차단되었습니다: ${reason}`, "system");
+    this.appendChatLine("시스템", `채팅이 차단되었습니다: ${reason}`, "system");
   }
 
   handleHostKicked() {
     this.disconnectedByKick = true;
-    this.appendChatLine("SYSTEM", "진행자에 의해 강퇴되었습니다.", "system");
+    this.appendChatLine("시스템", "진행자에 의해 강퇴되었습니다.", "system");
     if (!this.socket) {
       return;
     }
@@ -7139,7 +7149,7 @@ export class GameRuntime {
   handleHostChatMuted(payload = {}) {
     const muted = payload?.muted === true;
     this.appendChatLine(
-      "SYSTEM",
+      "시스템",
       muted
         ? "진행자가 채팅을 금지했습니다."
         : "진행자가 채팅 금지를 해제했습니다.",
@@ -7201,7 +7211,7 @@ export class GameRuntime {
     const seconds = this.getAutoStartCountdownSeconds();
     if (seconds > 0) {
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         `게임이 곧 시작됩니다 (${seconds}초 전, ${Math.max(0, Math.trunc(Number(payload.players) || 0))}/${Math.max(1, Math.trunc(Number(payload.minPlayers) || 1))})`,
         "system"
       );
@@ -7247,7 +7257,7 @@ export class GameRuntime {
         ? Math.max(1, Math.ceil((this.quizState.prepareEndsAt - Date.now()) / 1000))
         : Math.ceil(ROUND_OVERLAY_SETTINGS.prepareDurationSeconds);
     this.appendChatLine(
-      "SYSTEM",
+      "시스템",
       `게임이 곧 시작됩니다. 총 문제 수: ${totalText} (약 ${prepareSeconds}초 후 시작)`,
       "system"
     );
@@ -7286,7 +7296,7 @@ export class GameRuntime {
 
     const questionText = this.quizState.questionText || "문제가 열렸습니다";
     this.appendChatLine(
-      "SYSTEM",
+      "시스템",
       `문항 ${this.quizState.questionIndex}/${this.quizState.totalQuestions}: ${questionText}`,
       "system"
     );
@@ -7304,7 +7314,7 @@ export class GameRuntime {
       Math.trunc(Number(payload.index) || this.quizState.questionIndex || 0)
     );
     this.quizState.questionIndex = index;
-    this.appendChatLine("SYSTEM", `문항 ${index} 잠금. 판정 중...`, "system");
+    this.appendChatLine("시스템", `문항 ${index} 잠금. 판정 중...`, "system");
     this.renderCenterBillboard({
       kicker: `문항 ${index}/${Math.max(this.quizState.totalQuestions, index)}`,
       title: "잠금",
@@ -7343,7 +7353,7 @@ export class GameRuntime {
     }
 
     this.appendChatLine(
-      "SYSTEM",
+      "시스템",
       `문항 ${index} 결과: 정답=${answer || "?"}, 생존=${survivorCount}`,
       "system"
     );
@@ -7507,9 +7517,9 @@ export class GameRuntime {
         .slice(0, 5)
         .map((entry) => `${entry.rank}위 ${entry.name}(${entry.score}점)`)
         .join(", ");
-      this.appendChatLine("SYSTEM", `게임 종료. 최종 순위: ${rankingLabel}`, "system");
+      this.appendChatLine("시스템", `게임 종료. 최종 순위: ${rankingLabel}`, "system");
     } else {
-      this.appendChatLine("SYSTEM", "퀴즈가 종료되었습니다.", "system");
+      this.appendChatLine("시스템", "퀴즈가 종료되었습니다.", "system");
     }
 
     this.quizState.active = false;
@@ -7925,11 +7935,11 @@ export class GameRuntime {
 
   openQuizConfigModal() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 문항 설정 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 문항 설정 권한이 없습니다.", "system");
       return;
     }
     if (!this.isLocalHost()) {
-      this.appendChatLine("SYSTEM", "방장만 문항 설정을 열 수 있습니다.", "system");
+      this.appendChatLine("시스템", "방장만 문항 설정을 열 수 있습니다.", "system");
       return;
     }
     this.resolveUiElements();
@@ -7964,7 +7974,7 @@ export class GameRuntime {
 
   requestQuizConfigSave() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 문항 저장 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 문항 저장 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
@@ -8004,7 +8014,7 @@ export class GameRuntime {
       }
       this.handleQuizConfigUpdate(response?.config ?? {});
       this.setQuizConfigStatus("문항/종료 설정 저장 완료");
-      this.appendChatLine("SYSTEM", "문항/종료 설정이 저장되었습니다.", "system");
+      this.appendChatLine("시스템", "문항/종료 설정이 저장되었습니다.", "system");
     });
   }
 
@@ -8067,7 +8077,7 @@ export class GameRuntime {
   openQuizReviewModal() {
     this.resolveUiElements();
     if (!Array.isArray(this.quizReviewItems) || this.quizReviewItems.length <= 0) {
-      this.appendChatLine("SYSTEM", "표시할 해설 데이터가 없습니다.", "system");
+      this.appendChatLine("시스템", "표시할 해설 데이터가 없습니다.", "system");
       return;
     }
     this.quizReviewModalEl?.classList.remove("hidden");
@@ -8299,21 +8309,21 @@ export class GameRuntime {
 
   requestHostClaim() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 호스팅 권한을 요청할 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 호스팅 권한을 요청할 수 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 호스팅을 받을 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 호스팅을 받을 수 없습니다.", "system");
       return;
     }
 
     this.socket.emit("room:claim-host", (response = {}) => {
       if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `호스팅 실패: ${this.translateQuizError(response?.error)}`, "system");
+        this.appendChatLine("시스템", `호스팅 실패: ${this.translateQuizError(response?.error)}`, "system");
         return;
       }
       this.quizState.hostId = String(response?.hostId ?? this.localPlayerId ?? "");
-      this.appendChatLine("SYSTEM", "호스팅 권한을 획득했습니다.", "system");
+      this.appendChatLine("시스템", "호스팅 권한을 획득했습니다.", "system");
       this.fetchQuizConfig();
       this.updateQuizControlUi();
     });
@@ -8321,22 +8331,22 @@ export class GameRuntime {
 
   requestPortalLobbyOpen() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 포탈 열기 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 포탈 열기 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 포탈을 열 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 포탈을 열 수 없습니다.", "system");
       return;
     }
     if (!this.isLocalHost()) {
-      this.appendChatLine("SYSTEM", "방장만 포탈을 열 수 있습니다.", "system");
+      this.appendChatLine("시스템", "방장만 포탈을 열 수 있습니다.", "system");
       return;
     }
 
     this.socket.emit("portal:lobby-open", (response = {}) => {
       if (!response?.ok) {
         this.appendChatLine(
-          "SYSTEM",
+          "시스템",
           `포탈 열기 실패: ${this.translateQuizError(response?.error)}`,
           "system"
         );
@@ -8350,7 +8360,7 @@ export class GameRuntime {
         )
       );
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         `포탈 대기실 오픈: 선착순 ${limit}명 참가, 현재 대기열 ${waiting}명`,
         "system"
       );
@@ -8359,22 +8369,22 @@ export class GameRuntime {
 
   requestPortalLobbyStart() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 입장 시작 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 입장 시작 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 입장을 시작할 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 입장을 시작할 수 없습니다.", "system");
       return;
     }
     if (!this.isLocalHost()) {
-      this.appendChatLine("SYSTEM", "방장만 입장을 시작할 수 있습니다.", "system");
+      this.appendChatLine("시스템", "방장만 입장을 시작할 수 있습니다.", "system");
       return;
     }
 
     this.socket.emit("portal:lobby-start", (response = {}) => {
       if (!response?.ok) {
         this.appendChatLine(
-          "SYSTEM",
+          "시스템",
           `입장 시작 실패: ${this.translateQuizError(response?.error)}`,
           "system"
         );
@@ -8392,7 +8402,7 @@ export class GameRuntime {
       const countdownMs = Math.max(0, Math.trunc(Number(response?.countdownMs) || 0));
       const countdownSeconds = Math.max(1, Math.ceil(countdownMs / 1000));
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         `입장 카운트다운 ${countdownSeconds}초 시작 (참가 ${admitted}/${limit}, 관전 ${spectators}, 우선 ${priority})`,
         "system"
       );
@@ -8401,11 +8411,11 @@ export class GameRuntime {
 
   requestQuizStart() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 시작 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 시작 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 시작할 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 시작할 수 없습니다.", "system");
       return;
     }
     this.socket.emit(
@@ -8416,75 +8426,75 @@ export class GameRuntime {
       },
       (response = {}) => {
         if (!response?.ok) {
-          this.appendChatLine("SYSTEM", `시작 실패: ${this.translateQuizError(response?.error)}`, "system");
+          this.appendChatLine("시스템", `시작 실패: ${this.translateQuizError(response?.error)}`, "system");
           return;
         }
-        this.appendChatLine("SYSTEM", "방장이 퀴즈를 시작했습니다.", "system");
+        this.appendChatLine("시스템", "방장이 퀴즈를 시작했습니다.", "system");
       }
     );
   }
 
   requestQuizStop() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 중지 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 중지 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 중지할 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 중지할 수 없습니다.", "system");
       return;
     }
     this.socket.emit("quiz:stop", {}, (response = {}) => {
       if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `중지 실패: ${this.translateQuizError(response?.error)}`, "system");
+        this.appendChatLine("시스템", `중지 실패: ${this.translateQuizError(response?.error)}`, "system");
         return;
       }
-      this.appendChatLine("SYSTEM", "방장이 퀴즈를 중지했습니다.", "system");
+      this.appendChatLine("시스템", "방장이 퀴즈를 중지했습니다.", "system");
     });
   }
 
   requestQuizNext() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 다음 문제 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 다음 문제 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 다음 문제로 넘어갈 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 다음 문제로 넘어갈 수 없습니다.", "system");
       return;
     }
     this.socket.emit("quiz:next", {}, (response = {}) => {
       if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `다음 문제 실패: ${this.translateQuizError(response?.error)}`, "system");
+        this.appendChatLine("시스템", `다음 문제 실패: ${this.translateQuizError(response?.error)}`, "system");
       }
     });
   }
 
   requestQuizLock() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 잠금 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 잠금 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 잠글 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 잠글 수 없습니다.", "system");
       return;
     }
     this.socket.emit("quiz:force-lock", (response = {}) => {
       if (!response?.ok) {
-        this.appendChatLine("SYSTEM", `잠금 실패: ${this.translateQuizError(response?.error)}`, "system");
+        this.appendChatLine("시스템", `잠금 실패: ${this.translateQuizError(response?.error)}`, "system");
       }
     });
   }
 
   requestPortalTargetSave() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 포탈 링크 변경 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 포탈 링크 변경 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 포탈 링크를 저장할 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 포탈 링크를 저장할 수 없습니다.", "system");
       return;
     }
     if (!this.isLocalHost()) {
-      this.appendChatLine("SYSTEM", "방장만 포탈 링크를 변경할 수 있습니다.", "system");
+      this.appendChatLine("시스템", "방장만 포탈 링크를 변경할 수 있습니다.", "system");
       return;
     }
 
@@ -8492,7 +8502,7 @@ export class GameRuntime {
     this.socket.emit("portal:set-target", { targetUrl: rawTarget }, (response = {}) => {
       if (!response?.ok) {
         this.appendChatLine(
-          "SYSTEM",
+          "시스템",
           `포탈 링크 저장 실패: ${this.translateQuizError(response?.error)}`,
           "system"
         );
@@ -8500,7 +8510,7 @@ export class GameRuntime {
       }
       this.applyPortalTarget(response?.targetUrl ?? "", { announce: false });
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         rawTarget ? "포탈 링크가 갱신되었습니다." : "포탈 링크가 비워졌습니다.",
         "system"
       );
@@ -8509,34 +8519,34 @@ export class GameRuntime {
 
   requestHostKickPlayer() {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 강퇴 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 강퇴 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 강퇴할 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 강퇴할 수 없습니다.", "system");
       return;
     }
     if (!this.isLocalHost()) {
-      this.appendChatLine("SYSTEM", "방장만 강퇴할 수 있습니다.", "system");
+      this.appendChatLine("시스템", "방장만 강퇴할 수 있습니다.", "system");
       return;
     }
     const targetId = String(this.moderationPlayerSelectEl?.value ?? "").trim();
     const target = this.findModerationTargetById(targetId);
     if (!target) {
-      this.appendChatLine("SYSTEM", "강퇴할 플레이어를 먼저 선택하세요.", "system");
+      this.appendChatLine("시스템", "강퇴할 플레이어를 먼저 선택하세요.", "system");
       return;
     }
     this.socket.emit("host:kick-player", { targetId }, (response = {}) => {
       if (!response?.ok) {
         this.appendChatLine(
-          "SYSTEM",
+          "시스템",
           `강퇴 실패: ${this.translateQuizError(response?.error)}`,
           "system"
         );
         return;
       }
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         `${this.formatPlayerName(response?.targetName ?? target.name)} 플레이어를 강퇴했습니다.`,
         "system"
       );
@@ -8545,28 +8555,28 @@ export class GameRuntime {
 
   requestHostSetChatMuted(nextMuted) {
     if (!this.ownerAccessEnabled) {
-      this.appendChatLine("SYSTEM", "오너 토큰이 없어 채팅 제재 권한이 없습니다.", "system");
+      this.appendChatLine("시스템", "오너 토큰이 없어 채팅 제재 권한이 없습니다.", "system");
       return;
     }
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 채팅 제재를 변경할 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 채팅 제재를 변경할 수 없습니다.", "system");
       return;
     }
     if (!this.isLocalHost()) {
-      this.appendChatLine("SYSTEM", "방장만 채팅 제재를 변경할 수 있습니다.", "system");
+      this.appendChatLine("시스템", "방장만 채팅 제재를 변경할 수 있습니다.", "system");
       return;
     }
     const targetId = String(this.moderationPlayerSelectEl?.value ?? "").trim();
     const target = this.findModerationTargetById(targetId);
     if (!target) {
-      this.appendChatLine("SYSTEM", "대상 플레이어를 먼저 선택하세요.", "system");
+      this.appendChatLine("시스템", "대상 플레이어를 먼저 선택하세요.", "system");
       return;
     }
     const muted = nextMuted !== false;
     this.socket.emit("host:set-chat-muted", { targetId, muted }, (response = {}) => {
       if (!response?.ok) {
         this.appendChatLine(
-          "SYSTEM",
+          "시스템",
           `채팅 제재 변경 실패: ${this.translateQuizError(response?.error)}`,
           "system"
         );
@@ -8574,7 +8584,7 @@ export class GameRuntime {
       }
       const targetName = this.formatPlayerName(response?.targetName ?? target.name);
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         muted
           ? `${targetName} 플레이어의 채팅을 금지했습니다.`
           : `${targetName} 플레이어의 채팅 금지를 해제했습니다.`,
@@ -8588,13 +8598,13 @@ export class GameRuntime {
     const updatedBy = String(payload?.updatedBy ?? "");
     this.applyPortalTarget(targetUrl, { announce: false });
     if (!targetUrl) {
-      this.appendChatLine("SYSTEM", "방장이 포탈 링크를 비웠습니다.", "system");
+      this.appendChatLine("시스템", "방장이 포탈 링크를 비웠습니다.", "system");
       return;
     }
     if (updatedBy && updatedBy === String(this.localPlayerId ?? "")) {
       return;
     }
-    this.appendChatLine("SYSTEM", "방장이 포탈 링크를 변경했습니다.", "system");
+    this.appendChatLine("시스템", "방장이 포탈 링크를 변경했습니다.", "system");
   }
 
   handlePortalLobbyAdmitted(payload = {}) {
@@ -8606,10 +8616,10 @@ export class GameRuntime {
       Math.trunc(Number(payload?.participantLimit) || Number(this.entryGateState?.participantLimit) || 50)
     );
     if (admittedCount <= 0) {
-      this.appendChatLine("SYSTEM", "입장 처리 완료: 이동한 인원이 없습니다.", "system");
+      this.appendChatLine("시스템", "입장 처리 완료: 이동한 인원이 없습니다.", "system");
     } else {
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         `입장 완료: 참가 ${admittedCount}/${participantLimit}, 관전 ${spectatorCount}, 다음 판 우선 ${priorityPlayers}`,
         "system"
       );
@@ -8629,7 +8639,7 @@ export class GameRuntime {
     }
     if (announce) {
       this.appendChatLine(
-        "SYSTEM",
+        "시스템",
         this.portalTargetUrl ? "포탈 링크가 설정되었습니다." : "포탈 링크가 해제되었습니다.",
         "system"
       );
@@ -8833,7 +8843,7 @@ export class GameRuntime {
     const senderName = this.formatPlayerName(this.localPlayerName);
     this.localPlayerName = senderName;
     if (!this.socket || !this.networkConnected) {
-      this.appendChatLine("SYSTEM", "오프라인 상태에서는 채팅을 보낼 수 없습니다.", "system");
+      this.appendChatLine("시스템", "오프라인 상태에서는 채팅을 보낼 수 없습니다.", "system");
       return;
     }
 
@@ -8846,7 +8856,7 @@ export class GameRuntime {
       (response = {}) => {
         if (!response?.ok) {
           this.appendChatLine(
-            "SYSTEM",
+            "시스템",
             `채팅 전송 실패: ${this.translateQuizError(response?.error)}`,
             "system"
           );

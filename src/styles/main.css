@@ -421,6 +421,14 @@ body.mobile-chat-focus #mobile-look-pad {
   pointer-events: none;
 }
 
+body.mobile-roster-focus #mobile-move-pad,
+body.mobile-roster-focus #mobile-jump-btn,
+body.mobile-roster-focus #mobile-run-btn,
+body.mobile-roster-focus #mobile-look-pad {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .quiz-controls-head {
   margin-bottom: 2px;
   color: #caf0ff;
