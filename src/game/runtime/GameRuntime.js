@@ -68,6 +68,10 @@ const MOBILE_RUNTIME_SETTINGS = Object.freeze({
   roundOverlaySpawnIntervalSeconds: 0.46,
   roundOverlayParticleScale: 0.58
 });
+const DESKTOP_RUNTIME_SETTINGS = Object.freeze({
+  maxPixelRatio: 1.5,
+  orientationCorrectionInputLockMs: 140
+});
 const MOVEMENT_KEY_CODES = new Set([
   "KeyW",
   "KeyA",
@@ -106,7 +110,9 @@ export class GameRuntime {
     this.remoteStaleTimeoutMs =
       Number(this.networkContent.staleTimeoutMs) || GAME_CONSTANTS.REMOTE_STALE_TIMEOUT_MS;
 
-    const initialPixelRatioCap = this.mobileEnabled ? MOBILE_RUNTIME_SETTINGS.maxPixelRatio : 2;
+    const initialPixelRatioCap = this.mobileEnabled
+      ? MOBILE_RUNTIME_SETTINGS.maxPixelRatio
+      : DESKTOP_RUNTIME_SETTINGS.maxPixelRatio;
     const initialPixelRatio = Math.min(window.devicePixelRatio || 1, initialPixelRatioCap);
     this.maxPixelRatio = initialPixelRatio;
     this.currentPixelRatio = initialPixelRatio;
@@ -221,7 +227,7 @@ export class GameRuntime {
     this.bloomPass = null;
 
     this.dynamicResolution = {
-      enabled: true,
+      enabled: this.mobileEnabled,
       minRatio: this.mobileEnabled
         ? GAME_CONSTANTS.DYNAMIC_RESOLUTION.mobileMinRatio
         : GAME_CONSTANTS.DYNAMIC_RESOLUTION.desktopMinRatio,
@@ -240,6 +246,14 @@ export class GameRuntime {
     this.hudRefreshClock = 0;
     this.quizBillboardRefreshClock = 0;
     this.shadowRefreshClock = 0;
+    this.shadowRefreshReference = {
+      ready: false,
+      x: 0,
+      y: 0,
+      z: 0,
+      yaw: 0,
+      pitch: 0
+    };
 
     this.socket = null;
     this.socketEndpoint = null;
@@ -252,6 +266,23 @@ export class GameRuntime {
       typeof window !== "undefined"
         ? new URLSearchParams(window.location.search)
         : new URLSearchParams();
+    const perfParam = String(
+      this.queryParams.get("perf") ?? this.queryParams.get("debug_perf") ?? ""
+    ).trim();
+    this.performanceDebug = {
+      enabled: perfParam === "1" || perfParam.toLowerCase() === "true",
+      hitchThresholdMs: 22,
+      sections: Object.create(null),
+      flags: {
+        shadowRefresh: false,
+        dynamicResolutionShift: false,
+        correctionCount: 0,
+        correctionYawPitch: false,
+        recentLookInput: false
+      },
+      lastLogAt: 0
+    };
+    this.lastLookInputAt = 0;
     this.ownerAccessKey = String(
       this.queryParams.get("owner") ??
         this.queryParams.get("owner_key") ??
@@ -4835,6 +4866,9 @@ export class GameRuntime {
         }
         const sensitivityX = 0.0023;
         const sensitivityY = 0.002;
+        if (Math.abs(event.movementX) > 0.001 || Math.abs(event.movementY) > 0.001) {
+          this.lastLookInputAt = performance.now();
+        }
         this.yaw -= event.movementX * sensitivityX;
         this.pitch -= event.movementY * sensitivityY;
         this.pitch = THREE.MathUtils.clamp(this.pitch, -1.52, 1.52);
@@ -6302,8 +6336,13 @@ export class GameRuntime {
     if (!this.mobileEnabled) {
       return;
     }
-    this.mobileLookDeltaX += Number(deltaX) || 0;
-    this.mobileLookDeltaY += Number(deltaY) || 0;
+    const x = Number(deltaX) || 0;
+    const y = Number(deltaY) || 0;
+    if (Math.abs(x) > 0.001 || Math.abs(y) > 0.001) {
+      this.lastLookInputAt = performance.now();
+    }
+    this.mobileLookDeltaX += x;
+    this.mobileLookDeltaY += y;
   }
 
   applyMobileLookDelta() {
@@ -6944,6 +6983,9 @@ export class GameRuntime {
     if (!state) {
       return;
     }
+    if (this.performanceDebug?.enabled) {
+      this.performanceDebug.flags.correctionCount += 1;
+    }
 
     const nextX = Number(state.x);
     const nextY = Number(state.y);
@@ -6957,7 +6999,7 @@ export class GameRuntime {
       nextY - this.playerPosition.y,
       nextZ - this.playerPosition.z
     );
-    const correctionIgnoreDistance = this.mobileEnabled ? 0.1 : 0.18;
+    const correctionIgnoreDistance = this.mobileEnabled ? 0.1 : 0.24;
     if (distance < correctionIgnoreDistance) {
       return;
     }
@@ -6970,15 +7012,27 @@ export class GameRuntime {
         : THREE.MathUtils.clamp(0.08 + (distance / 2.6) * 0.2, 0.08, 0.28);
       this.playerPosition.lerp(this.serverCorrectionTarget.set(nextX, nextY, nextZ), blend);
     }
-    if (Number.isFinite(Number(state.yaw))) {
+    let correctedYawOrPitch = false;
+    const recentLookInput =
+      !this.mobileEnabled &&
+      this.pointerLocked &&
+      performance.now() - this.lastLookInputAt <
+        DESKTOP_RUNTIME_SETTINGS.orientationCorrectionInputLockMs;
+    const blockOrientationCorrection = recentLookInput && distance < 1.8;
+    if (!blockOrientationCorrection && Number.isFinite(Number(state.yaw))) {
       const nextYaw = Number(state.yaw);
       const yawBlend = distance >= 2.6 ? 1 : this.mobileEnabled ? 0.33 : 0.24;
       this.yaw = lerpAngle(this.yaw, nextYaw, yawBlend);
+      correctedYawOrPitch = true;
     }
-    if (Number.isFinite(Number(state.pitch))) {
+    if (!blockOrientationCorrection && Number.isFinite(Number(state.pitch))) {
       const nextPitch = Number(state.pitch);
       const pitchBlend = distance >= 2.6 ? 1 : this.mobileEnabled ? 0.28 : 0.2;
       this.pitch = THREE.MathUtils.lerp(this.pitch, nextPitch, pitchBlend);
+      correctedYawOrPitch = true;
+    }
+    if (correctedYawOrPitch) {
+      this.markPerformanceFlag("correctionYawPitch");
     }
     this.camera.position.copy(this.playerPosition);
     this.camera.rotation.y = this.yaw;
@@ -7139,20 +7193,21 @@ export class GameRuntime {
   }
 
   tick(delta) {
-    this.applyMobileLookDelta();
-    this.updateMovement(delta);
-    this.updateTrapdoorAnimation(delta);
-    this.updateHubFlow(delta);
-    this.updateChalkDrawing();
-    this.updateCloudLayer(delta);
-    this.updateOcean(delta);
-    this.updateRemotePlayers(delta);
-    this.emitLocalSync(delta);
-    this.updateDynamicResolution(delta);
-    this.updateShadowMapRefresh(delta);
-    this.updateQuizBillboardPulse(delta);
-    this.updateHud(delta);
-    this.updateRoundOverlay(delta);
+    this.beginPerformanceFrame();
+    this.measurePerformanceSection("mobileLook", () => this.applyMobileLookDelta());
+    this.measurePerformanceSection("movement", () => this.updateMovement(delta));
+    this.measurePerformanceSection("trapdoor", () => this.updateTrapdoorAnimation(delta));
+    this.measurePerformanceSection("hubFlow", () => this.updateHubFlow(delta));
+    this.measurePerformanceSection("chalk", () => this.updateChalkDrawing());
+    this.measurePerformanceSection("clouds", () => this.updateCloudLayer(delta));
+    this.measurePerformanceSection("ocean", () => this.updateOcean(delta));
+    this.measurePerformanceSection("remotePlayers", () => this.updateRemotePlayers(delta));
+    this.measurePerformanceSection("emitSync", () => this.emitLocalSync(delta));
+    this.measurePerformanceSection("dynamicResolution", () => this.updateDynamicResolution(delta));
+    this.measurePerformanceSection("shadowRefresh", () => this.updateShadowMapRefresh(delta));
+    this.measurePerformanceSection("billboard", () => this.updateQuizBillboardPulse(delta));
+    this.measurePerformanceSection("hud", () => this.updateHud(delta));
+    this.measurePerformanceSection("roundOverlay", () => this.updateRoundOverlay(delta));
   }
 
   updateMovement(delta) {
@@ -9362,12 +9417,42 @@ export class GameRuntime {
       return;
     }
 
+    const reference = this.shadowRefreshReference;
+    if (!reference?.ready) {
+      reference.ready = true;
+      reference.x = this.playerPosition.x;
+      reference.y = this.playerPosition.y;
+      reference.z = this.playerPosition.z;
+      reference.yaw = this.yaw;
+      reference.pitch = this.pitch;
+    }
+
     this.shadowRefreshClock += delta;
     if (this.shadowRefreshClock < RUNTIME_TUNING.SHADOW_UPDATE_INTERVAL_SECONDS) {
       return;
     }
+
+    const dx = this.playerPosition.x - reference.x;
+    const dy = this.playerPosition.y - reference.y;
+    const dz = this.playerPosition.z - reference.z;
+    const moveDistanceSq = dx * dx + dy * dy + dz * dz;
+    const yawDelta = Math.abs(Math.atan2(Math.sin(this.yaw - reference.yaw), Math.cos(this.yaw - reference.yaw)));
+    const pitchDelta = Math.abs(this.pitch - reference.pitch);
+    const movedEnough = moveDistanceSq >= 0.12;
+    const turnedEnough = yawDelta >= 0.035 || pitchDelta >= 0.024;
+    if (!movedEnough && !turnedEnough) {
+      this.shadowRefreshClock = RUNTIME_TUNING.SHADOW_UPDATE_INTERVAL_SECONDS * 0.7;
+      return;
+    }
+
     this.shadowRefreshClock = 0;
+    reference.x = this.playerPosition.x;
+    reference.y = this.playerPosition.y;
+    reference.z = this.playerPosition.z;
+    reference.yaw = this.yaw;
+    reference.pitch = this.pitch;
     this.renderer.shadowMap.needsUpdate = true;
+    this.markPerformanceFlag("shadowRefresh");
   }
 
   updateQuizBillboardPulse(delta) {
@@ -9503,14 +9588,94 @@ export class GameRuntime {
     return this.composeStatusWithQuiz(baseStatus);
   }
 
+  beginPerformanceFrame() {
+    if (!this.performanceDebug?.enabled) {
+      return;
+    }
+    this.performanceDebug.sections = Object.create(null);
+    this.performanceDebug.flags.shadowRefresh = false;
+    this.performanceDebug.flags.dynamicResolutionShift = false;
+    this.performanceDebug.flags.correctionCount = 0;
+    this.performanceDebug.flags.correctionYawPitch = false;
+    this.performanceDebug.flags.recentLookInput =
+      performance.now() - this.lastLookInputAt <
+      DESKTOP_RUNTIME_SETTINGS.orientationCorrectionInputLockMs;
+  }
+
+  measurePerformanceSection(name, callback) {
+    if (typeof callback !== "function") {
+      return undefined;
+    }
+    if (!this.performanceDebug?.enabled) {
+      return callback();
+    }
+    const key = String(name || "unknown");
+    const start = performance.now();
+    const result = callback();
+    const elapsed = performance.now() - start;
+    const previous = Number(this.performanceDebug.sections[key]) || 0;
+    this.performanceDebug.sections[key] = previous + elapsed;
+    return result;
+  }
+
+  markPerformanceFlag(flagKey, value = true) {
+    if (!this.performanceDebug?.enabled) {
+      return;
+    }
+    if (!Object.prototype.hasOwnProperty.call(this.performanceDebug.flags, flagKey)) {
+      return;
+    }
+    this.performanceDebug.flags[flagKey] = value;
+  }
+
+  reportPerformanceHitch(frameMs, renderMs) {
+    if (!this.performanceDebug?.enabled) {
+      return;
+    }
+    if (!Number.isFinite(frameMs) || frameMs < this.performanceDebug.hitchThresholdMs) {
+      return;
+    }
+    const now = performance.now();
+    if (now - this.performanceDebug.lastLogAt < 120) {
+      return;
+    }
+    this.performanceDebug.lastLogAt = now;
+
+    const sections = Object.entries(this.performanceDebug.sections)
+      .sort((left, right) => Number(right[1]) - Number(left[1]))
+      .slice(0, 4)
+      .map(([name, ms]) => `${name}=${Number(ms).toFixed(2)}ms`)
+      .join(" ");
+    const flags = this.performanceDebug.flags;
+    const activeFlags = [
+      flags.shadowRefresh ? "shadowRefresh" : "",
+      flags.dynamicResolutionShift ? "dynamicResolutionShift" : "",
+      flags.correctionYawPitch ? "serverYawPitchCorrection" : "",
+      flags.recentLookInput ? "recentLookInput" : "",
+      flags.correctionCount > 0 ? `serverCorrectionCount=${flags.correctionCount}` : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const sectionLabel = sections || "sections=n/a";
+    const flagLabel = activeFlags || "flags=n/a";
+    console.warn(
+      `[perf] hitch ${frameMs.toFixed(2)}ms render=${renderMs.toFixed(2)}ms ${sectionLabel} ${flagLabel}`
+    );
+  }
+
   loop() {
+    const frameStart = performance.now();
     const delta = Math.min(this.clock.getDelta(), 0.05);
     this.tick(delta);
+    const renderStart = performance.now();
     if (this.composer) {
       this.composer.render();
     } else {
       this.renderer.render(this.scene, this.camera);
     }
+    const renderMs = performance.now() - renderStart;
+    const frameMs = performance.now() - frameStart;
+    this.reportPerformanceHitch(frameMs, renderMs);
     requestAnimationFrame(() => this.loop());
   }
 
@@ -9580,6 +9745,7 @@ export class GameRuntime {
     if (this.composer) {
       this.composer.setPixelRatio(this.currentPixelRatio);
     }
+    this.markPerformanceFlag("dynamicResolutionShift");
   }
 
   applyQualityProfile() {
@@ -9588,6 +9754,9 @@ export class GameRuntime {
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = shadowEnabled;
     this.shadowRefreshClock = 0;
+    if (this.shadowRefreshReference) {
+      this.shadowRefreshReference.ready = false;
+    }
 
     if (this.sunLight) {
       const sunConfig = this.worldContent.lights.sun;
@@ -9639,13 +9808,21 @@ export class GameRuntime {
     this.dynamicResolution.minRatio = this.mobileEnabled
       ? GAME_CONSTANTS.DYNAMIC_RESOLUTION.mobileMinRatio
       : GAME_CONSTANTS.DYNAMIC_RESOLUTION.desktopMinRatio;
+    this.dynamicResolution.enabled = this.mobileEnabled;
+    this.dynamicResolution.sampleTime = 0;
+    this.dynamicResolution.frameCount = 0;
+    this.dynamicResolution.downshiftSamples = 0;
+    this.dynamicResolution.upshiftSamples = 0;
+    this.dynamicResolution.cooldown = 0;
     this.networkSyncInterval = this.mobileEnabled
       ? Math.max(this.baseNetworkSyncInterval, MOBILE_RUNTIME_SETTINGS.minNetworkSyncInterval)
       : this.baseNetworkSyncInterval;
 
     this.maxPixelRatio = Math.min(
       window.devicePixelRatio || 1,
-      this.mobileEnabled ? MOBILE_RUNTIME_SETTINGS.maxPixelRatio : 2
+      this.mobileEnabled
+        ? MOBILE_RUNTIME_SETTINGS.maxPixelRatio
+        : DESKTOP_RUNTIME_SETTINGS.maxPixelRatio
     );
     const minPixelRatio = Math.max(0.5, Math.min(this.dynamicResolution.minRatio, this.maxPixelRatio));
     const clampedRatio = THREE.MathUtils.clamp(this.currentPixelRatio, minPixelRatio, this.maxPixelRatio);
