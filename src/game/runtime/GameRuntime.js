@@ -4991,11 +4991,25 @@ export class GameRuntime {
         }
       });
       this.chatInputEl.addEventListener("blur", () => {
-        this.setChatOpen(false);
-        if (this.mobileEnabled) {
+        if (!this.mobileEnabled) {
+          this.setChatOpen(false);
+          return;
+        }
+        // On mobile, let tap/click handlers run first (e.g. send button) before collapsing the panel.
+        window.setTimeout(() => {
+          if (!this.mobileEnabled || this.chatSendInFlight) {
+            return;
+          }
+          const activeEl = document.activeElement;
+          const interactingWithChatButton =
+            activeEl === this.chatSendBtnEl || activeEl === this.chatHideBtnEl || activeEl === this.chatCloseBtnEl;
+          if (interactingWithChatButton) {
+            return;
+          }
+          this.setChatOpen(false);
           this.mobileChatPanelVisible = false;
           this.applyMobileChatUi();
-        }
+        }, 0);
       });
     }
     this.chatLogEl?.addEventListener("click", () => {
@@ -5014,8 +5028,22 @@ export class GameRuntime {
       this.setChatOpen(false);
       this.chatInputEl?.blur?.();
     };
+    this.chatSendBtnEl?.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (!this.mobileEnabled) {
+          return;
+        }
+        event.preventDefault();
+        this.sendChatMessage();
+      },
+      { passive: false }
+    );
     this.chatSendBtnEl?.addEventListener("click", (event) => {
       event.preventDefault();
+      if (this.mobileEnabled) {
+        return;
+      }
       this.sendChatMessage();
     });
     this.chatHideBtnEl?.addEventListener("click", (event) => {
