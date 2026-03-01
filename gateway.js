@@ -6,7 +6,14 @@ import { createRoomJoinToken } from "./src/server/roomToken.js";
 
 const ROOM_CODE_PREFIX = "OX";
 const ROOM_CODE_RANDOM_LENGTH = 5;
-const MAX_ROOM_PLAYERS = 50;
+const ENTRY_PARTICIPANT_LIMIT = Math.max(
+  1,
+  Math.trunc(Number(process.env.ENTRY_PARTICIPANT_LIMIT ?? 50) || 50)
+);
+const MAX_ROOM_PLAYERS = Math.max(
+  ENTRY_PARTICIPANT_LIMIT,
+  Math.trunc(Number(process.env.MAX_ROOM_PLAYERS ?? 120) || 120)
+);
 const MAX_ACTIVE_WORKERS = Number(process.env.MAX_ACTIVE_WORKERS ?? 24);
 
 const GATEWAY_INSTANCE_INDEX = Math.max(
@@ -760,6 +767,7 @@ async function buildHealthPayload(scope = "cluster") {
     workers: rooms.length,
     maxWorkers: MAX_ACTIVE_WORKERS,
     capacityPerRoom: MAX_ROOM_PLAYERS,
+    participantLimit: ENTRY_PARTICIPANT_LIMIT,
     peers: CLUSTER_PEERS,
     rooms,
     now: Date.now()
@@ -804,6 +812,8 @@ const httpServer = createServer(async (req, res) => {
       gatewayPort: GATEWAY_PORT,
       workerPortRange: [WORKER_PORT_BASE, WORKER_PORT_MAX],
       maxWorkers: MAX_ACTIVE_WORKERS,
+      capacityPerRoom: MAX_ROOM_PLAYERS,
+      participantLimit: ENTRY_PARTICIPANT_LIMIT,
       draining,
       peers: CLUSTER_PEERS,
       health: "/health",
@@ -1019,7 +1029,7 @@ httpServer.on("error", (error) => {
 httpServer.listen(GATEWAY_PORT, () => {
   console.log(`Gateway running on http://localhost:${GATEWAY_PORT}`);
   console.log(
-    `Instance ${GATEWAY_INSTANCE_ID} | worker ports ${WORKER_PORT_BASE}-${WORKER_PORT_MAX} | max local workers ${MAX_ACTIVE_WORKERS}`
+    `Instance ${GATEWAY_INSTANCE_ID} | worker ports ${WORKER_PORT_BASE}-${WORKER_PORT_MAX} | max local workers ${MAX_ACTIVE_WORKERS} | room capacity ${MAX_ROOM_PLAYERS} | participant limit ${ENTRY_PARTICIPANT_LIMIT}`
   );
   if (CLUSTER_PEERS.length > 0) {
     console.log(`Cluster peers: ${CLUSTER_PEERS.join(", ")}`);

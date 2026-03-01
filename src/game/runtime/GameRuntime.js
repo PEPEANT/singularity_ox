@@ -324,6 +324,8 @@ export class GameRuntime {
     this.lobbyRoomCountEl = document.getElementById("lobby-room-count");
     this.lobbyPlayerCountEl = document.getElementById("lobby-player-count");
     this.lobbyTopRoomEl = document.getElementById("lobby-top-room");
+    this.lobbySlotParticipantsEl = document.getElementById("lobby-slot-participants");
+    this.lobbySlotSpectatorsEl = document.getElementById("lobby-slot-spectators");
     this.portalTransitionEl = document.getElementById("portal-transition");
     this.portalTransitionTextEl = document.getElementById("portal-transition-text");
     this.boundaryWarningEl = document.getElementById("boundary-warning");
@@ -357,6 +359,10 @@ export class GameRuntime {
       portalOpen: false,
       waitingPlayers: 0,
       admittedPlayers: 0,
+      spectatorPlayers: 0,
+      priorityPlayers: 0,
+      participantLimit: 50,
+      roomCapacity: 120,
       openedAt: 0,
       lastAdmissionAt: 0,
       admissionStartsAt: 0,
@@ -1319,10 +1325,28 @@ export class GameRuntime {
       if (topRoom) {
         const code = String(topRoom?.code ?? "OX");
         const count = Math.max(0, Math.trunc(Number(topRoom?.count) || 0));
-        const capacity = Math.max(1, Math.trunc(Number(topRoom?.capacity) || 50));
+        const capacity = Math.max(1, Math.trunc(Number(topRoom?.capacity) || 120));
         this.lobbyTopRoomEl.textContent = `대표 방 ${code} · ${count}/${capacity}`;
+        const participantLimit = 50;
+        const participantCount = Math.min(count, participantLimit);
+        const spectatorCount = Math.max(0, count - participantCount);
+        const spectatorCapacity = Math.max(0, capacity - participantLimit);
+        if (this.lobbySlotParticipantsEl) {
+          this.lobbySlotParticipantsEl.textContent =
+            `참가 슬롯 ${participantCount}/${participantLimit}`;
+        }
+        if (this.lobbySlotSpectatorsEl) {
+          this.lobbySlotSpectatorsEl.textContent =
+            `관전자 슬롯 ${spectatorCount}/${spectatorCapacity}`;
+        }
       } else {
         this.lobbyTopRoomEl.textContent = "현재 빈 방에서 시작됩니다.";
+        if (this.lobbySlotParticipantsEl) {
+          this.lobbySlotParticipantsEl.textContent = "참가 슬롯 0/50";
+        }
+        if (this.lobbySlotSpectatorsEl) {
+          this.lobbySlotSpectatorsEl.textContent = "관전자 슬롯 0/70";
+        }
       }
     }
   }
@@ -1431,6 +1455,18 @@ export class GameRuntime {
     this.entryWaitOverlayEl?.setAttribute("aria-hidden", shouldShow ? "false" : "true");
     if (this.entryWaitTextEl) {
       const waiting = Math.max(0, Math.trunc(Number(this.entryGateState?.waitingPlayers) || 0));
+      const participantLimit = Math.max(
+        1,
+        Math.trunc(Number(this.entryGateState?.participantLimit) || 50)
+      );
+      const spectatorPlayers = Math.max(
+        0,
+        Math.trunc(Number(this.entryGateState?.spectatorPlayers) || 0)
+      );
+      const priorityPlayers = Math.max(
+        0,
+        Math.trunc(Number(this.entryGateState?.priorityPlayers) || 0)
+      );
       const countdownSeconds = this.getAdmissionCountdownSeconds();
       const admissionInProgress =
         this.entryGateState?.admissionInProgress === true || countdownSeconds > 0;
@@ -1443,10 +1479,13 @@ export class GameRuntime {
       } else if (this.entryGateState?.portalOpen) {
         nextText =
           waiting > 0
-            ? `포탈 대기실입니다. 방장이 입장 시작을 누르면 모두 입장합니다. (대기 ${waiting}명)`
-            : "포탈 대기실입니다. 방장이 입장 시작을 누르면 모두 입장합니다.";
+            ? `포탈 대기실: 선착순 ${participantLimit}명 참가, 이후 관전 전환 (대기열 ${waiting}명)`
+            : `포탈 대기실: 선착순 ${participantLimit}명 참가, 이후 관전 전환`;
       } else {
-        nextText = "입장 대기 중입니다. 진행자의 포탈 열기/입장 시작을 기다려주세요.";
+        nextText =
+          spectatorPlayers > 0 || priorityPlayers > 0
+            ? `관전자 대기 중입니다. 현재 관전 ${spectatorPlayers}명, 다음 판 우선 ${priorityPlayers}명`
+            : "입장 대기 중입니다. 진행자의 포탈 열기/입장 시작을 기다려주세요.";
       }
       if (this.entryWaitTextEl.textContent !== nextText) {
         this.entryWaitTextEl.textContent = nextText;
@@ -4635,6 +4674,12 @@ export class GameRuntime {
     if (!this.lobbyTopRoomEl) {
       this.lobbyTopRoomEl = document.getElementById("lobby-top-room");
     }
+    if (!this.lobbySlotParticipantsEl) {
+      this.lobbySlotParticipantsEl = document.getElementById("lobby-slot-participants");
+    }
+    if (!this.lobbySlotSpectatorsEl) {
+      this.lobbySlotSpectatorsEl = document.getElementById("lobby-slot-spectators");
+    }
     if (!this.portalTransitionEl) {
       this.portalTransitionEl = document.getElementById("portal-transition");
     }
@@ -4765,6 +4810,7 @@ export class GameRuntime {
       name: localName,
       alive: this.localQuizAlive !== false,
       admitted: !this.localAdmissionWaiting,
+      queuedForAdmission: this.localAdmissionWaiting,
       score: Math.max(0, Math.trunc(Number(this.quizState.myScore) || 0)),
       isHost: String(this.quizState.hostId ?? "") === String(this.localPlayerId ?? ""),
       spectator: Boolean(this.localSpectatorMode && this.isLocalHost()),
@@ -4778,6 +4824,7 @@ export class GameRuntime {
         name,
         alive: remote?.alive !== false,
         admitted: remote?.admitted !== false,
+        queuedForAdmission: false,
         score: 0,
         isHost: String(this.quizState.hostId ?? "") === String(id),
         spectator: remote?.spectator === true,
@@ -4831,6 +4878,7 @@ export class GameRuntime {
             name: this.formatPlayerName(player?.name),
             alive: player?.alive !== false,
             admitted: player?.admitted !== false,
+            queuedForAdmission: player?.queuedForAdmission === true,
             score,
             isHost: id === String(this.quizState.hostId ?? ""),
             spectator: player?.spectator === true,
@@ -4856,14 +4904,37 @@ export class GameRuntime {
       }
       return String(left.name ?? "").localeCompare(String(right.name ?? ""), "ko");
     });
+    const participantLimit = Math.max(
+      1,
+      Math.trunc(Number(this.entryGateState?.participantLimit) || 50)
+    );
+    const roomCapacity = Math.max(
+      participantLimit,
+      Math.trunc(Number(this.entryGateState?.roomCapacity) || participantLimit)
+    );
+    const spectatorCapacity = Math.max(0, roomCapacity - participantLimit);
+    const hosts = roster.filter((entry) => entry.isHost);
+    const participants = roster.filter((entry) => !entry.isHost && entry.admitted === true);
+    const queuedSpectators = roster.filter(
+      (entry) => !entry.isHost && entry.admitted !== true && entry.queuedForAdmission === true
+    );
+    const idleSpectators = roster.filter(
+      (entry) => !entry.isHost && entry.admitted !== true && entry.queuedForAdmission !== true
+    );
+    const spectators = [...queuedSpectators, ...idleSpectators];
 
     if (this.rosterCountEl) {
-      this.rosterCountEl.textContent = `${roster.length}명`;
+      this.rosterCountEl.textContent =
+        `참가 ${participants.length}/${participantLimit} · 관전 ${spectators.length} · 총 ${roster.length}`;
     }
     if (this.rosterSubtitleEl) {
-      this.rosterSubtitleEl.textContent = this.mobileEnabled
-        ? "인원 버튼으로 고정/닫기"
-        : "Tab 키를 누르는 동안 표시됩니다.";
+      const priorityPlayers = Math.max(
+        0,
+        Math.trunc(Number(this.entryGateState?.priorityPlayers) || 0)
+      );
+      const mobileHint = this.mobileEnabled ? "인원 버튼으로 고정/닫기" : "Tab 키를 누르는 동안 표시됩니다.";
+      this.rosterSubtitleEl.textContent =
+        priorityPlayers > 0 ? `${mobileHint} · 다음 판 우선 ${priorityPlayers}명` : mobileHint;
     }
     if (!this.rosterListEl) {
       return;
@@ -4871,49 +4942,92 @@ export class GameRuntime {
 
     if (roster.length === 0) {
       const empty = document.createElement("div");
-      empty.className = "roster-entry";
+      empty.className = "roster-empty";
       empty.textContent = "현재 접속 인원이 없습니다.";
       this.rosterListEl.replaceChildren(empty);
       return;
     }
 
     const fragment = document.createDocumentFragment();
-    for (let index = 0; index < roster.length; index += 1) {
-      const entry = roster[index];
-      const row = document.createElement("div");
-      row.className = "roster-entry";
-      if (!entry.alive) {
-        row.classList.add("eliminated");
-      }
-      if (entry.isHost) {
-        row.classList.add("host");
-      }
-      if (entry.isMe) {
-        row.classList.add("me");
-      }
-
-      const rankEl = document.createElement("span");
-      rankEl.className = "roster-rank";
-      rankEl.textContent = String(index + 1);
-
-      const nameEl = document.createElement("span");
-      nameEl.className = "roster-name";
-      nameEl.textContent = entry.isMe ? `${entry.name} (나)` : entry.name;
-
-      const stateEl = document.createElement("span");
-      stateEl.className = "roster-state";
-      stateEl.textContent =
-        entry.spectator === true
-          ? "관전자"
-          : entry.admitted === false
-            ? "대기실"
-          : entry.alive
-            ? `생존 ${entry.score}점`
-            : `탈락 ${entry.score}점`;
-
-      row.append(rankEl, nameEl, stateEl);
-      fragment.appendChild(row);
+    if (hosts.length > 0) {
+      const hostLine = document.createElement("div");
+      hostLine.className = "roster-host-line";
+      hostLine.textContent = `진행자: ${hosts
+        .map((entry) => (entry.isMe ? `${entry.name} (나)` : entry.name))
+        .join(", ")}`;
+      fragment.appendChild(hostLine);
     }
+
+    const createSlotSection = (title, entries, slotCount, kind = "participant") => {
+      const totalSlots = Math.max(0, Math.trunc(Number(slotCount) || 0), entries.length);
+      const section = document.createElement("section");
+      section.className = `roster-slot-section ${kind}`;
+
+      const head = document.createElement("div");
+      head.className = "roster-slot-head";
+      const titleEl = document.createElement("span");
+      titleEl.className = "roster-slot-title";
+      titleEl.textContent = title;
+      const countEl = document.createElement("span");
+      countEl.className = "roster-slot-count";
+      countEl.textContent = `${entries.length}/${totalSlots}`;
+      head.append(titleEl, countEl);
+
+      const grid = document.createElement("div");
+      grid.className = "roster-slot-grid";
+
+      for (let index = 0; index < totalSlots; index += 1) {
+        const entry = entries[index] ?? null;
+        const slot = document.createElement("div");
+        slot.className = "roster-slot";
+        if (entry) {
+          slot.classList.add("filled");
+        }
+        if (entry?.isMe) {
+          slot.classList.add("me");
+        }
+        if (entry?.queuedForAdmission === true) {
+          slot.classList.add("queued");
+        }
+
+        const slotIndexEl = document.createElement("span");
+        slotIndexEl.className = "roster-slot-index";
+        slotIndexEl.textContent = String(index + 1);
+
+        const slotNameEl = document.createElement("span");
+        slotNameEl.className = "roster-slot-name";
+        slotNameEl.textContent = entry ? (entry.isMe ? `${entry.name} (나)` : entry.name) : "-";
+
+        const slotStateEl = document.createElement("span");
+        slotStateEl.className = "roster-slot-state";
+        if (!entry) {
+          slotStateEl.textContent = "";
+        } else if (kind === "participant") {
+          slotStateEl.textContent = entry.alive ? `${entry.score}점` : "탈락";
+        } else if (entry.queuedForAdmission === true) {
+          slotStateEl.textContent = "우선";
+        } else {
+          slotStateEl.textContent = "관전";
+        }
+
+        slot.append(slotIndexEl, slotNameEl, slotStateEl);
+        grid.appendChild(slot);
+      }
+
+      section.append(head, grid);
+      return section;
+    };
+
+    fragment.appendChild(
+      createSlotSection("참가 슬롯", participants, participantLimit, "participant")
+    );
+    const spectatorSlotCount = Math.max(spectatorCapacity, spectators.length);
+    if (spectatorSlotCount > 0) {
+      fragment.appendChild(
+        createSlotSection("관전자 슬롯", spectators, spectatorSlotCount, "spectator")
+      );
+    }
+
     this.rosterListEl.replaceChildren(fragment);
   }
 
@@ -5320,6 +5434,10 @@ export class GameRuntime {
         portalOpen: false,
         waitingPlayers: 0,
         admittedPlayers: 0,
+        spectatorPlayers: 0,
+        priorityPlayers: 0,
+        participantLimit: 50,
+        roomCapacity: 120,
         openedAt: 0,
         lastAdmissionAt: 0,
         admissionStartsAt: 0,
@@ -5347,6 +5465,10 @@ export class GameRuntime {
         portalOpen: false,
         waitingPlayers: 0,
         admittedPlayers: 0,
+        spectatorPlayers: 0,
+        priorityPlayers: 0,
+        participantLimit: 50,
+        roomCapacity: 120,
         openedAt: 0,
         lastAdmissionAt: 0,
         admissionStartsAt: 0,
@@ -5550,6 +5672,15 @@ export class GameRuntime {
       portalOpen: gate?.portalOpen === true,
       waitingPlayers: Math.max(0, Math.trunc(Number(gate?.waitingPlayers) || 0)),
       admittedPlayers: Math.max(0, Math.trunc(Number(gate?.admittedPlayers) || 0)),
+      spectatorPlayers: Math.max(0, Math.trunc(Number(gate?.spectatorPlayers) || 0)),
+      priorityPlayers: Math.max(0, Math.trunc(Number(gate?.priorityPlayers) || 0)),
+      participantLimit: Math.max(1, Math.trunc(Number(gate?.participantLimit) || 50)),
+      roomCapacity: Math.max(
+        1,
+        Math.trunc(
+          Number(gate?.roomCapacity) || Math.max(1, Math.trunc(Number(gate?.participantLimit) || 50))
+        )
+      ),
       openedAt: Math.max(0, Math.trunc(Number(gate?.openedAt) || 0)),
       lastAdmissionAt: Math.max(0, Math.trunc(Number(gate?.lastAdmissionAt) || 0)),
       admissionStartsAt,
@@ -5560,6 +5691,9 @@ export class GameRuntime {
     }
     const seen = new Set();
     let localSeen = false;
+    let localHostSpectator = false;
+    let localQueuedForAdmission = false;
+    let localAdmitted = true;
     const wasAdmissionWaiting = this.localAdmissionWaiting;
 
     for (const player of players) {
@@ -5571,12 +5705,24 @@ export class GameRuntime {
         localSeen = true;
         this.localPlayerName = this.formatPlayerName(player?.name);
         const isHostSpectator = player?.spectator === true;
-        const admitted = player?.admitted !== false || isHostSpectator;
-        this.localAdmissionWaiting = !admitted;
+        const admitted = player?.admitted !== false;
+        const hasQueueFlag = Object.prototype.hasOwnProperty.call(player ?? {}, "queuedForAdmission");
+        const queuedForAdmission = hasQueueFlag ? player?.queuedForAdmission === true : !admitted;
+        localHostSpectator = isHostSpectator;
+        localQueuedForAdmission = queuedForAdmission;
+        localAdmitted = admitted;
+        this.localAdmissionWaiting = !isHostSpectator && !admitted && queuedForAdmission;
         if (isHostSpectator) {
           this.localQuizAlive = true;
           if (this.quizState.active) {
             this.enterHostSpectatorMode();
+          }
+          continue;
+        }
+        if (!admitted && !this.localAdmissionWaiting) {
+          this.localQuizAlive = false;
+          if (this.quizState.active && !this.localSpectatorMode) {
+            this.finishLocalEliminationDrop();
           }
           continue;
         }
@@ -5662,7 +5808,15 @@ export class GameRuntime {
       );
     }
     if (wasAdmissionWaiting && !this.localAdmissionWaiting) {
-      this.appendChatLine("SYSTEM", "입장이 시작되었습니다. 경기장으로 진입합니다.", "system");
+      if (!localAdmitted && !localHostSpectator && !localQueuedForAdmission) {
+        this.appendChatLine(
+          "SYSTEM",
+          "참가 슬롯이 가득 차 관전 모드로 전환되었습니다. 다음 판 우선권이 적용됩니다.",
+          "system"
+        );
+      } else {
+        this.appendChatLine("SYSTEM", "입장이 시작되었습니다. 경기장으로 진입합니다.", "system");
+      }
     }
     if (!wasAdmissionWaiting && this.localAdmissionWaiting) {
       this.appendChatLine("SYSTEM", "현재 포탈 대기실 상태입니다. 진행자를 기다려주세요.", "system");
@@ -6095,7 +6249,7 @@ export class GameRuntime {
       kicker: "실시간",
       title: "메가 OX 퀴즈",
       lines: ["진행자 대기 중"],
-      footer: "최대 50명"
+      footer: "선착순 50명 참가, 초과 인원 관전"
     });
     this.updateQuizControlUi();
   }
@@ -6599,6 +6753,18 @@ export class GameRuntime {
     const active = Boolean(this.quizState.active);
     const portalOpen = this.entryGateState?.portalOpen === true;
     const waitingPlayers = Math.max(0, Math.trunc(Number(this.entryGateState?.waitingPlayers) || 0));
+    const participantLimit = Math.max(
+      1,
+      Math.trunc(Number(this.entryGateState?.participantLimit) || 50)
+    );
+    const spectatorPlayers = Math.max(
+      0,
+      Math.trunc(Number(this.entryGateState?.spectatorPlayers) || 0)
+    );
+    const priorityPlayers = Math.max(
+      0,
+      Math.trunc(Number(this.entryGateState?.priorityPlayers) || 0)
+    );
     const countdownSeconds = this.getAdmissionCountdownSeconds();
     const admissionInProgress =
       this.entryGateState?.admissionInProgress === true || countdownSeconds > 0;
@@ -6621,8 +6787,11 @@ export class GameRuntime {
         this.portalLobbyStartBtnEl.textContent =
           countdownSeconds > 0 ? `입장 중 (${countdownSeconds})` : "입장 중";
       } else {
+        const projectedParticipants = Math.min(waitingPlayers, participantLimit);
         this.portalLobbyStartBtnEl.textContent =
-          waitingPlayers > 0 ? `입장 시작 (${waitingPlayers})` : "입장 시작";
+          waitingPlayers > 0
+            ? `입장 시작 (${projectedParticipants}/${waitingPlayers})`
+            : "입장 시작";
       }
     }
     this.quizNextBtnEl &&
@@ -6649,10 +6818,11 @@ export class GameRuntime {
               ? `모드: 수동(호스팅) | 입장 카운트다운 ${countdownSeconds}초`
               : "모드: 수동(호스팅) | 입장 처리 중";
         } else if (portalOpen) {
-          this.quizControlsNoteEl.textContent = `모드: 수동(호스팅) | 포탈 대기실 오픈 (${waitingPlayers}명 대기)`;
+          this.quizControlsNoteEl.textContent =
+            `모드: 수동(호스팅) | 포탈 대기실 오픈 (선착순 ${participantLimit}명 / 대기열 ${waitingPlayers}명)`;
         } else {
           this.quizControlsNoteEl.textContent =
-            "모드: 수동(호스팅) | 필요 시 포탈을 열어 대기실 인원을 모은 뒤 시작하세요.";
+            `모드: 수동(호스팅) | 참가 ${participantLimit}명 + 관전 ${spectatorPlayers}명 (우선권 ${priorityPlayers}명)`;
         }
       }
     }
@@ -6703,9 +6873,15 @@ export class GameRuntime {
         return;
       }
       const waiting = Math.max(0, Math.trunc(Number(response?.waitingPlayers) || 0));
+      const limit = Math.max(
+        1,
+        Math.trunc(
+          Number(response?.participantLimit) || Number(this.entryGateState?.participantLimit) || 50
+        )
+      );
       this.appendChatLine(
         "SYSTEM",
-        `포탈 대기실을 열었습니다. 대기 인원 ${waiting}명`,
+        `포탈 대기실 오픈: 선착순 ${limit}명 참가, 현재 대기열 ${waiting}명`,
         "system"
       );
     });
@@ -6735,11 +6911,19 @@ export class GameRuntime {
         return;
       }
       const admitted = Math.max(0, Math.trunc(Number(response?.admittedCount) || 0));
+      const spectators = Math.max(0, Math.trunc(Number(response?.spectatorCount) || 0));
+      const priority = Math.max(0, Math.trunc(Number(response?.priorityPlayers) || 0));
+      const limit = Math.max(
+        1,
+        Math.trunc(
+          Number(response?.participantLimit) || Number(this.entryGateState?.participantLimit) || 50
+        )
+      );
       const countdownMs = Math.max(0, Math.trunc(Number(response?.countdownMs) || 0));
       const countdownSeconds = Math.max(1, Math.ceil(countdownMs / 1000));
       this.appendChatLine(
         "SYSTEM",
-        `입장 카운트다운 ${countdownSeconds}초 시작 (대기 ${admitted}명)`,
+        `입장 카운트다운 ${countdownSeconds}초 시작 (참가 ${admitted}/${limit}, 관전 ${spectators}, 우선 ${priority})`,
         "system"
       );
     });
@@ -6862,12 +7046,18 @@ export class GameRuntime {
 
   handlePortalLobbyAdmitted(payload = {}) {
     const admittedCount = Math.max(0, Math.trunc(Number(payload?.admittedCount) || 0));
+    const spectatorCount = Math.max(0, Math.trunc(Number(payload?.spectatorCount) || 0));
+    const priorityPlayers = Math.max(0, Math.trunc(Number(payload?.priorityPlayers) || 0));
+    const participantLimit = Math.max(
+      1,
+      Math.trunc(Number(payload?.participantLimit) || Number(this.entryGateState?.participantLimit) || 50)
+    );
     if (admittedCount <= 0) {
       this.appendChatLine("SYSTEM", "입장 처리 완료: 이동한 인원이 없습니다.", "system");
     } else {
       this.appendChatLine(
         "SYSTEM",
-        `입장 완료: ${admittedCount}명이 경기장으로 이동했습니다.`,
+        `입장 완료: 참가 ${admittedCount}/${participantLimit}, 관전 ${spectatorCount}, 다음 판 우선 ${priorityPlayers}`,
         "system"
       );
     }

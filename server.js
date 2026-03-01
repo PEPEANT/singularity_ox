@@ -48,7 +48,14 @@ async function probeExistingServer(port) {
 
 const ROOM_CODE_PREFIX = "OX";
 const ROOM_CODE_RANDOM_LENGTH = 5;
-const MAX_ROOM_PLAYERS = 50;
+const ENTRY_PARTICIPANT_LIMIT = Math.max(
+  1,
+  Math.trunc(Number(process.env.ENTRY_PARTICIPANT_LIMIT ?? 50) || 50)
+);
+const MAX_ROOM_PLAYERS = Math.max(
+  ENTRY_PARTICIPANT_LIMIT,
+  Math.trunc(Number(process.env.MAX_ROOM_PLAYERS ?? 120) || 120)
+);
 const MAX_ACTIVE_ROOMS = 24;
 
 const WORKER_SINGLE_ROOM_MODE = process.env.ROOM_WORKER_SINGLE === "1";
@@ -222,7 +229,8 @@ function createRoom(code, persistent = false) {
       lastAdmissionAt: 0,
       admissionStartsAt: 0,
       admissionTimer: null,
-      pendingAdmissionIds: []
+      pendingAdmissionIds: [],
+      nextPriorityIds: []
     },
     persistent,
     createdAt: Date.now(),
@@ -369,7 +377,8 @@ function ensureRoomEntryGate(room) {
       lastAdmissionAt: 0,
       admissionStartsAt: 0,
       admissionTimer: null,
-      pendingAdmissionIds: []
+      pendingAdmissionIds: [],
+      nextPriorityIds: []
     };
   }
   if (!room.entryGate || typeof room.entryGate !== "object") {
@@ -379,7 +388,8 @@ function ensureRoomEntryGate(room) {
       lastAdmissionAt: 0,
       admissionStartsAt: 0,
       admissionTimer: null,
-      pendingAdmissionIds: []
+      pendingAdmissionIds: [],
+      nextPriorityIds: []
     };
   }
   room.entryGate.portalOpen = room.entryGate.portalOpen === true;
@@ -392,10 +402,64 @@ function ensureRoomEntryGate(room) {
     0,
     Math.trunc(Number(room.entryGate.admissionStartsAt) || 0)
   );
-  if (!Array.isArray(room.entryGate.pendingAdmissionIds)) {
-    room.entryGate.pendingAdmissionIds = [];
-  }
+  room.entryGate.pendingAdmissionIds = normalizeEntryGateQueueIds(
+    room,
+    room.entryGate.pendingAdmissionIds
+  );
+  room.entryGate.nextPriorityIds = normalizeEntryGateQueueIds(room, room.entryGate.nextPriorityIds);
   return room.entryGate;
+}
+
+function normalizeEntryGateQueueIds(room, rawIds) {
+  const ids = Array.isArray(rawIds) ? rawIds : [];
+  if (!room?.players || room.players.size <= 0) {
+    return [];
+  }
+  const next = [];
+  const seen = new Set();
+  for (const rawId of ids) {
+    const id = String(rawId ?? "");
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    const player = room.players.get(id);
+    if (!player || isPlayerHostModerator(room, player)) {
+      continue;
+    }
+    seen.add(id);
+    next.push(id);
+  }
+  return next;
+}
+
+function addNextPriorityPlayer(room, socketId) {
+  if (!room || !socketId) {
+    return;
+  }
+  const gate = ensureRoomEntryGate(room);
+  const id = String(socketId ?? "");
+  const player = room.players.get(id);
+  if (!player || isPlayerHostModerator(room, player)) {
+    return;
+  }
+  if (!Array.isArray(gate.nextPriorityIds)) {
+    gate.nextPriorityIds = [];
+  }
+  if (!gate.nextPriorityIds.includes(id)) {
+    gate.nextPriorityIds.push(id);
+  }
+}
+
+function removeNextPriorityPlayer(room, socketId) {
+  if (!room || !socketId) {
+    return;
+  }
+  const gate = ensureRoomEntryGate(room);
+  const id = String(socketId ?? "");
+  if (!Array.isArray(gate.nextPriorityIds) || !id) {
+    return;
+  }
+  gate.nextPriorityIds = gate.nextPriorityIds.filter((entryId) => entryId !== id);
 }
 
 function clearEntryAdmissionTimer(room) {
@@ -1006,6 +1070,9 @@ function countWaitingPlayers(room) {
     if (player.admitted === true) {
       continue;
     }
+    if (player.awaitingAdmission !== true) {
+      continue;
+    }
     count += 1;
   }
   return count;
@@ -1023,9 +1090,32 @@ function collectWaitingPlayers(room) {
     if (player.admitted === true) {
       continue;
     }
+    if (player.awaitingAdmission !== true) {
+      continue;
+    }
     waiting.push(player);
   }
   return waiting;
+}
+
+function countSpectatorPlayers(room) {
+  let count = 0;
+  for (const player of room?.players?.values?.() ?? []) {
+    if (!player) {
+      continue;
+    }
+    if (isPlayerHostModerator(room, player)) {
+      continue;
+    }
+    if (player.admitted === true) {
+      continue;
+    }
+    if (player.awaitingAdmission === true) {
+      continue;
+    }
+    count += 1;
+  }
+  return count;
 }
 
 function openEntryGate(room) {
@@ -1054,14 +1144,19 @@ function openEntryGate(room) {
     }
     if (isPlayerHostModerator(room, player)) {
       player.admitted = true;
+      player.awaitingAdmission = false;
+      removeNextPriorityPlayer(room, player.id);
       continue;
     }
     player.admitted = false;
+    player.awaitingAdmission = true;
   }
 
   return {
     ok: true,
     waitingPlayers: countWaitingPlayers(room),
+    spectatorPlayers: countSpectatorPlayers(room),
+    participantLimit: ENTRY_PARTICIPANT_LIMIT,
     openedAt: gate.openedAt
   };
 }
@@ -1090,14 +1185,49 @@ function startEntryAdmission(room) {
       ok: false,
       error: "no waiting players",
       waitingPlayers: 0,
+      spectatorPlayers: countSpectatorPlayers(room),
       admittedPlayers: countPlayablePlayers(room)
     };
+  }
+
+  const waitingById = new Map(
+    waitingPlayers.map((player) => [String(player?.id ?? ""), player]).filter(([id]) => Boolean(id))
+  );
+  const priorityIds = normalizeEntryGateQueueIds(room, gate.nextPriorityIds);
+  const orderedWaiting = [];
+  for (const id of priorityIds) {
+    const player = waitingById.get(id);
+    if (!player) {
+      continue;
+    }
+    orderedWaiting.push(player);
+    waitingById.delete(id);
+  }
+  const remainingWaiting = Array.from(waitingById.values()).sort((left, right) => {
+    const leftJoinedAt = Math.max(0, Math.trunc(Number(left?.joinedAt) || 0));
+    const rightJoinedAt = Math.max(0, Math.trunc(Number(right?.joinedAt) || 0));
+    if (leftJoinedAt !== rightJoinedAt) {
+      return leftJoinedAt - rightJoinedAt;
+    }
+    return String(left?.name ?? "").localeCompare(String(right?.name ?? ""), "ko");
+  });
+  orderedWaiting.push(...remainingWaiting);
+
+  const admissionTargets = orderedWaiting.slice(0, ENTRY_PARTICIPANT_LIMIT);
+  const overflowTargets = orderedWaiting.slice(ENTRY_PARTICIPANT_LIMIT);
+  for (const player of overflowTargets) {
+    player.admitted = false;
+    player.awaitingAdmission = false;
+    player.alive = false;
+    player.lastChoice = null;
+    player.lastChoiceReason = "spectator";
   }
 
   const countdownMs = 3000;
   gate.portalOpen = false;
   gate.admissionStartsAt = Date.now() + countdownMs;
-  gate.pendingAdmissionIds = waitingPlayers.map((player) => String(player?.id ?? "")).filter(Boolean);
+  gate.pendingAdmissionIds = admissionTargets.map((player) => String(player?.id ?? "")).filter(Boolean);
+  gate.nextPriorityIds = overflowTargets.map((player) => String(player?.id ?? "")).filter(Boolean);
   if (gate.admissionTimer) {
     clearTimeout(gate.admissionTimer);
     gate.admissionTimer = null;
@@ -1119,6 +1249,7 @@ function startEntryAdmission(room) {
       const player = targets[index];
       const spawn = buildAdmissionSpawnPoint(index, targets.length);
       player.admitted = true;
+      player.awaitingAdmission = false;
       player.alive = true;
       player.lastChoice = null;
       player.lastChoiceReason = "admitted";
@@ -1141,8 +1272,12 @@ function startEntryAdmission(room) {
     currentGate.lastAdmissionAt = Date.now();
     currentGate.admissionStartsAt = 0;
     currentGate.pendingAdmissionIds = [];
+    currentGate.nextPriorityIds = normalizeEntryGateQueueIds(currentRoom, currentGate.nextPriorityIds);
     io.to(currentRoom.code).emit("portal:lobby-admitted", {
       admittedCount: targets.length,
+      spectatorCount: countSpectatorPlayers(currentRoom),
+      priorityPlayers: currentGate.nextPriorityIds.length,
+      participantLimit: ENTRY_PARTICIPANT_LIMIT,
       at: currentGate.lastAdmissionAt
     });
     emitRoomUpdate(currentRoom);
@@ -1155,7 +1290,10 @@ function startEntryAdmission(room) {
   return {
     ok: true,
     waitingPlayers: countWaitingPlayers(room),
-    admittedCount: waitingPlayers.length,
+    admittedCount: admissionTargets.length,
+    spectatorCount: overflowTargets.length,
+    priorityPlayers: gate.nextPriorityIds.length,
+    participantLimit: ENTRY_PARTICIPANT_LIMIT,
     admittedPlayers: countPlayablePlayers(room),
     startsAt: gate.admissionStartsAt,
     countdownMs
@@ -1212,6 +1350,7 @@ function resetQuizState(room) {
 function serializeRoom(room) {
   pruneRoomPlayers(room);
   const gate = ensureRoomEntryGate(room);
+  const priorityQueue = normalizeEntryGateQueueIds(room, gate.nextPriorityIds);
   return {
     code: room.code,
     hostId: room.hostId,
@@ -1220,6 +1359,10 @@ function serializeRoom(room) {
       portalOpen: gate.portalOpen === true,
       waitingPlayers: countWaitingPlayers(room),
       admittedPlayers: countPlayablePlayers(room),
+      spectatorPlayers: countSpectatorPlayers(room),
+      priorityPlayers: priorityQueue.length,
+      participantLimit: ENTRY_PARTICIPANT_LIMIT,
+      roomCapacity: MAX_ROOM_PLAYERS,
       openedAt: Number(gate.openedAt || 0),
       lastAdmissionAt: Number(gate.lastAdmissionAt || 0),
       admissionStartsAt: Number(gate.admissionStartsAt || 0),
@@ -1232,6 +1375,7 @@ function serializeRoom(room) {
       score: Number.isFinite(Number(player.score)) ? Math.max(0, Math.trunc(Number(player.score))) : 0,
       alive: Boolean(player.alive),
       admitted: player.admitted !== false,
+      queuedForAdmission: player.awaitingAdmission === true,
       spectator: isPlayerHostModerator(room, player),
       lastChoice: player.lastChoice ?? null,
       lastChoiceReason: player.lastChoiceReason ?? null
@@ -1304,7 +1448,7 @@ function buildQuizLeaderboard(room) {
   const players = Array.from(room?.players?.values?.() ?? []);
   const board = players.map((player) => {
     const score = Number.isFinite(Number(player?.score)) ? Math.max(0, Math.trunc(Number(player.score))) : 0;
-    const spectator = isPlayerHostModerator(room, player);
+    const spectator = isPlayerHostModerator(room, player) || player?.admitted !== true;
     return {
       id: player?.id,
       name: player?.name,
@@ -1845,9 +1989,17 @@ function startQuiz(room, hostSocketId, payload = {}) {
     initializePlayerForQuiz(player, true);
     if (isPlayerHostModerator(room, player)) {
       player.admitted = true;
+      player.awaitingAdmission = false;
       player.lastChoiceReason = "spectator";
     } else {
-      player.admitted = true;
+      player.awaitingAdmission = false;
+      if (player.admitted === true) {
+        player.admitted = true;
+      } else {
+        player.admitted = false;
+        player.alive = false;
+        player.lastChoiceReason = "spectator";
+      }
     }
   }
 
@@ -1911,6 +2063,9 @@ function pruneRoomPlayers(room) {
   for (const socketId of room.players.keys()) {
     if (!io.sockets.sockets.has(socketId)) {
       room.players.delete(socketId);
+      const gate = ensureRoomEntryGate(room);
+      gate.pendingAdmissionIds = gate.pendingAdmissionIds.filter((id) => id !== socketId);
+      removeNextPriorityPlayer(room, socketId);
       changed = true;
     }
   }
@@ -1950,6 +2105,9 @@ function leaveCurrentRoom(socket) {
   }
 
   room.players.delete(socket.id);
+  const gate = ensureRoomEntryGate(room);
+  gate.pendingAdmissionIds = gate.pendingAdmissionIds.filter((id) => id !== socket.id);
+  removeNextPriorityPlayer(room, socket.id);
   pruneRoomPlayers(room);
   updateHost(room);
   reconcileQuizAfterRosterChange(room, "leave");
@@ -2003,6 +2161,7 @@ function joinRoom(socket, room, nameOverride = null) {
     const existing = room.players.get(socket.id);
     existing.name = name;
     existing.isOwner = existing.isOwner === true || socket.data.ownerClaim === true;
+    existing.joinedAt = Math.max(0, Math.trunc(Number(existing.joinedAt) || Date.now()));
     ensurePlayerNetState(existing);
     if (socket.data.ownerClaim === true && room.hostId !== socket.id) {
       room.hostId = socket.id;
@@ -2015,14 +2174,26 @@ function joinRoom(socket, room, nameOverride = null) {
     const gate = ensureRoomEntryGate(room);
     if (isPlayerHostModerator(room, existing)) {
       existing.admitted = true;
+      existing.awaitingAdmission = false;
+      removeNextPriorityPlayer(room, existing.id);
     } else if (quiz.active) {
       existing.admitted = false;
+      existing.awaitingAdmission = false;
+      addNextPriorityPlayer(room, existing.id);
     } else if (gate.admissionStartsAt > Date.now()) {
       existing.admitted = false;
+      existing.awaitingAdmission = false;
+      addNextPriorityPlayer(room, existing.id);
     } else if (gate.portalOpen) {
       existing.admitted = false;
-    } else if (existing.admitted !== false) {
+      existing.awaitingAdmission = true;
+    } else if (existing.admitted === false) {
+      existing.awaitingAdmission = false;
+      addNextPriorityPlayer(room, existing.id);
+    } else {
       existing.admitted = true;
+      existing.awaitingAdmission = false;
+      removeNextPriorityPlayer(room, existing.id);
     }
     if (!quiz.active && quiz.autoMode !== false) {
       scheduleAutoQuizStart(room, {
@@ -2056,7 +2227,9 @@ function joinRoom(socket, room, nameOverride = null) {
     score: 0,
     alive: joinAsAlive,
     admitted: true,
+    awaitingAdmission: false,
     isOwner: socket.data.ownerClaim === true,
+    joinedAt: Date.now(),
     lastChoice: null,
     lastChoiceReason: null,
     net: createPlayerNetState(initialState)
@@ -2075,12 +2248,23 @@ function joinRoom(socket, room, nameOverride = null) {
   if (joined) {
     if (isPlayerHostModerator(room, joined)) {
       joined.admitted = true;
+      joined.awaitingAdmission = false;
+      removeNextPriorityPlayer(room, joined.id);
     } else if (quiz.active) {
       joined.admitted = false;
+      joined.awaitingAdmission = false;
+      addNextPriorityPlayer(room, joined.id);
     } else if (gate.admissionStartsAt > Date.now()) {
       joined.admitted = false;
+      joined.awaitingAdmission = false;
+      addNextPriorityPlayer(room, joined.id);
+    } else if (gate.portalOpen) {
+      joined.admitted = false;
+      joined.awaitingAdmission = true;
     } else {
-      joined.admitted = !gate.portalOpen;
+      joined.admitted = true;
+      joined.awaitingAdmission = false;
+      removeNextPriorityPlayer(room, joined.id);
     }
   }
 
@@ -2117,6 +2301,7 @@ const httpServer = createServer((req, res) => {
       totalPlayers,
       activeQuizRooms,
       capacityPerRoom: MAX_ROOM_PLAYERS,
+      participantLimit: ENTRY_PARTICIPANT_LIMIT,
       maxActiveRooms: MAX_ACTIVE_ROOMS,
       tickRate: SERVER_TICK_RATE,
       workerSingleRoomMode: WORKER_SINGLE_ROOM_MODE,
@@ -2150,6 +2335,7 @@ const httpServer = createServer((req, res) => {
       message: "Emptines realtime sync server is running",
       roomPrefix: ROOM_CODE_PREFIX,
       capacityPerRoom: MAX_ROOM_PLAYERS,
+      participantLimit: ENTRY_PARTICIPANT_LIMIT,
       maxActiveRooms: MAX_ACTIVE_ROOMS,
       tickRate: SERVER_TICK_RATE,
       workerSingleRoomMode: WORKER_SINGLE_ROOM_MODE,
@@ -2659,14 +2845,14 @@ httpServer.listen(PORT, () => {
   console.log(`Chat server running on http://localhost:${PORT}`);
   if (WORKER_SINGLE_ROOM_MODE) {
     console.log(
-      `Room worker mode (${WORKER_FIXED_ROOM_CODE}, capacity ${MAX_ROOM_PLAYERS}, token ${
+      `Room worker mode (${WORKER_FIXED_ROOM_CODE}, capacity ${MAX_ROOM_PLAYERS}, participant limit ${ENTRY_PARTICIPANT_LIMIT}, token ${
         REQUIRE_JOIN_TOKEN ? "required" : "optional"
       })`
     );
     return;
   }
   console.log(
-    `Match rooms enabled (${ROOM_CODE_PREFIX}-xxxxx, capacity ${MAX_ROOM_PLAYERS}, max rooms ${MAX_ACTIVE_ROOMS})`
+    `Match rooms enabled (${ROOM_CODE_PREFIX}-xxxxx, capacity ${MAX_ROOM_PLAYERS}, participant limit ${ENTRY_PARTICIPANT_LIMIT}, max rooms ${MAX_ACTIVE_ROOMS})`
   );
 });
 

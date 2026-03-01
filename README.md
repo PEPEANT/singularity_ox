@@ -119,6 +119,10 @@ Copy `.env.example` to `.env` when needed.
   - Optional stable ID for observability and drain logs
 - `WORKER_PORT_BASE`, `WORKER_PORT_STRIDE`, `WORKER_PORT_MAX` (gateway env)
   - Local worker port allocation range per gateway instance
+- `ENTRY_PARTICIPANT_LIMIT` (gateway + worker env)
+  - Portal admission participant slots per round (default `50`)
+- `MAX_ROOM_PLAYERS` (gateway + worker env)
+  - Total room capacity including spectators (default `120`)
 
 ## Deploy Notes
 
