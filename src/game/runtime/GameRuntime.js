@@ -66,6 +66,8 @@ const MOBILE_RUNTIME_SETTINGS = Object.freeze({
   roundOverlaySpawnIntervalSeconds: 0.46,
   roundOverlayParticleScale: 0.58
 });
+const QUIZ_CONFIG_DRAFT_STORAGE_PREFIX = "singularity_ox.quiz_config_draft.v1";
+const QUIZ_CONFIG_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 21;
 
 export class GameRuntime {
   constructor(mount, options = {}) {
@@ -436,6 +438,9 @@ export class GameRuntime {
     this.quizOppositeBillboardResultVisible = false;
     this.quizConfigLoading = false;
     this.quizConfigSaving = false;
+    this.currentRoomCode = "";
+    this.quizConfigDraftSaveTimer = null;
+    this.quizConfigDraftRestoreAttempted = false;
     this.quizReviewItems = [];
     this.quizReviewIndex = 0;
 
@@ -4911,6 +4916,18 @@ export class GameRuntime {
     this.quizSlotCountInputEl?.addEventListener("input", () => {
       this.applyQuizSlotCountChange();
     });
+    this.quizQuestionListEl?.addEventListener("input", () => {
+      this.persistQuizConfigDraft({ immediate: false, updateState: true });
+    });
+    this.quizQuestionListEl?.addEventListener("change", () => {
+      this.persistQuizConfigDraft({ immediate: false, updateState: true });
+    });
+    this.quizAutoFinishInputEl?.addEventListener("change", () => {
+      this.persistQuizConfigDraft({ immediate: false, updateState: true });
+    });
+    this.quizOppositeBillboardInputEl?.addEventListener("change", () => {
+      this.persistQuizConfigDraft({ immediate: false, updateState: true });
+    });
     this.quizReviewCloseBtnEl?.addEventListener("click", () => {
       this.closeQuizReviewModal();
     });
@@ -6557,6 +6574,9 @@ export class GameRuntime {
 
   handleRoomUpdate(room) {
     const players = Array.isArray(room?.players) ? room.players : [];
+    this.currentRoomCode = String(room?.code ?? this.currentRoomCode ?? "")
+      .trim()
+      .toUpperCase();
     const previousHostId = String(this.quizState.hostId ?? "");
     const wasAdmissionInProgress =
       this.entryGateState?.admissionInProgress === true || this.getAdmissionCountdownSeconds() > 0;
@@ -7804,6 +7824,139 @@ export class GameRuntime {
     };
   }
 
+  getQuizConfigDraftRoomCode() {
+    const roomCode = String(
+      this.currentRoomCode ||
+        this.socketAuth?.roomCode ||
+        this.queryParams?.get?.("room") ||
+        ""
+    )
+      .trim()
+      .toUpperCase();
+    return roomCode;
+  }
+
+  getQuizConfigDraftStorageKey() {
+    const roomCode = this.getQuizConfigDraftRoomCode();
+    if (!roomCode) {
+      return "";
+    }
+    return `${QUIZ_CONFIG_DRAFT_STORAGE_PREFIX}.${roomCode}`;
+  }
+
+  readQuizConfigDraft() {
+    if (typeof window === "undefined" || !window.localStorage) {
+      return null;
+    }
+    const key = this.getQuizConfigDraftStorageKey();
+    if (!key) {
+      return null;
+    }
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw);
+      const updatedAt = Number(parsed?.updatedAt || 0);
+      if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+        return null;
+      }
+      if (Date.now() - updatedAt > QUIZ_CONFIG_DRAFT_MAX_AGE_MS) {
+        window.localStorage.removeItem(key);
+        return null;
+      }
+      const config = this.normalizeQuizConfigPayload(parsed?.config ?? {});
+      return {
+        updatedAt,
+        config
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  writeQuizConfigDraft(config = null) {
+    if (typeof window === "undefined" || !window.localStorage) {
+      return false;
+    }
+    const key = this.getQuizConfigDraftStorageKey();
+    if (!key) {
+      return false;
+    }
+    const safeConfig = this.normalizeQuizConfigPayload(config ?? this.quizConfig ?? {});
+    const payload = {
+      version: 1,
+      roomCode: this.getQuizConfigDraftRoomCode(),
+      updatedAt: Date.now(),
+      config: safeConfig
+    };
+    try {
+      window.localStorage.setItem(key, JSON.stringify(payload));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  buildQuizConfigFromEditor() {
+    const maxQuestions = Math.max(1, Math.min(50, Math.trunc(Number(this.quizConfig?.maxQuestions) || 50)));
+    const targetCount = Math.max(
+      1,
+      Math.min(maxQuestions, Math.trunc(Number(this.quizSlotCountInputEl?.value) || 1))
+    );
+    const editorQuestions = this.collectQuizConfigQuestionsFromEditor();
+    const nextQuestions = editorQuestions.slice(0, targetCount);
+    while (nextQuestions.length < targetCount) {
+      nextQuestions.push(this.createDefaultQuizQuestion(nextQuestions.length));
+    }
+    return this.normalizeQuizConfigPayload({
+      maxQuestions,
+      questions: nextQuestions,
+      endPolicy: {
+        autoFinish: this.quizAutoFinishInputEl?.checked !== false,
+        showOppositeBillboard: this.quizOppositeBillboardInputEl?.checked !== false
+      }
+    });
+  }
+
+  persistQuizConfigDraft({ immediate = false, updateState = true } = {}) {
+    if (this.quizConfigDraftSaveTimer) {
+      window.clearTimeout(this.quizConfigDraftSaveTimer);
+      this.quizConfigDraftSaveTimer = null;
+    }
+    if (!immediate) {
+      this.quizConfigDraftSaveTimer = window.setTimeout(() => {
+        this.quizConfigDraftSaveTimer = null;
+        this.persistQuizConfigDraft({ immediate: true, updateState: true });
+      }, 220);
+      return;
+    }
+    if (this.quizConfigModalEl?.classList.contains("hidden")) {
+      return;
+    }
+    const nextConfig = this.buildQuizConfigFromEditor();
+    if (updateState) {
+      this.quizConfig = nextConfig;
+    }
+    this.writeQuizConfigDraft(nextConfig);
+  }
+
+  restoreQuizConfigDraftIfAvailable() {
+    if (this.quizConfigDraftRestoreAttempted) {
+      return false;
+    }
+    this.quizConfigDraftRestoreAttempted = true;
+    const draft = this.readQuizConfigDraft();
+    if (!draft?.config) {
+      return false;
+    }
+    this.quizConfig = draft.config;
+    this.renderQuizConfigEditor();
+    this.setQuizConfigStatus("임시저장 문항을 복구했습니다. 저장 버튼으로 서버에 반영하세요.");
+    return true;
+  }
+
   setQuizConfigStatus(message, isError = false) {
     if (!this.quizConfigStatusEl) {
       return;
@@ -7920,6 +8073,7 @@ export class GameRuntime {
     }
     this.quizConfig.questions = nextQuestions;
     this.renderQuizConfigEditor();
+    this.persistQuizConfigDraft({ immediate: false, updateState: true });
     this.setQuizConfigStatus(`문항 슬롯을 ${targetCount}개로 맞췄습니다.`);
   }
 
@@ -7930,6 +8084,7 @@ export class GameRuntime {
     );
     this.quizConfig = this.buildDefaultQuizConfig(slotCount);
     this.renderQuizConfigEditor();
+    this.persistQuizConfigDraft({ immediate: true, updateState: true });
     this.setQuizConfigStatus("기본 문항 템플릿으로 초기화했습니다.");
   }
 
@@ -7943,11 +8098,13 @@ export class GameRuntime {
       return;
     }
     this.resolveUiElements();
+    this.quizConfigDraftRestoreAttempted = false;
     this.quizConfigModalEl?.classList.remove("hidden");
     this.fetchQuizConfig();
   }
 
   closeQuizConfigModal() {
+    this.persistQuizConfigDraft({ immediate: true, updateState: true });
     this.quizConfigModalEl?.classList.add("hidden");
   }
 
@@ -8015,6 +8172,7 @@ export class GameRuntime {
       this.handleQuizConfigUpdate(response?.config ?? {});
       this.setQuizConfigStatus("문항/종료 설정 저장 완료");
       this.appendChatLine("시스템", "문항/종료 설정이 저장되었습니다.", "system");
+      this.writeQuizConfigDraft(this.quizConfig);
     });
   }
 
@@ -8029,6 +8187,7 @@ export class GameRuntime {
     this.applyOppositeBillboardMode();
     if (!this.quizConfigModalEl?.classList.contains("hidden")) {
       this.renderQuizConfigEditor();
+      this.restoreQuizConfigDraftIfAvailable();
     }
     this.updateQuizControlUi();
   }
