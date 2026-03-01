@@ -6747,6 +6747,9 @@ export class GameRuntime {
     socket.on("chat:message", (payload) => {
       this.handleChatMessage(payload);
     });
+    socket.on("chat:history", (payload = {}) => {
+      this.handleChatHistory(payload);
+    });
     socket.on("chat:blocked", (payload = {}) => {
       this.handleChatBlocked(payload);
     });
@@ -7514,6 +7517,47 @@ export class GameRuntime {
     this.setTextLabel(chatLabel, text, "chat");
     chatLabel.visible = true;
     remote.chatExpireAt = performance.now() + this.chatBubbleLifetimeMs;
+  }
+
+  handleChatHistory(payload = {}) {
+    this.resolveUiElements();
+    const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+    const replace = payload?.replace !== false;
+    if (replace) {
+      this.chatLogEl?.replaceChildren?.();
+      this.recentChatEventSignatures.clear();
+      this.lastLocalChatEcho = "";
+      this.lastLocalChatEchoAt = 0;
+    }
+    if (entries.length <= 0) {
+      return;
+    }
+
+    const myId = String(this.localPlayerId ?? "");
+    for (const entry of entries) {
+      const typeRaw = String(entry?.type ?? "remote").trim().toLowerCase();
+      const text = String(entry?.text ?? "").trim().slice(0, 120);
+      if (!text) {
+        continue;
+      }
+      if (typeRaw === "system") {
+        this.appendChatLine("시스템", text, "system", {
+          mobilePreview: false,
+          scroll: false
+        });
+        continue;
+      }
+      const senderId = String(entry?.id ?? "");
+      const senderName = this.formatPlayerName(entry?.name);
+      const lineType = senderId && senderId === myId ? "self" : "remote";
+      this.appendChatLine(senderName, text, lineType, {
+        mobilePreview: false,
+        scroll: false
+      });
+    }
+    if (this.chatLogEl) {
+      this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+    }
   }
 
   handleChatBlocked(payload = {}) {
@@ -9349,11 +9393,13 @@ export class GameRuntime {
     }
   }
 
-  appendChatLine(name, text, type = "remote") {
+  appendChatLine(name, text, type = "remote", options = {}) {
     this.resolveUiElements();
     if (!this.chatLogEl) {
       return false;
     }
+    const allowMobilePreview = options?.mobilePreview !== false;
+    const autoScroll = options?.scroll !== false;
 
     const line = document.createElement("p");
     line.className = `chat-line ${type}`;
@@ -9385,8 +9431,10 @@ export class GameRuntime {
     while (this.chatLogEl.childElementCount > this.chatLogMaxEntries) {
       this.chatLogEl.firstElementChild?.remove();
     }
-    this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
-    if (this.mobileEnabled && mobilePreviewText) {
+    if (autoScroll) {
+      this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+    }
+    if (allowMobilePreview && this.mobileEnabled && mobilePreviewText) {
       if (isRemoteChatLine) {
         this.notifyMobileIncomingChat(mobilePreviewText);
       } else {

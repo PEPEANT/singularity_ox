@@ -102,6 +102,10 @@ const QUIZ_END_ON_SINGLE_SURVIVOR = process.env.QUIZ_END_ON_SINGLE_SURVIVOR === 
 const QUIZ_ZONE_EDGE_MARGIN = 0.5;
 const QUIZ_ZONE_CENTER_MARGIN = 0.8;
 const DEFAULT_PORTAL_TARGET_URL = sanitizePortalTargetUrl(process.env.PORTAL_TARGET_URL ?? "");
+const CHAT_HISTORY_MAX_ENTRIES = Math.max(
+  20,
+  Math.min(200, Math.trunc(Number(process.env.CHAT_HISTORY_MAX_ENTRIES ?? 80) || 80))
+);
 
 const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
   Object.freeze({
@@ -246,6 +250,7 @@ function createRoom(code, persistent = false) {
       pendingAdmissionIds: [],
       nextPriorityIds: []
     },
+    chatHistory: [],
     persistent,
     createdAt: Date.now(),
     quizConfig: {
@@ -1607,6 +1612,58 @@ function emitRoomUpdate(room) {
   io.to(room.code).emit("room:update", serializeRoom(room));
 }
 
+function getRoomChatHistory(room) {
+  if (!room || typeof room !== "object") {
+    return [];
+  }
+  if (!Array.isArray(room.chatHistory)) {
+    room.chatHistory = [];
+  }
+  if (room.chatHistory.length > CHAT_HISTORY_MAX_ENTRIES) {
+    room.chatHistory = room.chatHistory.slice(room.chatHistory.length - CHAT_HISTORY_MAX_ENTRIES);
+  }
+  return room.chatHistory;
+}
+
+function pushRoomChatHistory(room, entry = {}) {
+  if (!room) {
+    return;
+  }
+  const history = getRoomChatHistory(room);
+  const text = String(entry?.text ?? "").trim().slice(0, 200);
+  if (!text) {
+    return;
+  }
+  const type = String(entry?.type ?? "remote").trim().toLowerCase() === "system" ? "system" : "remote";
+  history.push({
+    id: String(entry?.id ?? ""),
+    name: sanitizeName(entry?.name ?? "PLAYER"),
+    text,
+    type,
+    at: Date.now()
+  });
+  if (history.length > CHAT_HISTORY_MAX_ENTRIES) {
+    history.splice(0, history.length - CHAT_HISTORY_MAX_ENTRIES);
+  }
+}
+
+function emitChatHistorySnapshot(socket, room) {
+  if (!socket || !room) {
+    return;
+  }
+  const history = getRoomChatHistory(room);
+  socket.emit("chat:history", {
+    replace: true,
+    entries: history.map((entry) => ({
+      id: String(entry?.id ?? ""),
+      name: sanitizeName(entry?.name ?? "PLAYER"),
+      text: String(entry?.text ?? "").trim().slice(0, 200),
+      type: String(entry?.type ?? "remote").trim().toLowerCase() === "system" ? "system" : "remote",
+      at: Number(entry?.at ?? 0)
+    }))
+  });
+}
+
 function isRoomHost(room, socketId) {
   if (!room || !socketId) {
     return false;
@@ -2591,6 +2648,7 @@ function joinRoom(socket, room, nameOverride = null) {
     }
     emitRoomUpdate(room);
     emitQuizSnapshot(socket, room);
+    emitChatHistorySnapshot(socket, room);
     socket.emit("quiz:config:update", buildQuizConfigPayload(room));
     return { ok: true, room: serializeRoom(room) };
   }
@@ -2670,6 +2728,7 @@ function joinRoom(socket, room, nameOverride = null) {
   emitRoomUpdate(room);
   emitRoomList();
   emitQuizSnapshot(socket, room);
+  emitChatHistorySnapshot(socket, room);
   socket.emit("quiz:config:update", buildQuizConfigPayload(room));
   if (quiz.active || quiz.phase === "ended") {
     emitQuizScore(room, "join");
@@ -2833,6 +2892,12 @@ io.on("connection", (socket) => {
 
     socket.data.playerName = safeName;
     player.name = safeName;
+    pushRoomChatHistory(room, {
+      id: socket.id,
+      name: safeName,
+      text: safeText,
+      type: "remote"
+    });
     io.to(room.code).emit("chat:message", {
       id: socket.id,
       name: safeName,
