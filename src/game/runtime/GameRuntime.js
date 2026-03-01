@@ -3865,32 +3865,43 @@ export class GameRuntime {
     const questionIndex = Math.max(0, Math.trunc(Number(this.quizState.questionIndex) || 0));
     const totalQuestions = Math.max(0, Math.trunc(Number(this.quizState.totalQuestions) || 0));
     const roundLabel = totalQuestions > 0 ? `${questionIndex}/${totalQuestions}` : `${questionIndex}/?`;
+    const admittedFromGate = Math.max(0, Math.trunc(Number(this.entryGateState?.admittedPlayers) || 0));
+    const spectatorFromGate = Math.max(0, Math.trunc(Number(this.entryGateState?.spectatorPlayers) || 0));
+    const totalFromGate = admittedFromGate + spectatorFromGate;
     const roster = Array.isArray(this.roomRoster) ? this.roomRoster : [];
-    const admittedRoster = roster.filter((entry) => entry && entry.admitted !== false);
-    const totalCountFromRoster = admittedRoster.length;
-    const spectatorCountFromRoster = admittedRoster.reduce(
+    const rosterNonHost = roster.filter((entry) => entry && entry.isHost !== true);
+    const totalFromRoster = rosterNonHost.length;
+    const spectatorFromRoster = rosterNonHost.reduce(
       (count, entry) => count + (entry?.spectator === true ? 1 : 0),
       0
     );
-    const aliveCountFromRoster = admittedRoster.reduce((count, entry) => {
+    const aliveFromRoster = rosterNonHost.reduce((count, entry) => {
       if (entry?.spectator === true) {
         return count;
       }
       return count + (entry?.alive !== false ? 1 : 0);
     }, 0);
-    const totalCountFallback = Math.max(
-      0,
-      Math.trunc(
-        Number(this.entryGateState?.admittedPlayers) || 0
-      ) + Math.trunc(Number(this.entryGateState?.spectatorPlayers) || 0)
-    );
-    const spectatorFallback = Math.max(0, Math.trunc(Number(this.entryGateState?.spectatorPlayers) || 0));
-    const aliveFallback = this.getQuizAliveCountEstimate();
+    const hasGateCounts = totalFromGate > 0;
+    const totalCount = hasGateCounts ? totalFromGate : totalFromRoster;
+    const spectatorCount = hasGateCounts ? spectatorFromGate : spectatorFromRoster;
 
-    const totalCount = totalCountFromRoster > 0 ? totalCountFromRoster : totalCountFallback;
-    const spectatorCount = spectatorCountFromRoster > 0 ? spectatorCountFromRoster : spectatorFallback;
-    const aliveCount = aliveCountFromRoster > 0 ? aliveCountFromRoster : aliveFallback;
-    const eliminatedCount = Math.max(0, totalCount - spectatorCount - aliveCount);
+    let aliveCount;
+    if (hasGateCounts) {
+      const survivorCount = Math.max(0, Math.trunc(Number(this.quizState?.survivors) || 0));
+      if (!active) {
+        aliveCount = admittedFromGate;
+      } else if (
+        (phase === "start" || phase === "question" || phase === "lock" || phase === "waiting-next") &&
+        survivorCount <= 0
+      ) {
+        aliveCount = admittedFromGate;
+      } else {
+        aliveCount = Math.min(admittedFromGate, survivorCount);
+      }
+    } else {
+      aliveCount = aliveFromRoster;
+    }
+    const eliminatedCount = Math.max(0, totalCount - spectatorCount - Math.max(0, aliveCount));
 
     const payload = {
       kicker: "진행 현황",
