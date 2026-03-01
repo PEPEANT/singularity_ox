@@ -319,56 +319,23 @@ canvas {
   box-shadow: inset 0 0 0 1px rgba(128, 170, 205, 0.2);
 }
 
-#mobile-move-pad::after {
-  content: "";
+#mobile-move-thumb {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 40px;
-  height: 40px;
+  width: 64px;
+  height: 64px;
   transform: translate(-50%, -50%);
-  border: 1px solid rgba(169, 208, 238, 0.4);
+  border: 1px solid rgba(183, 217, 243, 0.72);
   border-radius: 50%;
-  background: rgba(10, 25, 39, 0.8);
+  background:
+    radial-gradient(circle at 38% 34%, rgba(203, 233, 255, 0.34), rgba(29, 58, 84, 0.86) 72%),
+    rgba(15, 34, 52, 0.9);
+  box-shadow:
+    0 0 0 1px rgba(122, 167, 204, 0.24),
+    0 5px 14px rgba(3, 11, 18, 0.42);
   pointer-events: none;
-}
-
-.mobile-move-btn {
-  position: absolute;
-  width: 56px;
-  height: 56px;
-  border: 1px solid rgba(167, 204, 233, 0.62);
-  border-radius: 50%;
-  background: rgba(10, 24, 40, 0.86);
-  color: #e6f5ff;
-  font: 800 0.95rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
-  letter-spacing: 0.02em;
-  padding: 0;
-  pointer-events: auto;
-}
-
-.mobile-move-btn.up {
-  left: 50%;
-  top: 8px;
-  transform: translateX(-50%);
-}
-
-.mobile-move-btn.left {
-  left: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-.mobile-move-btn.right {
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-.mobile-move-btn.down {
-  left: 50%;
-  bottom: 8px;
-  transform: translateX(-50%);
+  transition: box-shadow 0.08s ease;
 }
 
 #mobile-action-pad {
@@ -411,11 +378,17 @@ canvas {
 #mobile-roster-btn.active,
 #mobile-chat-toggle-btn.active,
 #mobile-run-btn.active,
-.mobile-move-btn.active,
+#mobile-move-pad.active,
 #mobile-action-pad button:active {
   border-color: rgba(203, 233, 255, 0.92);
   box-shadow: 0 0 0 1px rgba(143, 188, 223, 0.36);
   background: rgba(18, 41, 64, 0.94);
+}
+
+#mobile-move-pad.active #mobile-move-thumb {
+  box-shadow:
+    0 0 0 2px rgba(171, 212, 242, 0.34),
+    0 7px 18px rgba(3, 10, 18, 0.46);
 }
 
 #mobile-look-pad {
@@ -1701,31 +1674,9 @@ body.mobile-chat-focus #mobile-look-pad {
     height: 156px;
   }
 
-  #mobile-move-pad::after {
-    width: 34px;
-    height: 34px;
-  }
-
-  .mobile-move-btn {
-    width: 50px;
-    height: 50px;
-    font-size: 0.9rem;
-  }
-
-  .mobile-move-btn.up {
-    top: 7px;
-  }
-
-  .mobile-move-btn.left {
-    left: 7px;
-  }
-
-  .mobile-move-btn.right {
-    right: 7px;
-  }
-
-  .mobile-move-btn.down {
-    bottom: 7px;
+  #mobile-move-thumb {
+    width: 56px;
+    height: 56px;
   }
 
   #mobile-action-pad {

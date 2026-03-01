@@ -58,12 +58,12 @@ const ROUND_OVERLAY_SETTINGS = Object.freeze({
   fireworkParticleCountMax: 44
 });
 const MOBILE_RUNTIME_SETTINGS = Object.freeze({
-  maxPixelRatio: 1.1,
-  minNetworkSyncInterval: 0.1,
-  lookSensitivityX: 0.0046,
-  lookSensitivityY: 0.004,
-  hudRefreshIntervalSeconds: 0.22,
-  roundOverlaySpawnIntervalSeconds: 0.38,
+  maxPixelRatio: 0.95,
+  minNetworkSyncInterval: 0.12,
+  lookSensitivityX: 0.0072,
+  lookSensitivityY: 0.0062,
+  hudRefreshIntervalSeconds: 0.32,
+  roundOverlaySpawnIntervalSeconds: 0.46,
   roundOverlayParticleScale: 0.58
 });
 
@@ -380,7 +380,8 @@ export class GameRuntime {
     this.rosterSubtitleEl = document.getElementById("roster-subtitle");
     this.rosterListEl = document.getElementById("roster-list");
     this.mobileControlsEl = document.getElementById("mobile-controls");
-    this.mobileMoveButtons = Array.from(document.querySelectorAll(".mobile-move-btn[data-key]"));
+    this.mobileMovePadEl = document.getElementById("mobile-move-pad");
+    this.mobileMoveThumbEl = document.getElementById("mobile-move-thumb");
     this.mobileJumpBtnEl = document.getElementById("mobile-jump-btn");
     this.mobileRunBtnEl = document.getElementById("mobile-run-btn");
     this.mobileRosterBtnEl = document.getElementById("mobile-roster-btn");
@@ -410,9 +411,18 @@ export class GameRuntime {
       admissionInProgress: false
     };
     this.mobileHeldKeys = new Set();
+    this.mobileMovePointerId = null;
+    this.mobileMoveTouchId = null;
+    this.mobileMoveVectorX = 0;
+    this.mobileMoveVectorY = 0;
+    this.mobileMovePadCenterX = 0;
+    this.mobileMovePadCenterY = 0;
+    this.mobileMovePadMaxDistance = 1;
     this.mobileLookPointerId = null;
     this.mobileLookLastX = 0;
     this.mobileLookLastY = 0;
+    this.mobileLookDeltaX = 0;
+    this.mobileLookDeltaY = 0;
     this.mobileChatPanelVisible = !this.mobileEnabled;
     this.mobileEventsBound = false;
     this.mobileHoldResetters = [];
@@ -4775,11 +4785,11 @@ export class GameRuntime {
     window.addEventListener(
       "mousemove",
       (event) => {
-        if (!this.pointerLocked && !this.mobileEnabled) {
+        if (!this.pointerLocked) {
           return;
         }
-        const sensitivityX = this.mobileEnabled ? 0.0018 : 0.0023;
-        const sensitivityY = this.mobileEnabled ? 0.0016 : 0.002;
+        const sensitivityX = 0.0023;
+        const sensitivityY = 0.002;
         this.yaw -= event.movementX * sensitivityX;
         this.pitch -= event.movementY * sensitivityY;
         this.pitch = THREE.MathUtils.clamp(this.pitch, -1.52, 1.52);
@@ -5127,6 +5137,12 @@ export class GameRuntime {
     if (!this.mobileControlsEl) {
       this.mobileControlsEl = document.getElementById("mobile-controls");
     }
+    if (!this.mobileMovePadEl) {
+      this.mobileMovePadEl = document.getElementById("mobile-move-pad");
+    }
+    if (!this.mobileMoveThumbEl) {
+      this.mobileMoveThumbEl = document.getElementById("mobile-move-thumb");
+    }
     if (!this.mobileJumpBtnEl) {
       this.mobileJumpBtnEl = document.getElementById("mobile-jump-btn");
     }
@@ -5163,7 +5179,6 @@ export class GameRuntime {
     if (!this.chalkColorsEl) {
       this.chalkColorsEl = document.getElementById("chalk-colors");
     }
-    this.mobileMoveButtons = Array.from(document.querySelectorAll(".mobile-move-btn[data-key]"));
     this.chalkColorButtons = Array.from(document.querySelectorAll(".chalk-color[data-color]"));
     this.toolButtons = Array.from(document.querySelectorAll(".tool-slot[data-tool]"));
   }
@@ -5355,6 +5370,9 @@ export class GameRuntime {
     if (!this.rosterListEl) {
       return;
     }
+    if (!this.rosterVisibleByTab && !this.rosterPinned) {
+      return;
+    }
 
     if (roster.length === 0) {
       const empty = document.createElement("div");
@@ -5493,6 +5511,9 @@ export class GameRuntime {
     if (typeof document !== "undefined" && document.body) {
       const mobileChatFocus = this.mobileEnabled && this.chatOpen && canUseMobileChat;
       document.body.classList.toggle("mobile-chat-focus", mobileChatFocus);
+      if (mobileChatFocus) {
+        this.releaseMobileInputs();
+      }
     }
     if (this.mobileChatToggleBtnEl) {
       this.mobileChatToggleBtnEl.disabled = !canUseMobileChat;
@@ -5536,6 +5557,43 @@ export class GameRuntime {
     return this.mobileEnabled && (pointerType === "mouse" || pointerType.length === 0);
   }
 
+  setMobileMoveVector(rawX, rawY) {
+    this.mobileMoveVectorX = THREE.MathUtils.clamp(Number(rawX) || 0, -1, 1);
+    this.mobileMoveVectorY = THREE.MathUtils.clamp(Number(rawY) || 0, -1, 1);
+  }
+
+  updateMobileMoveThumb(offsetX = 0, offsetY = 0) {
+    if (!this.mobileMoveThumbEl) {
+      return;
+    }
+    const x = Number(offsetX) || 0;
+    const y = Number(offsetY) || 0;
+    this.mobileMoveThumbEl.style.transform = `translate(calc(-50% + ${x.toFixed(1)}px), calc(-50% + ${y.toFixed(1)}px))`;
+  }
+
+  resetMobileMovePad() {
+    this.mobileMovePointerId = null;
+    this.mobileMoveTouchId = null;
+    this.setMobileMoveVector(0, 0);
+    this.mobileMovePadEl?.classList?.remove("active");
+    this.updateMobileMoveThumb(0, 0);
+  }
+
+  refreshMobileMovePadMetrics() {
+    if (!this.mobileMovePadEl) {
+      return false;
+    }
+    const rect = this.mobileMovePadEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+    const thumbSize = this.mobileMoveThumbEl?.offsetWidth || 56;
+    this.mobileMovePadCenterX = rect.left + rect.width * 0.5;
+    this.mobileMovePadCenterY = rect.top + rect.height * 0.5;
+    this.mobileMovePadMaxDistance = Math.max(14, rect.width * 0.5 - thumbSize * 0.5 - 4);
+    return this.mobileMovePadMaxDistance > 0;
+  }
+
   setMobileKeyState(keyCode, active) {
     const key = String(keyCode ?? "");
     if (!key) {
@@ -5564,12 +5622,12 @@ export class GameRuntime {
       this.keys.delete(key);
     }
     this.mobileHeldKeys.clear();
-    for (const button of this.mobileMoveButtons) {
-      button?.classList?.remove("active");
-    }
+    this.resetMobileMovePad();
     this.mobileJumpBtnEl?.classList?.remove("active");
     this.mobileRunBtnEl?.classList?.remove("active");
     this.mobileLookPointerId = null;
+    this.mobileLookDeltaX = 0;
+    this.mobileLookDeltaY = 0;
     this.mobileLookPadEl?.classList?.remove("active");
   }
 
@@ -5578,14 +5636,7 @@ export class GameRuntime {
       return;
     }
     this.mobileEventsBound = true;
-
-    for (const button of this.mobileMoveButtons) {
-      const keyCode = String(button?.dataset?.key ?? "").trim();
-      if (!keyCode) {
-        continue;
-      }
-      this.bindMobileHoldButton(button, keyCode);
-    }
+    this.bindMobileMovePadEvents();
     this.bindMobileHoldButton(this.mobileJumpBtnEl, "Space");
     this.bindMobileHoldButton(this.mobileRunBtnEl, "ShiftLeft");
 
@@ -5607,6 +5658,197 @@ export class GameRuntime {
     );
 
     this.bindMobileLookPadEvents();
+  }
+
+  bindMobileMovePadEvents() {
+    if (!this.mobileMovePadEl) {
+      return;
+    }
+
+    const supportsPointerEvents =
+      typeof window !== "undefined" && typeof window.PointerEvent !== "undefined";
+
+    const calcMoveState = (clientX, clientY) => {
+      if (!this.mobileMovePadEl) {
+        return;
+      }
+      if (this.mobileMovePadMaxDistance <= 0.001 && !this.refreshMobileMovePadMetrics()) {
+        return;
+      }
+      const maxDistance = this.mobileMovePadMaxDistance;
+      let dx = Number(clientX) - this.mobileMovePadCenterX;
+      let dy = Number(clientY) - this.mobileMovePadCenterY;
+      const distance = Math.hypot(dx, dy);
+      if (distance > maxDistance && distance > 0.001) {
+        const ratio = maxDistance / distance;
+        dx *= ratio;
+        dy *= ratio;
+      }
+      const normalizeWithBoost = (value) => {
+        const magnitude = Math.min(1, Math.abs(Number(value) || 0));
+        return Math.sign(value) * Math.sqrt(magnitude);
+      };
+      this.setMobileMoveVector(
+        normalizeWithBoost(dx / maxDistance),
+        normalizeWithBoost(dy / maxDistance)
+      );
+      this.updateMobileMoveThumb(dx, dy);
+    };
+
+    const activatePad = (clientX, clientY, pointerId = null, touchId = null) => {
+      if (!this.mobileEnabled || !this.canMovePlayer()) {
+        return;
+      }
+      if (pointerId !== null) {
+        this.mobileMovePointerId = pointerId;
+      }
+      if (touchId !== null) {
+        this.mobileMoveTouchId = touchId;
+      }
+      this.mobileMovePadEl?.classList?.add("active");
+      this.refreshMobileMovePadMetrics();
+      calcMoveState(clientX, clientY);
+    };
+
+    const deactivatePad = () => {
+      this.resetMobileMovePad();
+    };
+
+    this.mobileMovePadEl.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (!this.isAcceptedMobilePointer(event)) {
+          return;
+        }
+        if (this.mobileMovePointerId !== null) {
+          return;
+        }
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        if (typeof this.mobileMovePadEl.setPointerCapture === "function") {
+          try {
+            this.mobileMovePadEl.setPointerCapture(event.pointerId);
+          } catch {
+            // ignore
+          }
+        }
+        activatePad(event.clientX, event.clientY, event.pointerId, null);
+      },
+      { passive: false }
+    );
+
+    document.addEventListener(
+      "pointermove",
+      (event) => {
+        if (
+          !this.isAcceptedMobilePointer(event) ||
+          this.mobileMovePointerId === null ||
+          event.pointerId !== this.mobileMovePointerId
+        ) {
+          return;
+        }
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        calcMoveState(event.clientX, event.clientY);
+      },
+      { passive: false }
+    );
+
+    const endPointerMovePad = (event) => {
+      if (this.mobileMovePointerId === null) {
+        return;
+      }
+      if (
+        event &&
+        Object.prototype.hasOwnProperty.call(event, "pointerId") &&
+        event.pointerId !== this.mobileMovePointerId
+      ) {
+        return;
+      }
+      if (event?.cancelable) {
+        event.preventDefault();
+      }
+      const releaseId = this.mobileMovePointerId;
+      if (
+        releaseId !== null &&
+        this.mobileMovePadEl &&
+        typeof this.mobileMovePadEl.hasPointerCapture === "function" &&
+        this.mobileMovePadEl.hasPointerCapture(releaseId)
+      ) {
+        try {
+          this.mobileMovePadEl.releasePointerCapture(releaseId);
+        } catch {
+          // ignore
+        }
+      }
+      deactivatePad();
+    };
+
+    document.addEventListener("pointerup", endPointerMovePad, { passive: false });
+    document.addEventListener("pointercancel", endPointerMovePad, { passive: false });
+    this.mobileMovePadEl.addEventListener("lostpointercapture", endPointerMovePad, {
+      passive: false
+    });
+
+    if (!supportsPointerEvents) {
+      this.mobileMovePadEl.addEventListener(
+        "touchstart",
+        (event) => {
+          const touch = event.changedTouches?.[0];
+          if (!touch || this.mobileMoveTouchId !== null) {
+            return;
+          }
+          if (event.cancelable) {
+            event.preventDefault();
+          }
+          activatePad(touch.clientX, touch.clientY, null, touch.identifier);
+        },
+        { passive: false }
+      );
+
+      document.addEventListener(
+        "touchmove",
+        (event) => {
+          if (this.mobileMoveTouchId === null) {
+            return;
+          }
+          const touch = Array.from(event.changedTouches ?? []).find(
+            (entry) => entry.identifier === this.mobileMoveTouchId
+          );
+          if (!touch) {
+            return;
+          }
+          if (event.cancelable) {
+            event.preventDefault();
+          }
+          calcMoveState(touch.clientX, touch.clientY);
+        },
+        { passive: false }
+      );
+
+      const endTouchMovePad = (event) => {
+        if (this.mobileMoveTouchId === null) {
+          return;
+        }
+        const matched = Array.from(event?.changedTouches ?? []).some(
+          (entry) => entry.identifier === this.mobileMoveTouchId
+        );
+        if (!matched) {
+          return;
+        }
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        deactivatePad();
+      };
+
+      document.addEventListener("touchend", endTouchMovePad, { passive: false });
+      document.addEventListener("touchcancel", endTouchMovePad, { passive: false });
+    }
+
+    this.mobileHoldResetters.push(() => deactivatePad());
   }
 
   bindMobileHoldButton(button, keyCode) {
@@ -5807,9 +6049,7 @@ export class GameRuntime {
         const deltaY = event.clientY - this.mobileLookLastY;
         this.mobileLookLastX = event.clientX;
         this.mobileLookLastY = event.clientY;
-        this.yaw -= deltaX * MOBILE_RUNTIME_SETTINGS.lookSensitivityX;
-        this.pitch -= deltaY * MOBILE_RUNTIME_SETTINGS.lookSensitivityY;
-        this.pitch = THREE.MathUtils.clamp(this.pitch, -1.52, 1.52);
+        this.queueMobileLookDelta(deltaX, deltaY);
       },
       { passive: false }
     );
@@ -5859,9 +6099,7 @@ export class GameRuntime {
           const deltaY = touch.clientY - this.mobileLookLastY;
           this.mobileLookLastX = touch.clientX;
           this.mobileLookLastY = touch.clientY;
-          this.yaw -= deltaX * MOBILE_RUNTIME_SETTINGS.lookSensitivityX;
-          this.pitch -= deltaY * MOBILE_RUNTIME_SETTINGS.lookSensitivityY;
-          this.pitch = THREE.MathUtils.clamp(this.pitch, -1.52, 1.52);
+          this.queueMobileLookDelta(deltaX, deltaY);
         },
         { passive: false }
       );
@@ -5886,6 +6124,32 @@ export class GameRuntime {
       document.addEventListener("touchend", finishTouchLookDrag, { passive: false });
       document.addEventListener("touchcancel", finishTouchLookDrag, { passive: false });
     }
+  }
+
+  queueMobileLookDelta(deltaX, deltaY) {
+    if (!this.mobileEnabled) {
+      return;
+    }
+    this.mobileLookDeltaX += Number(deltaX) || 0;
+    this.mobileLookDeltaY += Number(deltaY) || 0;
+  }
+
+  applyMobileLookDelta() {
+    if (!this.mobileEnabled) {
+      this.mobileLookDeltaX = 0;
+      this.mobileLookDeltaY = 0;
+      return;
+    }
+    const deltaX = this.mobileLookDeltaX;
+    const deltaY = this.mobileLookDeltaY;
+    this.mobileLookDeltaX = 0;
+    this.mobileLookDeltaY = 0;
+    if (Math.abs(deltaX) < 0.001 && Math.abs(deltaY) < 0.001) {
+      return;
+    }
+    this.yaw -= deltaX * MOBILE_RUNTIME_SETTINGS.lookSensitivityX;
+    this.pitch -= deltaY * MOBILE_RUNTIME_SETTINGS.lookSensitivityY;
+    this.pitch = THREE.MathUtils.clamp(this.pitch, -1.52, 1.52);
   }
 
   setChatOpen(open) {
@@ -6697,6 +6961,7 @@ export class GameRuntime {
   }
 
   tick(delta) {
+    this.applyMobileLookDelta();
     this.updateMovement(delta);
     this.updateTrapdoorAnimation(delta);
     this.updateHubFlow(delta);
@@ -6721,14 +6986,18 @@ export class GameRuntime {
     }
 
     const movementEnabled = this.canMovePlayer();
-    const keyForward = movementEnabled
+    const keyboardForward = movementEnabled
       ? (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) -
         (this.keys.has("KeyS") || this.keys.has("ArrowDown") ? 1 : 0)
       : 0;
-    const keyStrafe = movementEnabled
+    const keyboardStrafe = movementEnabled
       ? (this.keys.has("KeyD") || this.keys.has("ArrowRight") ? 1 : 0) -
         (this.keys.has("KeyA") || this.keys.has("ArrowLeft") ? 1 : 0)
       : 0;
+    const mobileForward = movementEnabled && this.mobileEnabled ? -this.mobileMoveVectorY : 0;
+    const mobileStrafe = movementEnabled && this.mobileEnabled ? this.mobileMoveVectorX : 0;
+    const keyForward = THREE.MathUtils.clamp(keyboardForward + mobileForward, -1, 1);
+    const keyStrafe = THREE.MathUtils.clamp(keyboardStrafe + mobileStrafe, -1, 1);
 
     const sprinting =
       movementEnabled && (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight"));
@@ -6746,11 +7015,12 @@ export class GameRuntime {
         .addScaledVector(this.moveForwardVec, keyForward)
         .addScaledVector(this.moveRightVec, keyStrafe);
 
+      const inputMagnitude = Math.min(1, this.moveVec.length());
       if (this.moveVec.lengthSq() > 0.0001) {
         this.moveVec.normalize();
       }
 
-      const moveStep = speed * delta;
+      const moveStep = speed * delta * inputMagnitude;
       const worldLimit = this.getBoundaryHardLimit();
       this.playerPosition.x = THREE.MathUtils.clamp(
         this.playerPosition.x + this.moveVec.x * moveStep,
@@ -9081,6 +9351,9 @@ export class GameRuntime {
     }
     this.resizeRoundOverlayCanvas();
     this.updateMobileControlUi();
+    if (this.mobileEnabled) {
+      this.refreshMobileMovePadMetrics();
+    }
   }
 }
 
