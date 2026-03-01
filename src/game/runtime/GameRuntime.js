@@ -8104,6 +8104,7 @@ export class GameRuntime {
   }
 
   handleQuizEnd(payload = {}) {
+    const isHost = this.isLocalHost();
     const rankingSource = Array.isArray(payload.ranking)
       ? payload.ranking
       : Array.isArray(payload.leaderboard)
@@ -8137,30 +8138,45 @@ export class GameRuntime {
     this.centerBillboardLastCountdown = null;
     this.setOppositeBillboardResultVisible(false);
     this.setQuizReviewItems(payload?.review);
-    this.showRoundOverlay({
-      title: "게임이 종료되었습니다",
-      subtitle:
-        ranking.length > 0
-          ? ranking
-              .slice(0, 3)
-              .map((entry) => `${entry.rank}위 ${entry.name} ${entry.score}점`)
-              .join(" | ")
-          : "최종 순위를 계산할 수 없습니다.",
-      fireworks: true,
-      durationSeconds: ROUND_OVERLAY_SETTINGS.endDurationSeconds
-    });
-    this.renderCenterBillboard({
-      kicker: "OX 퀴즈 10",
-      title: "게임이 종료되었습니다",
-      lines:
-        ranking.length > 0
-          ? ranking.slice(0, 3).map((entry) => `${entry.rank}위 ${entry.name} (${entry.score}점)`)
-          : ["우승자 없음"],
-      footer: "호스팅 후 시작 버튼으로 새 게임 시작"
-    });
+
+    if (isHost) {
+      this.hideRoundOverlay();
+      this.renderCenterBillboard({
+        kicker: "OX 퀴즈",
+        title: "다음 라운드 준비",
+        lines:
+          ranking.length > 0
+            ? ranking.slice(0, 3).map((entry) => `${entry.rank}위 ${entry.name} (${entry.score}점)`)
+            : ["순위 데이터 없음"],
+        footer: "진행자 제어에서 입장 열기/입장 시작/시작을 진행하세요"
+      });
+    } else {
+      this.showRoundOverlay({
+        title: "게임이 종료되었습니다",
+        subtitle:
+          ranking.length > 0
+            ? ranking
+                .slice(0, 3)
+                .map((entry) => `${entry.rank}위 ${entry.name} ${entry.score}점`)
+                .join(" | ")
+            : "최종 순위를 계산할 수 없습니다.",
+        fireworks: true,
+        durationSeconds: ROUND_OVERLAY_SETTINGS.endDurationSeconds
+      });
+      this.renderCenterBillboard({
+        kicker: "OX 퀴즈 10",
+        title: "게임이 종료되었습니다",
+        lines:
+          ranking.length > 0
+            ? ranking.slice(0, 3).map((entry) => `${entry.rank}위 ${entry.name} (${entry.score}점)`)
+            : ["승자 없음"],
+        footer: "호스트가 다음 게임을 시작합니다"
+      });
+    }
+
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
-    if (this.quizReviewItems.length > 0) {
+    if (!isHost && this.quizReviewItems.length > 0) {
       window.setTimeout(() => {
         if (this.quizState.phase === "ended" && this.quizReviewItems.length > 0) {
           this.openQuizReviewModal();
@@ -8168,7 +8184,6 @@ export class GameRuntime {
       }, 900);
     }
   }
-
   syncQuizBillboard(force = false) {
     if (!this.quizState.active) {
       const autoSeconds = this.getAutoStartCountdownSeconds();
@@ -10411,4 +10426,3 @@ export class GameRuntime {
     this.scheduleMobileKeyboardInsetSync(0);
   }
 }
-
