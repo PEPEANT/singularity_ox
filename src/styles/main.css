@@ -71,7 +71,7 @@ canvas {
 
 #player-roster-panel {
   position: fixed;
-  top: 118px;
+  top: 96px;
   left: 14px;
   z-index: 37;
   width: min(96vw, 620px);
@@ -1565,9 +1565,9 @@ body.mobile-chat-focus #chat-header {
     top: auto;
     left: 8px;
     right: 8px;
-    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 218px);
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 246px);
     width: auto;
-    max-height: min(44vh, calc(100dvh - max(8px, env(safe-area-inset-top)) - 246px));
+    max-height: min(42vh, calc(100dvh - max(8px, env(safe-area-inset-top)) - 272px));
     padding: 8px 9px;
   }
 

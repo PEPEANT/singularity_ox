@@ -6130,9 +6130,10 @@ export class GameRuntime {
       if (this.mobileMovePointerId === null) {
         return;
       }
+      const hasPointerId = Number.isFinite(Number(event?.pointerId));
       if (
         event &&
-        Object.prototype.hasOwnProperty.call(event, "pointerId") &&
+        hasPointerId &&
         event.pointerId !== this.mobileMovePointerId
       ) {
         return;
@@ -6260,9 +6261,10 @@ export class GameRuntime {
       if (activePointerId === null) {
         return;
       }
+      const hasPointerId = Number.isFinite(Number(event?.pointerId));
       if (
         event &&
-        Object.prototype.hasOwnProperty.call(event, "pointerId") &&
+        hasPointerId &&
         event.pointerId !== activePointerId
       ) {
         return;
@@ -6344,10 +6346,11 @@ export class GameRuntime {
       typeof window !== "undefined" && typeof window.PointerEvent !== "undefined";
 
     const finishLookDrag = (event = null) => {
+      const hasPointerId = Number.isFinite(Number(event?.pointerId));
       if (
         event &&
         this.mobileLookPointerId !== null &&
-        Object.prototype.hasOwnProperty.call(event, "pointerId") &&
+        hasPointerId &&
         event.pointerId !== this.mobileLookPointerId
       ) {
         return;
