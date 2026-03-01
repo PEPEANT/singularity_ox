@@ -362,6 +362,8 @@ export class GameRuntime {
     this.chatOpen = false;
     this.lastLocalChatEcho = "";
     this.lastLocalChatEchoAt = 0;
+    this.chatSendInFlight = false;
+    this.recentChatEventSignatures = new Map();
     this.toolUiEl = document.getElementById("tool-ui");
     this.chatUiEl = document.getElementById("chat-ui");
     this.quizControlsEl = document.getElementById("quiz-controls");
@@ -4894,6 +4896,10 @@ export class GameRuntime {
       });
       this.chatInputEl.addEventListener("keydown", (event) => {
         if (event.code === "Enter") {
+          if (event.repeat) {
+            event.preventDefault();
+            return;
+          }
           event.preventDefault();
           this.sendChatMessage();
           return;
@@ -6511,6 +6517,7 @@ export class GameRuntime {
 
     socket.on("disconnect", () => {
       this.networkConnected = false;
+      this.chatSendInFlight = false;
       this.localPlayerId = null;
       this.clearRemotePlayers();
       this.roomRoster = [];
@@ -6550,6 +6557,7 @@ export class GameRuntime {
 
     socket.on("connect_error", () => {
       this.networkConnected = false;
+      this.chatSendInFlight = false;
       this.roomRoster = [];
       this.localAdmissionWaiting = false;
       this.entryGateState = {
@@ -7345,6 +7353,20 @@ export class GameRuntime {
 
     const senderId = String(payload?.id ?? "");
     const senderName = this.formatPlayerName(payload?.name);
+    const eventSignature = `${senderId || senderName}|${text}`;
+    const now = performance.now();
+    const previousSeenAt = Number(this.recentChatEventSignatures.get(eventSignature) || 0);
+    if (previousSeenAt > 0 && now - previousSeenAt < 450) {
+      return;
+    }
+    this.recentChatEventSignatures.set(eventSignature, now);
+    if (this.recentChatEventSignatures.size > 80) {
+      for (const [signature, seenAt] of this.recentChatEventSignatures) {
+        if (now - Number(seenAt || 0) > 5000) {
+          this.recentChatEventSignatures.delete(signature);
+        }
+      }
+    }
     const signature = `${senderName}|${text}`;
 
     if (senderId && senderId === this.localPlayerId) {
@@ -9232,6 +9254,9 @@ export class GameRuntime {
     if (!this.chatInputEl) {
       return;
     }
+    if (this.chatSendInFlight) {
+      return;
+    }
 
     const text = String(this.chatInputEl.value ?? "").trim().slice(0, 120);
     if (!text) {
@@ -9245,6 +9270,9 @@ export class GameRuntime {
       return;
     }
 
+    this.chatSendInFlight = true;
+    this.chatInputEl.value = "";
+
     this.socket.emit(
       "chat:send",
       {
@@ -9252,7 +9280,11 @@ export class GameRuntime {
         text
       },
       (response = {}) => {
+        this.chatSendInFlight = false;
         if (!response?.ok) {
+          if (this.chatInputEl && !this.chatInputEl.value) {
+            this.chatInputEl.value = text;
+          }
           this.appendChatLine(
             "시스템",
             `채팅 전송 실패: ${this.translateQuizError(response?.error)}`,
@@ -9260,7 +9292,6 @@ export class GameRuntime {
           );
           return;
         }
-        this.chatInputEl.value = "";
         if (this.mobileEnabled) {
           this.hideMobileChatPanel();
           this.showMobileChatPreview(`\uB098: ${text}`);
