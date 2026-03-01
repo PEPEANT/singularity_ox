@@ -1438,6 +1438,7 @@ function serializeRoom(room) {
       admitted: player.admitted !== false,
       queuedForAdmission: player.awaitingAdmission === true,
       spectator: isPlayerHostModerator(room, player),
+      chatMuted: player.chatMuted === true,
       lastChoice: player.lastChoice ?? null,
       lastChoiceReason: player.lastChoiceReason ?? null
     }))
@@ -2306,6 +2307,7 @@ function joinRoom(socket, room, nameOverride = null) {
     const existing = room.players.get(socket.id);
     existing.name = name;
     existing.isOwner = existing.isOwner === true || socket.data.ownerClaim === true;
+    existing.chatMuted = existing.chatMuted === true;
     existing.joinedAt = Math.max(0, Math.trunc(Number(existing.joinedAt) || Date.now()));
     ensurePlayerNetState(existing);
     if (socket.data.ownerClaim === true && room.hostId !== socket.id) {
@@ -2375,6 +2377,7 @@ function joinRoom(socket, room, nameOverride = null) {
     admitted: true,
     awaitingAdmission: false,
     isOwner: socket.data.ownerClaim === true,
+    chatMuted: false,
     joinedAt: Date.now(),
     lastChoice: null,
     lastChoiceReason: null,
@@ -2555,21 +2558,29 @@ io.on("connection", (socket) => {
   }
   emitRoomList(socket);
 
-  socket.on("chat:send", ({ name, text }) => {
+  socket.on("chat:send", ({ name, text } = {}, ackFn) => {
     const safeName = sanitizeName(name ?? socket.data.playerName);
     const safeText = String(text ?? "").trim().slice(0, 200);
     if (!safeText) {
+      ack(ackFn, { ok: false, error: "empty message" });
       return;
     }
 
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
     if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
       return;
     }
 
     const player = room.players.get(socket.id);
     if (!player) {
+      ack(ackFn, { ok: false, error: "player not found" });
+      return;
+    }
+
+    if (player.chatMuted === true) {
+      ack(ackFn, { ok: false, error: "chat muted" });
       return;
     }
 
@@ -2580,6 +2591,7 @@ io.on("connection", (socket) => {
       name: safeName,
       text: safeText
     });
+    ack(ackFn, { ok: true });
     emitRoomUpdate(room);
   });
 
@@ -3026,6 +3038,112 @@ io.on("connection", (socket) => {
     io.to(room.code).emit("portal:target:update", updatePayload);
     emitRoomUpdate(room);
     ack(ackFn, { ok: true, ...updatePayload });
+  });
+
+  socket.on("host:kick-player", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const targetId = String(payload?.targetId ?? payload?.playerId ?? "").trim();
+    if (!targetId) {
+      ack(ackFn, { ok: false, error: "target required" });
+      return;
+    }
+    if (targetId === socket.id) {
+      ack(ackFn, { ok: false, error: "cannot target self" });
+      return;
+    }
+
+    const targetPlayer = room.players.get(targetId);
+    if (!targetPlayer) {
+      ack(ackFn, { ok: false, error: "player not found" });
+      return;
+    }
+
+    const targetSocket = io.sockets.sockets.get(targetId) ?? null;
+    if (targetSocket) {
+      targetSocket.emit("host:kicked", {
+        roomCode: room.code,
+        by: socket.id,
+        at: Date.now()
+      });
+      targetSocket.disconnect(true);
+    } else {
+      room.players.delete(targetId);
+      emitRoomUpdate(room);
+      emitRoomList();
+    }
+
+    ack(ackFn, {
+      ok: true,
+      targetId,
+      targetName: targetPlayer.name
+    });
+  });
+
+  socket.on("host:set-chat-muted", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const targetId = String(payload?.targetId ?? payload?.playerId ?? "").trim();
+    if (!targetId) {
+      ack(ackFn, { ok: false, error: "target required" });
+      return;
+    }
+    if (targetId === socket.id) {
+      ack(ackFn, { ok: false, error: "cannot target self" });
+      return;
+    }
+
+    const targetPlayer = room.players.get(targetId);
+    if (!targetPlayer) {
+      ack(ackFn, { ok: false, error: "player not found" });
+      return;
+    }
+
+    const nextMuted = payload?.muted !== false;
+    targetPlayer.chatMuted = nextMuted;
+    emitRoomUpdate(room);
+
+    const targetSocket = io.sockets.sockets.get(targetId) ?? null;
+    if (targetSocket) {
+      targetSocket.emit("host:chat-muted", {
+        muted: nextMuted,
+        by: socket.id,
+        at: Date.now()
+      });
+    }
+
+    ack(ackFn, {
+      ok: true,
+      targetId,
+      targetName: targetPlayer.name,
+      muted: nextMuted
+    });
   });
 
   socket.on("room:leave", (ackFn) => {

@@ -297,6 +297,8 @@ export class GameRuntime {
     this.chatLogEl = document.getElementById("chat-log");
     this.chatControlsEl = document.getElementById("chat-controls");
     this.chatInputEl = document.getElementById("chat-input");
+    this.chatSendBtnEl = document.getElementById("chat-send-btn");
+    this.chatHideBtnEl = document.getElementById("chat-hide-btn");
     this.toolHotbarEl = document.getElementById("tool-hotbar");
     this.chalkColorsEl = document.getElementById("chalk-colors");
     this.chalkColorButtons = [];
@@ -316,6 +318,12 @@ export class GameRuntime {
     this.portalLobbyStartBtnEl = document.getElementById("portal-admit-btn");
     this.quizNextBtnEl = document.getElementById("quiz-next-btn");
     this.quizLockBtnEl = document.getElementById("quiz-lock-btn");
+    this.moderationPanelToggleBtnEl = document.getElementById("moderation-panel-toggle-btn");
+    this.moderationPanelEl = document.getElementById("moderation-panel");
+    this.moderationPlayerSelectEl = document.getElementById("moderation-player-select");
+    this.moderationKickBtnEl = document.getElementById("moderation-kick-btn");
+    this.moderationMuteBtnEl = document.getElementById("moderation-mute-btn");
+    this.moderationUnmuteBtnEl = document.getElementById("moderation-unmute-btn");
     this.quizControlsNoteEl = document.getElementById("quiz-controls-note");
     this.portalTargetInputEl = document.getElementById("portal-target-input");
     this.portalTargetSaveBtnEl = document.getElementById("portal-target-save-btn");
@@ -371,6 +379,7 @@ export class GameRuntime {
     this.mobileJumpBtnEl = document.getElementById("mobile-jump-btn");
     this.mobileRunBtnEl = document.getElementById("mobile-run-btn");
     this.mobileRosterBtnEl = document.getElementById("mobile-roster-btn");
+    this.mobileChatToggleBtnEl = document.getElementById("mobile-chat-toggle-btn");
     this.mobileLookPadEl = document.getElementById("mobile-look-pad");
     this.roundOverlayCtx = this.roundOverlayCanvasEl?.getContext?.("2d") ?? null;
     this.roundOverlayVisible = false;
@@ -399,8 +408,11 @@ export class GameRuntime {
     this.mobileLookPointerId = null;
     this.mobileLookLastX = 0;
     this.mobileLookLastY = 0;
+    this.mobileChatPanelVisible = !this.mobileEnabled;
     this.mobileEventsBound = false;
     this.mobileHoldResetters = [];
+    this.moderationPanelOpen = false;
+    this.disconnectedByKick = false;
     this.quizConfig = this.buildDefaultQuizConfig(10);
     this.quizOppositeBillboardEnabled =
       this.quizConfig?.endPolicy?.showOppositeBillboard !== false;
@@ -4712,6 +4724,14 @@ export class GameRuntime {
         this.setChatOpen(false);
       });
     }
+    this.chatSendBtnEl?.addEventListener("click", (event) => {
+      event.preventDefault();
+      this.sendChatMessage();
+    });
+    this.chatHideBtnEl?.addEventListener("click", (event) => {
+      event.preventDefault();
+      this.hideMobileChatPanel();
+    });
 
     if (this.toolHotbarEl) {
       this.toolHotbarEl.addEventListener("click", (event) => {
@@ -4759,6 +4779,21 @@ export class GameRuntime {
     });
     this.quizLockBtnEl?.addEventListener("click", () => {
       this.requestQuizLock();
+    });
+    this.moderationPanelToggleBtnEl?.addEventListener("click", () => {
+      this.toggleModerationPanel();
+    });
+    this.moderationPlayerSelectEl?.addEventListener("change", () => {
+      this.updateQuizControlUi();
+    });
+    this.moderationKickBtnEl?.addEventListener("click", () => {
+      this.requestHostKickPlayer();
+    });
+    this.moderationMuteBtnEl?.addEventListener("click", () => {
+      this.requestHostSetChatMuted(true);
+    });
+    this.moderationUnmuteBtnEl?.addEventListener("click", () => {
+      this.requestHostSetChatMuted(false);
     });
     this.portalTargetSaveBtnEl?.addEventListener("click", () => {
       this.requestPortalTargetSave();
@@ -4831,6 +4866,24 @@ export class GameRuntime {
     }
     if (!this.quizLockBtnEl) {
       this.quizLockBtnEl = document.getElementById("quiz-lock-btn");
+    }
+    if (!this.moderationPanelToggleBtnEl) {
+      this.moderationPanelToggleBtnEl = document.getElementById("moderation-panel-toggle-btn");
+    }
+    if (!this.moderationPanelEl) {
+      this.moderationPanelEl = document.getElementById("moderation-panel");
+    }
+    if (!this.moderationPlayerSelectEl) {
+      this.moderationPlayerSelectEl = document.getElementById("moderation-player-select");
+    }
+    if (!this.moderationKickBtnEl) {
+      this.moderationKickBtnEl = document.getElementById("moderation-kick-btn");
+    }
+    if (!this.moderationMuteBtnEl) {
+      this.moderationMuteBtnEl = document.getElementById("moderation-mute-btn");
+    }
+    if (!this.moderationUnmuteBtnEl) {
+      this.moderationUnmuteBtnEl = document.getElementById("moderation-unmute-btn");
     }
     if (!this.quizControlsNoteEl) {
       this.quizControlsNoteEl = document.getElementById("quiz-controls-note");
@@ -4995,6 +5048,9 @@ export class GameRuntime {
     if (!this.mobileRosterBtnEl) {
       this.mobileRosterBtnEl = document.getElementById("mobile-roster-btn");
     }
+    if (!this.mobileChatToggleBtnEl) {
+      this.mobileChatToggleBtnEl = document.getElementById("mobile-chat-toggle-btn");
+    }
     if (!this.mobileLookPadEl) {
       this.mobileLookPadEl = document.getElementById("mobile-look-pad");
     }
@@ -5006,6 +5062,12 @@ export class GameRuntime {
     }
     if (!this.chatInputEl) {
       this.chatInputEl = document.getElementById("chat-input");
+    }
+    if (!this.chatSendBtnEl) {
+      this.chatSendBtnEl = document.getElementById("chat-send-btn");
+    }
+    if (!this.chatHideBtnEl) {
+      this.chatHideBtnEl = document.getElementById("chat-hide-btn");
     }
     if (!this.toolHotbarEl) {
       this.toolHotbarEl = document.getElementById("tool-hotbar");
@@ -5074,6 +5136,7 @@ export class GameRuntime {
       alive: this.localQuizAlive !== false,
       admitted: !this.localAdmissionWaiting,
       queuedForAdmission: this.localAdmissionWaiting,
+      chatMuted: false,
       score: Math.max(0, Math.trunc(Number(this.quizState.myScore) || 0)),
       isHost: String(this.quizState.hostId ?? "") === String(this.localPlayerId ?? ""),
       spectator: Boolean(this.localSpectatorMode && this.isLocalHost()),
@@ -5088,6 +5151,7 @@ export class GameRuntime {
         alive: remote?.alive !== false,
         admitted: remote?.admitted !== false,
         queuedForAdmission: false,
+        chatMuted: false,
         score: 0,
         isHost: String(this.quizState.hostId ?? "") === String(id),
         spectator: remote?.spectator === true,
@@ -5142,6 +5206,7 @@ export class GameRuntime {
             alive: player?.alive !== false,
             admitted: player?.admitted !== false,
             queuedForAdmission: player?.queuedForAdmission === true,
+            chatMuted: player?.chatMuted === true,
             score,
             isHost: id === String(this.quizState.hostId ?? ""),
             spectator: player?.spectator === true,
@@ -5252,6 +5317,9 @@ export class GameRuntime {
         if (entry?.queuedForAdmission === true) {
           slot.classList.add("queued");
         }
+        if (entry?.chatMuted === true) {
+          slot.classList.add("muted");
+        }
 
         const slotIndexEl = document.createElement("span");
         slotIndexEl.className = "roster-slot-index";
@@ -5266,11 +5334,15 @@ export class GameRuntime {
         if (!entry) {
           slotStateEl.textContent = "";
         } else if (kind === "participant") {
-          slotStateEl.textContent = entry.alive ? `${entry.score}점` : "탈락";
+          if (entry.chatMuted === true) {
+            slotStateEl.textContent = entry.alive ? `${entry.score}점 · 채금` : "탈락 · 채금";
+          } else {
+            slotStateEl.textContent = entry.alive ? `${entry.score}점` : "탈락";
+          }
         } else if (entry.queuedForAdmission === true) {
-          slotStateEl.textContent = "우선";
+          slotStateEl.textContent = entry.chatMuted === true ? "우선 · 채금" : "우선";
         } else {
-          slotStateEl.textContent = "관전";
+          slotStateEl.textContent = entry.chatMuted === true ? "관전 · 채금" : "관전";
         }
 
         slot.append(slotIndexEl, slotNameEl, slotStateEl);
@@ -5298,8 +5370,16 @@ export class GameRuntime {
     this.resolveUiElements();
     const showMobileUi =
       this.mobileEnabled && !this.isLobbyBlockingGameplay() && !this.localAdmissionWaiting;
+    const canUseMobileChat = this.mobileEnabled && this.canUseGameplayControls();
     this.mobileControlsEl?.classList.toggle("hidden", !showMobileUi);
     this.mobileLookPadEl?.classList.toggle("hidden", !showMobileUi);
+    if (!this.mobileEnabled) {
+      this.mobileChatPanelVisible = true;
+    }
+    if (!canUseMobileChat) {
+      this.mobileChatPanelVisible = false;
+      this.setChatOpen(false);
+    }
     if (typeof document !== "undefined" && document.body) {
       document.body.classList.toggle("mobile-mode", showMobileUi);
     }
@@ -5311,6 +5391,42 @@ export class GameRuntime {
         this.setRosterPinned(false);
       }
     }
+    this.applyMobileChatUi();
+  }
+
+  applyMobileChatUi() {
+    this.resolveUiElements();
+    const canUseMobileChat = this.mobileEnabled && this.canUseGameplayControls();
+    const showChatPanel = !this.mobileEnabled || (canUseMobileChat && this.mobileChatPanelVisible);
+    this.chatUiEl?.classList.toggle("mobile-chat-hidden", this.mobileEnabled && !showChatPanel);
+    if (this.mobileChatToggleBtnEl) {
+      this.mobileChatToggleBtnEl.disabled = !canUseMobileChat;
+      this.mobileChatToggleBtnEl.classList.toggle("active", this.mobileEnabled && showChatPanel);
+      this.mobileChatToggleBtnEl.textContent =
+        this.mobileEnabled && showChatPanel ? "닫기" : "채팅";
+    }
+  }
+
+  toggleMobileChatPanel() {
+    if (!this.mobileEnabled || !this.canUseGameplayControls()) {
+      return;
+    }
+    if (this.mobileChatPanelVisible) {
+      this.hideMobileChatPanel();
+      return;
+    }
+    this.mobileChatPanelVisible = true;
+    this.applyMobileChatUi();
+    this.focusChatInput();
+  }
+
+  hideMobileChatPanel() {
+    if (this.mobileEnabled) {
+      this.mobileChatPanelVisible = false;
+    }
+    this.setChatOpen(false);
+    this.chatInputEl?.blur?.();
+    this.applyMobileChatUi();
   }
 
   isAcceptedMobilePointer(event) {
@@ -5383,6 +5499,14 @@ export class GameRuntime {
       (event) => {
         event.preventDefault();
         this.toggleRosterPinned();
+      },
+      { passive: false }
+    );
+    this.mobileChatToggleBtnEl?.addEventListener(
+      "click",
+      (event) => {
+        event.preventDefault();
+        this.toggleMobileChatPanel();
       },
       { passive: false }
     );
@@ -5563,6 +5687,9 @@ export class GameRuntime {
     }
 
     this.chatOpen = Boolean(open);
+    if (this.mobileEnabled && this.chatOpen) {
+      this.mobileChatPanelVisible = true;
+    }
     if (this.chatControlsEl) {
       this.chatControlsEl.classList.toggle("hidden", !this.chatOpen);
     }
@@ -5570,6 +5697,7 @@ export class GameRuntime {
       this.chalkDrawingActive = false;
       this.chalkLastStamp = null;
     }
+    this.applyMobileChatUi();
   }
 
   setActiveTool(tool) {
@@ -5674,6 +5802,7 @@ export class GameRuntime {
   attachSocketHandlers(socket) {
     socket.on("connect", () => {
       this.networkConnected = true;
+      this.disconnectedByKick = false;
       this.localPlayerId = socket.id;
       this.hud.setStatus(this.getStatusText());
       this.refreshRosterPanel();
@@ -5717,7 +5846,11 @@ export class GameRuntime {
       this.closeQuizReviewModal();
       if (this.lobbyEnabled) {
         this.lobbyJoinInFlight = false;
-        this.showLobbyScreen("연결이 끊겼습니다. 재연결 중...");
+        this.showLobbyScreen(
+          this.disconnectedByKick
+            ? "진행자에 의해 강퇴되었습니다. 다시 입장하려면 새로고침하세요."
+            : "연결이 끊겼습니다. 재연결 중..."
+        );
       }
       this.updateQuizControlUi();
     });
@@ -5793,6 +5926,15 @@ export class GameRuntime {
 
     socket.on("chat:message", (payload) => {
       this.handleChatMessage(payload);
+    });
+    socket.on("chat:blocked", (payload = {}) => {
+      this.handleChatBlocked(payload);
+    });
+    socket.on("host:kicked", (payload = {}) => {
+      this.handleHostKicked(payload);
+    });
+    socket.on("host:chat-muted", (payload = {}) => {
+      this.handleHostChatMuted(payload);
     });
 
     socket.on("quiz:start", (payload = {}) => {
@@ -6496,6 +6638,42 @@ export class GameRuntime {
     remote.chatExpireAt = performance.now() + this.chatBubbleLifetimeMs;
   }
 
+  handleChatBlocked(payload = {}) {
+    const reason = this.translateQuizError(payload?.reason ?? payload?.code ?? "chat blocked");
+    this.appendChatLine("SYSTEM", `채팅이 차단되었습니다: ${reason}`, "system");
+  }
+
+  handleHostKicked() {
+    this.disconnectedByKick = true;
+    this.appendChatLine("SYSTEM", "진행자에 의해 강퇴되었습니다.", "system");
+    if (!this.socket) {
+      return;
+    }
+    try {
+      if (this.socket.io?.opts) {
+        this.socket.io.opts.reconnection = false;
+      }
+    } catch {
+      // ignore
+    }
+    this.socket.disconnect();
+  }
+
+  handleHostChatMuted(payload = {}) {
+    const muted = payload?.muted === true;
+    this.appendChatLine(
+      "SYSTEM",
+      muted
+        ? "진행자가 채팅을 금지했습니다."
+        : "진행자가 채팅 금지를 해제했습니다.",
+      "system"
+    );
+    if (muted) {
+      this.setChatOpen(false);
+      this.chatInputEl?.blur?.();
+    }
+  }
+
   resetQuizStateLocal() {
     this.quizState.active = false;
     this.quizState.phase = "idle";
@@ -7029,6 +7207,13 @@ export class GameRuntime {
       "invalid question config": "문항 설정 형식이 올바르지 않습니다.",
       unauthorized: "권한이 없습니다.",
       "invalid portal target": "포탈 링크 형식이 잘못되었습니다. http(s) 주소만 허용됩니다.",
+      "chat muted": "채팅이 금지된 상태입니다.",
+      "chat-muted": "채팅이 금지된 상태입니다.",
+      "chat blocked": "채팅이 제한된 상태입니다.",
+      "empty message": "빈 메시지는 전송할 수 없습니다.",
+      "player not found": "대상 플레이어를 찾을 수 없습니다.",
+      "target required": "대상 플레이어를 선택하세요.",
+      "cannot target self": "자기 자신은 제재할 수 없습니다.",
       "all-questions-complete": "모든 문제가 종료되었습니다.",
       unknown: "알 수 없음"
     };
@@ -7426,6 +7611,69 @@ export class GameRuntime {
     this.renderQuizReview();
   }
 
+  setModerationPanelOpen(open) {
+    this.resolveUiElements();
+    this.moderationPanelOpen = Boolean(open);
+    this.moderationPanelEl?.classList.toggle("hidden", !this.moderationPanelOpen);
+    if (this.moderationPanelToggleBtnEl) {
+      this.moderationPanelToggleBtnEl.textContent = this.moderationPanelOpen
+        ? "관리 패널 닫기"
+        : "관리 패널 열기";
+    }
+  }
+
+  toggleModerationPanel() {
+    if (!this.ownerAccessEnabled || !this.isLocalHost() || !this.networkConnected) {
+      return;
+    }
+    this.setModerationPanelOpen(!this.moderationPanelOpen);
+    this.updateQuizControlUi();
+  }
+
+  getModerationCandidates() {
+    const source = Array.isArray(this.roomRoster) ? this.roomRoster : [];
+    return source.filter((entry) => entry && !entry.isMe);
+  }
+
+  findModerationTargetById(targetId) {
+    const id = String(targetId ?? "");
+    if (!id) {
+      return null;
+    }
+    return this.getModerationCandidates().find((entry) => String(entry?.id ?? "") === id) ?? null;
+  }
+
+  refreshModerationTargetOptions() {
+    if (!this.moderationPlayerSelectEl) {
+      return;
+    }
+    const previousValue = String(this.moderationPlayerSelectEl.value ?? "");
+    const candidates = this.getModerationCandidates();
+    this.moderationPlayerSelectEl.replaceChildren();
+
+    if (candidates.length <= 0) {
+      const emptyOption = document.createElement("option");
+      emptyOption.value = "";
+      emptyOption.textContent = "대상 없음";
+      this.moderationPlayerSelectEl.appendChild(emptyOption);
+      this.moderationPlayerSelectEl.value = "";
+      return;
+    }
+
+    for (const entry of candidates) {
+      const option = document.createElement("option");
+      option.value = String(entry?.id ?? "");
+      const muteLabel = entry?.chatMuted === true ? " [채금]" : "";
+      option.textContent = `${entry?.name ?? "플레이어"}${muteLabel}`;
+      this.moderationPlayerSelectEl.appendChild(option);
+    }
+
+    const hasPrevious = candidates.some((entry) => String(entry?.id ?? "") === previousValue);
+    this.moderationPlayerSelectEl.value = hasPrevious
+      ? previousValue
+      : String(candidates[0]?.id ?? "");
+  }
+
   updateQuizControlUi() {
     this.resolveUiElements();
     const isHost = this.isLocalHost();
@@ -7433,6 +7681,7 @@ export class GameRuntime {
     const show = connected && !this.isLobbyBlockingGameplay() && this.ownerAccessEnabled;
     this.quizControlsEl?.classList.toggle("hidden", !show);
     if (!show) {
+      this.setModerationPanelOpen(false);
       return;
     }
 
@@ -7461,6 +7710,34 @@ export class GameRuntime {
       this.quizHostBtnEl.disabled = !canClaimHost || isHost;
     }
     const canControl = isHost;
+    this.refreshModerationTargetOptions();
+    if (this.moderationPanelToggleBtnEl) {
+      this.moderationPanelToggleBtnEl.classList.toggle("hidden", !canControl);
+      this.moderationPanelToggleBtnEl.disabled = !canControl;
+    }
+    if (!canControl && this.moderationPanelOpen) {
+      this.setModerationPanelOpen(false);
+    } else {
+      this.setModerationPanelOpen(this.moderationPanelOpen);
+    }
+    const selectedModerationId = String(this.moderationPlayerSelectEl?.value ?? "");
+    const selectedModerationTarget = this.findModerationTargetById(selectedModerationId);
+    const hasModerationTarget = Boolean(selectedModerationTarget);
+    const canUseModeration = canControl && this.moderationPanelOpen && hasModerationTarget;
+    if (this.moderationPlayerSelectEl) {
+      this.moderationPlayerSelectEl.disabled = !canControl || !this.moderationPanelOpen;
+    }
+    if (this.moderationKickBtnEl) {
+      this.moderationKickBtnEl.disabled = !canUseModeration;
+    }
+    if (this.moderationMuteBtnEl) {
+      this.moderationMuteBtnEl.disabled =
+        !canUseModeration || selectedModerationTarget?.chatMuted === true;
+    }
+    if (this.moderationUnmuteBtnEl) {
+      this.moderationUnmuteBtnEl.disabled =
+        !canUseModeration || selectedModerationTarget?.chatMuted !== true;
+    }
     this.quizStartBtnEl &&
       (this.quizStartBtnEl.disabled = !canControl || active || waitingPlayers > 0 || admissionInProgress);
     this.quizStopBtnEl && (this.quizStopBtnEl.disabled = !canControl || !active);
@@ -7732,6 +8009,82 @@ export class GameRuntime {
     });
   }
 
+  requestHostKickPlayer() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 강퇴 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 강퇴할 수 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("SYSTEM", "방장만 강퇴할 수 있습니다.", "system");
+      return;
+    }
+    const targetId = String(this.moderationPlayerSelectEl?.value ?? "").trim();
+    const target = this.findModerationTargetById(targetId);
+    if (!target) {
+      this.appendChatLine("SYSTEM", "강퇴할 플레이어를 먼저 선택하세요.", "system");
+      return;
+    }
+    this.socket.emit("host:kick-player", { targetId }, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine(
+          "SYSTEM",
+          `강퇴 실패: ${this.translateQuizError(response?.error)}`,
+          "system"
+        );
+        return;
+      }
+      this.appendChatLine(
+        "SYSTEM",
+        `${this.formatPlayerName(response?.targetName ?? target.name)} 플레이어를 강퇴했습니다.`,
+        "system"
+      );
+    });
+  }
+
+  requestHostSetChatMuted(nextMuted) {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("SYSTEM", "오너 토큰이 없어 채팅 제재 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 채팅 제재를 변경할 수 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("SYSTEM", "방장만 채팅 제재를 변경할 수 있습니다.", "system");
+      return;
+    }
+    const targetId = String(this.moderationPlayerSelectEl?.value ?? "").trim();
+    const target = this.findModerationTargetById(targetId);
+    if (!target) {
+      this.appendChatLine("SYSTEM", "대상 플레이어를 먼저 선택하세요.", "system");
+      return;
+    }
+    const muted = nextMuted !== false;
+    this.socket.emit("host:set-chat-muted", { targetId, muted }, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine(
+          "SYSTEM",
+          `채팅 제재 변경 실패: ${this.translateQuizError(response?.error)}`,
+          "system"
+        );
+        return;
+      }
+      const targetName = this.formatPlayerName(response?.targetName ?? target.name);
+      this.appendChatLine(
+        "SYSTEM",
+        muted
+          ? `${targetName} 플레이어의 채팅을 금지했습니다.`
+          : `${targetName} 플레이어의 채팅 금지를 해제했습니다.`,
+        "system"
+      );
+    });
+  }
+
   handlePortalTargetUpdate(payload = {}) {
     const targetUrl = String(payload?.targetUrl ?? "").trim();
     const updatedBy = String(payload?.updatedBy ?? "");
@@ -7975,22 +8328,31 @@ export class GameRuntime {
 
     const senderName = this.formatPlayerName(this.localPlayerName);
     this.localPlayerName = senderName;
-    const appended = this.appendChatLine(senderName, text, "self");
-    if (appended) {
-      this.lastLocalChatEcho = `${senderName}|${text}`;
-      this.lastLocalChatEchoAt = performance.now();
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "오프라인 상태에서는 채팅을 보낼 수 없습니다.", "system");
+      return;
     }
 
-    if (this.socket && this.networkConnected) {
-      this.socket.emit("chat:send", {
+    this.socket.emit(
+      "chat:send",
+      {
         name: senderName,
         text
-      });
-    }
-
-    this.chatInputEl.value = "";
-    this.setChatOpen(false);
-    this.chatInputEl.blur();
+      },
+      (response = {}) => {
+        if (!response?.ok) {
+          this.appendChatLine(
+            "SYSTEM",
+            `채팅 전송 실패: ${this.translateQuizError(response?.error)}`,
+            "system"
+          );
+          return;
+        }
+        this.chatInputEl.value = "";
+        this.setChatOpen(false);
+        this.chatInputEl.blur();
+      }
+    );
   }
 
   focusChatInput() {
@@ -8427,7 +8789,11 @@ export class GameRuntime {
     if (this.mobileEnabled !== wasMobile) {
       this.applyQualityProfile();
       if (this.mobileEnabled) {
+        this.mobileChatPanelVisible = false;
+        this.setChatOpen(false);
         this.bindMobileControlEvents();
+      } else {
+        this.mobileChatPanelVisible = true;
       }
     }
 
