@@ -58,10 +58,13 @@ const ROUND_OVERLAY_SETTINGS = Object.freeze({
   fireworkParticleCountMax: 44
 });
 const MOBILE_RUNTIME_SETTINGS = Object.freeze({
-  maxPixelRatio: 1.35,
-  minNetworkSyncInterval: 0.08,
+  maxPixelRatio: 1.1,
+  minNetworkSyncInterval: 0.1,
   lookSensitivityX: 0.0046,
-  lookSensitivityY: 0.004
+  lookSensitivityY: 0.004,
+  hudRefreshIntervalSeconds: 0.22,
+  roundOverlaySpawnIntervalSeconds: 0.38,
+  roundOverlayParticleScale: 0.58
 });
 
 export class GameRuntime {
@@ -133,6 +136,8 @@ export class GameRuntime {
     this.pointerLockSupported =
       "pointerLockElement" in document &&
       typeof this.renderer.domElement.requestPointerLock === "function";
+    this.fullscreenPending = this.mobileEnabled;
+    this.lastFullscreenAttemptAt = 0;
 
     this.keys = new Set();
     this.moveForwardVec = new THREE.Vector3();
@@ -528,6 +533,9 @@ export class GameRuntime {
     this.refreshRosterPanel();
     this.syncRosterVisibility();
     this.updateMobileControlUi();
+    if (this.mobileEnabled) {
+      this.requestAppFullscreen();
+    }
 
     this.setupWorld();
     this.setupHubFlowWorld();
@@ -1769,6 +1777,69 @@ export class GameRuntime {
 
   canUsePointerLock() {
     return this.canMovePlayer() && !this.portalTransitioning;
+  }
+
+  getFullscreenElement() {
+    if (typeof document === "undefined") {
+      return null;
+    }
+    return document.fullscreenElement ?? document.webkitFullscreenElement ?? null;
+  }
+
+  isFullscreenActive() {
+    return Boolean(this.getFullscreenElement());
+  }
+
+  isFullscreenSupported() {
+    if (typeof document === "undefined") {
+      return false;
+    }
+    const root = document.documentElement;
+    return Boolean(root?.requestFullscreen || root?.webkitRequestFullscreen);
+  }
+
+  requestAppFullscreen({ fromGesture = false } = {}) {
+    if (!this.mobileEnabled || !this.isFullscreenSupported()) {
+      return;
+    }
+    if (this.isFullscreenActive()) {
+      this.fullscreenPending = false;
+      return;
+    }
+
+    const now = performance.now();
+    if (!fromGesture && now - this.lastFullscreenAttemptAt < 1200) {
+      return;
+    }
+    this.lastFullscreenAttemptAt = now;
+
+    const root = document.documentElement;
+    try {
+      if (typeof root.requestFullscreen === "function") {
+        let maybePromise = null;
+        try {
+          maybePromise = root.requestFullscreen({ navigationUI: "hide" });
+        } catch {
+          maybePromise = root.requestFullscreen();
+        }
+        if (maybePromise && typeof maybePromise.then === "function") {
+          maybePromise
+            .then(() => {
+              this.fullscreenPending = false;
+            })
+            .catch(() => {
+              this.fullscreenPending = true;
+            });
+        }
+        return;
+      }
+      if (typeof root.webkitRequestFullscreen === "function") {
+        root.webkitRequestFullscreen();
+        this.fullscreenPending = !this.isFullscreenActive();
+      }
+    } catch {
+      this.fullscreenPending = true;
+    }
   }
 
   startLocalEliminationDrop(reasonLabel = "오답 구역") {
@@ -4571,6 +4642,7 @@ export class GameRuntime {
         if (pointerType !== "touch" && pointerType !== "pen") {
           return;
         }
+        this.requestAppFullscreen({ fromGesture: true });
         this.mobileModeLocked = true;
         if (!this.mobileEnabled) {
           this.mobileEnabled = true;
@@ -4689,6 +4761,16 @@ export class GameRuntime {
         this.chalkLastStamp = null;
       }
     });
+
+    const handleFullscreenChange = () => {
+      const active = this.isFullscreenActive();
+      this.fullscreenPending = this.mobileEnabled && !active;
+      if (this.fullscreenPending) {
+        window.setTimeout(() => this.requestAppFullscreen(), 120);
+      }
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
 
     window.addEventListener(
       "mousemove",
@@ -6467,7 +6549,7 @@ export class GameRuntime {
       const root = new THREE.Group();
 
       const body = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.2, 0.64, 4, 8),
+        new THREE.CapsuleGeometry(0.2, 0.64, this.mobileEnabled ? 2 : 4, this.mobileEnabled ? 6 : 8),
         new THREE.MeshStandardMaterial({
           color: 0x5f7086,
           roughness: 0.44,
@@ -6481,7 +6563,7 @@ export class GameRuntime {
       body.receiveShadow = true;
 
       const head = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 12, 12),
+        new THREE.SphereGeometry(0.22, this.mobileEnabled ? 8 : 12, this.mobileEnabled ? 8 : 12),
         new THREE.MeshStandardMaterial({
           color: 0x7e8e9b,
           roughness: 0.36,
@@ -8359,10 +8441,13 @@ export class GameRuntime {
     const height = Math.max(1, window.innerHeight);
     const originX = THREE.MathUtils.lerp(width * 0.14, width * 0.86, Math.random());
     const originY = THREE.MathUtils.lerp(height * 0.16, height * 0.52, Math.random());
-    const count = THREE.MathUtils.randInt(
+    let count = THREE.MathUtils.randInt(
       ROUND_OVERLAY_SETTINGS.fireworkParticleCountMin,
       ROUND_OVERLAY_SETTINGS.fireworkParticleCountMax
     );
+    if (this.mobileEnabled) {
+      count = Math.max(14, Math.round(count * MOBILE_RUNTIME_SETTINGS.roundOverlayParticleScale));
+    }
     const hue = Math.floor(Math.random() * 360);
     for (let index = 0; index < count; index += 1) {
       const angle = (Math.PI * 2 * index) / count + Math.random() * 0.2;
@@ -8402,7 +8487,10 @@ export class GameRuntime {
     ctx.clearRect(0, 0, width, height);
 
     this.roundOverlaySpawnClock += delta;
-    if (this.roundOverlaySpawnClock >= ROUND_OVERLAY_SETTINGS.fireworkSpawnIntervalSeconds) {
+    const spawnInterval = this.mobileEnabled
+      ? MOBILE_RUNTIME_SETTINGS.roundOverlaySpawnIntervalSeconds
+      : ROUND_OVERLAY_SETTINGS.fireworkSpawnIntervalSeconds;
+    if (this.roundOverlaySpawnClock >= spawnInterval) {
       this.roundOverlaySpawnClock = 0;
       this.spawnRoundFireworkBurst();
     }
@@ -8717,8 +8805,14 @@ export class GameRuntime {
       fpsState.frameCount = 0;
     }
 
+    const hudRefreshInterval = this.mobileEnabled
+      ? Math.max(
+          RUNTIME_TUNING.HUD_REFRESH_INTERVAL_SECONDS,
+          MOBILE_RUNTIME_SETTINGS.hudRefreshIntervalSeconds
+        )
+      : RUNTIME_TUNING.HUD_REFRESH_INTERVAL_SECONDS;
     this.hudRefreshClock += delta;
-    if (this.hudRefreshClock < RUNTIME_TUNING.HUD_REFRESH_INTERVAL_SECONDS) {
+    if (this.hudRefreshClock < hudRefreshInterval) {
       return;
     }
     this.hudRefreshClock = 0;
@@ -8981,6 +9075,9 @@ export class GameRuntime {
     this.renderer.setSize(viewportWidth, viewportHeight, false);
     if (this.composer) {
       this.composer.setSize(viewportWidth, viewportHeight);
+    }
+    if (this.mobileEnabled && this.fullscreenPending) {
+      this.requestAppFullscreen();
     }
     this.resizeRoundOverlayCanvas();
     this.updateMobileControlUi();
