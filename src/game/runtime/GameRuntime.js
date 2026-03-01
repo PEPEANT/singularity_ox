@@ -8104,7 +8104,16 @@ export class GameRuntime {
   }
 
   handleQuizEnd(payload = {}) {
-    const isHost = this.isLocalHost();
+    if (Object.prototype.hasOwnProperty.call(payload ?? {}, "hostId")) {
+      this.quizState.hostId = payload.hostId ?? this.quizState.hostId ?? null;
+    }
+    const payloadHostId = String(payload?.hostId ?? "");
+    const myId = String(this.localPlayerId ?? "");
+    const isHost = Boolean(
+      myId &&
+        ((payloadHostId && payloadHostId === myId) ||
+          String(this.quizState.hostId ?? "") === myId)
+    );
     const rankingSource = Array.isArray(payload.ranking)
       ? payload.ranking
       : Array.isArray(payload.leaderboard)

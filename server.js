@@ -1874,6 +1874,7 @@ function buildQuizEndPayload(room, reason = "finished") {
 
   return {
     reason,
+    hostId: quiz.hostId ?? room.hostId ?? null,
     endedAt: Number(quiz.endedAt || Date.now()),
     questionIndex: Math.max(0, Number(quiz.questionIndex) + 1),
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
