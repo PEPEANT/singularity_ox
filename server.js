@@ -244,7 +244,8 @@ function createRoom(code, persistent = false) {
         explanation: String(question?.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH)
       })),
       endPolicy: {
-        autoFinish: true
+        autoFinish: true,
+        showOppositeBillboard: true
       }
     },
     quiz: createQuizState(),
@@ -395,13 +396,13 @@ function ensureRoomQuizConfig(room) {
   if (!room || typeof room !== "object") {
     return {
       questions: getDefaultQuizConfigQuestions(),
-      endPolicy: { autoFinish: true }
+      endPolicy: { autoFinish: true, showOppositeBillboard: true }
     };
   }
   if (!room.quizConfig || typeof room.quizConfig !== "object") {
     room.quizConfig = {
       questions: getDefaultQuizConfigQuestions(),
-      endPolicy: { autoFinish: true }
+      endPolicy: { autoFinish: true, showOppositeBillboard: true }
     };
   }
   const safeQuestions = sanitizeQuizQuestions(room.quizConfig.questions, {
@@ -411,9 +412,11 @@ function ensureRoomQuizConfig(room) {
   });
   room.quizConfig.questions = safeQuestions;
   if (!room.quizConfig.endPolicy || typeof room.quizConfig.endPolicy !== "object") {
-    room.quizConfig.endPolicy = { autoFinish: true };
+    room.quizConfig.endPolicy = { autoFinish: true, showOppositeBillboard: true };
   }
   room.quizConfig.endPolicy.autoFinish = room.quizConfig.endPolicy.autoFinish !== false;
+  room.quizConfig.endPolicy.showOppositeBillboard =
+    room.quizConfig.endPolicy.showOppositeBillboard !== false;
   return room.quizConfig;
 }
 
@@ -1686,7 +1689,8 @@ function buildQuizConfigPayload(room) {
     slotCount: questions.length,
     maxQuestions: QUIZ_MAX_QUESTIONS,
     endPolicy: {
-      autoFinish: config?.endPolicy?.autoFinish !== false
+      autoFinish: config?.endPolicy?.autoFinish !== false,
+      showOppositeBillboard: config?.endPolicy?.showOppositeBillboard !== false
     }
   };
 }
@@ -1910,7 +1914,9 @@ function evaluateQuizQuestion(room) {
   const survivorCount = countQuizSurvivors(room);
   const resultPayload = {
     id: question.id,
+    text: String(question.text ?? "").slice(0, QUIZ_TEXT_MAX_LENGTH),
     answer: question.answer,
+    explanation: String(question.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH),
     index: Math.max(1, Number(quiz.questionIndex) + 1),
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
     lockedAt,
@@ -2342,6 +2348,7 @@ function joinRoom(socket, room, nameOverride = null) {
     }
     emitRoomUpdate(room);
     emitQuizSnapshot(socket, room);
+    socket.emit("quiz:config:update", buildQuizConfigPayload(room));
     return { ok: true, room: serializeRoom(room) };
   }
 
@@ -2413,6 +2420,7 @@ function joinRoom(socket, room, nameOverride = null) {
   emitRoomUpdate(room);
   emitRoomList();
   emitQuizSnapshot(socket, room);
+  socket.emit("quiz:config:update", buildQuizConfigPayload(room));
   if (quiz.active || quiz.phase === "ended") {
     emitQuizScore(room, "join");
   } else if (quiz.autoMode !== false) {
@@ -2831,10 +2839,18 @@ io.on("connection", (socket) => {
 
     if (payload?.endPolicy && typeof payload.endPolicy === "object") {
       config.endPolicy.autoFinish = payload.endPolicy.autoFinish !== false;
+      if (Object.prototype.hasOwnProperty.call(payload.endPolicy, "showOppositeBillboard")) {
+        config.endPolicy.showOppositeBillboard =
+          payload.endPolicy.showOppositeBillboard !== false;
+      }
     } else if (Object.prototype.hasOwnProperty.call(payload ?? {}, "autoFinish")) {
       config.endPolicy.autoFinish = payload.autoFinish !== false;
     }
     config.endPolicy.autoFinish = config.endPolicy.autoFinish !== false;
+    if (Object.prototype.hasOwnProperty.call(payload ?? {}, "showOppositeBillboard")) {
+      config.endPolicy.showOppositeBillboard = payload.showOppositeBillboard !== false;
+    }
+    config.endPolicy.showOppositeBillboard = config.endPolicy.showOppositeBillboard !== false;
     quiz.autoFinish = config.endPolicy.autoFinish;
 
     const response = {

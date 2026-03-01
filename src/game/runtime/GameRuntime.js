@@ -36,6 +36,8 @@ const NPC_GREETING_VIDEO_URL = new URL("../../../mp4/grok-video.webm", import.me
 const MEGA_AD_VIDEO_URL = new URL("../../../mp4/YTDown0.mp4", import.meta.url).href;
 const CENTER_BILLBOARD_BASE_WIDTH = 1024;
 const CENTER_BILLBOARD_BASE_HEIGHT = 512;
+const OPPOSITE_BILLBOARD_BASE_WIDTH = 1280;
+const OPPOSITE_BILLBOARD_BASE_HEIGHT = 720;
 const DYNAMIC_RESOLUTION_SETTINGS = Object.freeze({
   sampleWindowSeconds: 1.05,
   downshiftFps: 45,
@@ -164,6 +166,11 @@ export class GameRuntime {
     this.centerBillboardLastCountdown = null;
     this.megaAdVideoEl = null;
     this.megaAdVideoTexture = null;
+    this.megaAdScreenMaterial = null;
+    this.megaAdTextCanvas = null;
+    this.megaAdTextContext = null;
+    this.megaAdTextTexture = null;
+    this.megaAdTextLastSignature = "";
     this.chalkLayer = null;
     this.chalkStampGeometry = null;
     this.chalkStampTexture = null;
@@ -337,6 +344,7 @@ export class GameRuntime {
     this.quizConfigResetBtnEl = document.getElementById("quiz-config-reset-btn");
     this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
     this.quizAutoFinishInputEl = document.getElementById("quiz-auto-finish-input");
+    this.quizOppositeBillboardInputEl = document.getElementById("quiz-opposite-billboard-input");
     this.quizQuestionListEl = document.getElementById("quiz-question-list");
     this.quizConfigStatusEl = document.getElementById("quiz-config-status");
     this.quizReviewModalEl = document.getElementById("quiz-review-modal");
@@ -394,6 +402,9 @@ export class GameRuntime {
     this.mobileEventsBound = false;
     this.mobileHoldResetters = [];
     this.quizConfig = this.buildDefaultQuizConfig(10);
+    this.quizOppositeBillboardEnabled =
+      this.quizConfig?.endPolicy?.showOppositeBillboard !== false;
+    this.quizOppositeBillboardResultVisible = false;
     this.quizConfigLoading = false;
     this.quizConfigSaving = false;
     this.quizReviewItems = [];
@@ -409,6 +420,7 @@ export class GameRuntime {
     this.lobbyNameConfirmed = false;
     this.lobbyJoinInFlight = false;
     this.lobbyLastRooms = [];
+    this.gatewayParticipantLimit = 50;
     this.flowStage = this.hubFlowEnabled ? "bridge_approach" : "city_live";
     this.flowClock = 0;
     this.hubIntroDuration = parseSeconds(hubFlowConfig?.introSeconds, 4.8, 0.8);
@@ -1351,7 +1363,7 @@ export class GameRuntime {
         const count = Math.max(0, Math.trunc(Number(topRoom?.count) || 0));
         const capacity = Math.max(1, Math.trunc(Number(topRoom?.capacity) || 120));
         this.lobbyTopRoomEl.textContent = `대표 방 ${code} · ${count}/${capacity}`;
-        const participantLimit = 50;
+        const participantLimit = this.gatewayParticipantLimit;
         const participantCount = Math.min(count, participantLimit);
         const spectatorCount = Math.max(0, count - participantCount);
         const spectatorCapacity = Math.max(0, capacity - participantLimit);
@@ -1366,10 +1378,11 @@ export class GameRuntime {
       } else {
         this.lobbyTopRoomEl.textContent = "현재 빈 방에서 시작됩니다.";
         if (this.lobbySlotParticipantsEl) {
-          this.lobbySlotParticipantsEl.textContent = "참가 슬롯 0/50";
+          this.lobbySlotParticipantsEl.textContent = `참가 슬롯 0/${this.gatewayParticipantLimit}`;
         }
         if (this.lobbySlotSpectatorsEl) {
-          this.lobbySlotSpectatorsEl.textContent = "관전자 슬롯 0/70";
+          const spectatorCap = Math.max(0, 120 - this.gatewayParticipantLimit);
+          this.lobbySlotSpectatorsEl.textContent = `관전자 슬롯 0/${spectatorCap}`;
         }
       }
     }
@@ -2943,6 +2956,14 @@ export class GameRuntime {
       this.megaAdVideoTexture.dispose?.();
       this.megaAdVideoTexture = null;
     }
+    if (this.megaAdTextTexture) {
+      this.megaAdTextTexture.dispose?.();
+      this.megaAdTextTexture = null;
+    }
+    this.megaAdTextCanvas = null;
+    this.megaAdTextContext = null;
+    this.megaAdTextLastSignature = "";
+    this.megaAdScreenMaterial = null;
     if (!this.megaAdScreenGroup) {
       return;
     }
@@ -3023,16 +3044,30 @@ export class GameRuntime {
     videoTexture.magFilter = THREE.LinearFilter;
     videoTexture.generateMipmaps = false;
 
+    const textCanvas = document.createElement("canvas");
+    const textScale = this.mobileEnabled ? 0.5 : 0.72;
+    textCanvas.width = Math.max(640, Math.round(OPPOSITE_BILLBOARD_BASE_WIDTH * textScale));
+    textCanvas.height = Math.max(360, Math.round(OPPOSITE_BILLBOARD_BASE_HEIGHT * textScale));
+    const textContext = textCanvas.getContext("2d");
+
+    const textTexture = new THREE.CanvasTexture(textCanvas);
+    textTexture.colorSpace = THREE.SRGBColorSpace;
+    textTexture.minFilter = THREE.LinearFilter;
+    textTexture.magFilter = THREE.LinearFilter;
+    textTexture.generateMipmaps = false;
+
+    const screenMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: videoTexture,
+      roughness: 0.2,
+      metalness: 0.06,
+      emissive: 0x3a5f84,
+      emissiveIntensity: Number(config.screenGlow) || 0.24
+    });
+
     const screen = new THREE.Mesh(
       new THREE.PlaneGeometry(width, height),
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        map: videoTexture,
-        roughness: 0.2,
-        metalness: 0.06,
-        emissive: 0x3a5f84,
-        emissiveIntensity: Number(config.screenGlow) || 0.24
-      })
+      screenMaterial
     );
     screen.position.set(0, centerY, 0.7);
     group.add(screen);
@@ -3101,14 +3136,131 @@ export class GameRuntime {
 
     this.megaAdVideoEl = video;
     this.megaAdVideoTexture = videoTexture;
+    this.megaAdTextCanvas = textCanvas;
+    this.megaAdTextContext = textContext;
+    this.megaAdTextTexture = textTexture;
+    this.megaAdScreenMaterial = screenMaterial;
     this.megaAdScreenGroup = group;
     this.scene.add(this.megaAdScreenGroup);
+
+    this.applyOppositeBillboardMode();
 
     const attemptPlay = () => {
       video.play().catch(() => {});
     };
     video.addEventListener("canplay", attemptPlay, { once: true });
     attemptPlay();
+  }
+
+  applyOppositeBillboardMode() {
+    if (!this.megaAdScreenMaterial) {
+      return;
+    }
+
+    const useText =
+      this.quizOppositeBillboardEnabled !== false &&
+      this.quizOppositeBillboardResultVisible === true &&
+      Boolean(this.megaAdTextTexture);
+    const nextMap = useText ? this.megaAdTextTexture : this.megaAdVideoTexture;
+    if (this.megaAdScreenMaterial.map !== nextMap) {
+      this.megaAdScreenMaterial.map = nextMap ?? null;
+      this.megaAdScreenMaterial.needsUpdate = true;
+    }
+
+    if (useText) {
+      this.megaAdVideoEl?.pause?.();
+    } else {
+      this.kickMegaAdVideoPlayback();
+    }
+  }
+
+  setOppositeBillboardResultVisible(visible) {
+    this.quizOppositeBillboardResultVisible = Boolean(visible);
+    this.applyOppositeBillboardMode();
+  }
+
+  renderOppositeBillboard(payload = {}, force = false) {
+    const context = this.megaAdTextContext;
+    const canvas = this.megaAdTextCanvas;
+    const texture = this.megaAdTextTexture;
+    if (!context || !canvas || !texture) {
+      this.applyOppositeBillboardMode();
+      return;
+    }
+
+    const kicker = String(payload.kicker ?? "실시간").trim().slice(0, 44);
+    const title = String(payload.title ?? "메가 OX 퀴즈").trim().slice(0, 120);
+    const footer = String(payload.footer ?? "").trim().slice(0, 120);
+    const lineSource = Array.isArray(payload.lines) ? payload.lines : [];
+    const lines = lineSource
+      .map((line) => String(line ?? "").trim())
+      .filter(Boolean)
+      .slice(0, 5);
+
+    const signature = `${kicker}|${title}|${footer}|${lines.join("||")}`;
+    if (!force && signature === this.megaAdTextLastSignature) {
+      this.applyOppositeBillboardMode();
+      return;
+    }
+    this.megaAdTextLastSignature = signature;
+
+    const scaleX = canvas.width / OPPOSITE_BILLBOARD_BASE_WIDTH;
+    const scaleY = canvas.height / OPPOSITE_BILLBOARD_BASE_HEIGHT;
+    context.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+
+    const gradient = context.createLinearGradient(0, 0, 0, OPPOSITE_BILLBOARD_BASE_HEIGHT);
+    gradient.addColorStop(0, "#101722");
+    gradient.addColorStop(0.55, "#152132");
+    gradient.addColorStop(1, "#0f1722");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, OPPOSITE_BILLBOARD_BASE_WIDTH, OPPOSITE_BILLBOARD_BASE_HEIGHT);
+
+    context.strokeStyle = "rgba(138, 196, 255, 0.62)";
+    context.lineWidth = 20;
+    context.strokeRect(26, 26, OPPOSITE_BILLBOARD_BASE_WIDTH - 52, OPPOSITE_BILLBOARD_BASE_HEIGHT - 52);
+
+    context.fillStyle = "#8fd1ff";
+    context.font = "700 52px 'Segoe UI'";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(kicker || "실시간", OPPOSITE_BILLBOARD_BASE_WIDTH * 0.5, 102);
+
+    context.fillStyle = "#f2f8ff";
+    context.font = "800 78px 'Bahnschrift'";
+    this.drawBillboardWrappedText(
+      context,
+      title || "메가 OX 퀴즈",
+      OPPOSITE_BILLBOARD_BASE_WIDTH * 0.5,
+      206,
+      OPPOSITE_BILLBOARD_BASE_WIDTH - 180,
+      74,
+      2
+    );
+
+    const baseY = 372;
+    context.fillStyle = "#d9e9ff";
+    context.font = "700 46px 'Segoe UI'";
+    for (let index = 0; index < lines.length; index += 1) {
+      this.drawBillboardWrappedText(
+        context,
+        lines[index],
+        OPPOSITE_BILLBOARD_BASE_WIDTH * 0.5,
+        baseY + index * 92,
+        OPPOSITE_BILLBOARD_BASE_WIDTH - 210,
+        54,
+        2
+      );
+    }
+
+    if (footer) {
+      context.fillStyle = "#add0f0";
+      context.font = "600 36px 'Segoe UI'";
+      context.fillText(footer, OPPOSITE_BILLBOARD_BASE_WIDTH * 0.5, OPPOSITE_BILLBOARD_BASE_HEIGHT - 56);
+    }
+    context.setTransform(1, 0, 0, 1, 0, 0);
+
+    texture.needsUpdate = true;
+    this.applyOppositeBillboardMode();
   }
 
   clearCenterBillboard() {
@@ -4764,6 +4916,9 @@ export class GameRuntime {
     if (!this.quizAutoFinishInputEl) {
       this.quizAutoFinishInputEl = document.getElementById("quiz-auto-finish-input");
     }
+    if (!this.quizOppositeBillboardInputEl) {
+      this.quizOppositeBillboardInputEl = document.getElementById("quiz-opposite-billboard-input");
+    }
     if (!this.quizQuestionListEl) {
       this.quizQuestionListEl = document.getElementById("quiz-question-list");
     }
@@ -5718,6 +5873,10 @@ export class GameRuntime {
   handleServerRole(payload = {}) {
     this.socketRole = String(payload?.role ?? "worker");
     if (this.socketRole === "gateway") {
+      const limit = Math.trunc(Number(payload?.participantLimit) || 0);
+      if (limit > 0) {
+        this.gatewayParticipantLimit = limit;
+      }
       this.hud.setStatus("게이트웨이 연결 중...");
       if (this.lobbyEnabled) {
         this.showLobbyScreen(
@@ -6362,6 +6521,7 @@ export class GameRuntime {
     this.centerBillboardLastCountdown = null;
     this.hideRoundOverlay();
     this.closeQuizReviewModal();
+    this.setOppositeBillboardResultVisible(false);
     this.renderCenterBillboard({
       kicker: "실시간",
       title: "메가 OX 퀴즈",
@@ -6382,6 +6542,7 @@ export class GameRuntime {
     if (this.quizState.active) {
       return;
     }
+    this.setOppositeBillboardResultVisible(false);
     const seconds = this.getAutoStartCountdownSeconds();
     if (seconds > 0) {
       this.appendChatLine(
@@ -6422,6 +6583,7 @@ export class GameRuntime {
     this.ensureLocalGameplayPosition();
     this.resetTrapdoors();
     this.centerBillboardLastCountdown = null;
+    this.setOppositeBillboardResultVisible(false);
 
     const totalText =
       this.quizState.totalQuestions > 0 ? `${this.quizState.totalQuestions}` : "?";
@@ -6465,6 +6627,7 @@ export class GameRuntime {
     this.resetTrapdoors();
     this.hideRoundOverlay();
     this.centerBillboardLastCountdown = null;
+    this.setOppositeBillboardResultVisible(false);
 
     const questionText = this.quizState.questionText || "문제가 열렸습니다";
     this.appendChatLine(
@@ -6480,6 +6643,7 @@ export class GameRuntime {
   handleQuizLock(payload = {}) {
     this.quizState.phase = "lock";
     this.quizState.lockAt = 0;
+    this.setOppositeBillboardResultVisible(false);
     const index = Math.max(
       this.quizState.questionIndex,
       Math.trunc(Number(payload.index) || this.quizState.questionIndex || 0)
@@ -6504,6 +6668,7 @@ export class GameRuntime {
     );
     this.quizState.questionIndex = index;
     const answer = String(payload.answer ?? "").trim().toUpperCase();
+    const explanation = String(payload.explanation ?? "").trim().slice(0, 720);
     this.triggerTrapdoorForAnswer(answer);
     const survivorCount = Math.max(0, Math.trunc(Number(payload.survivorCount) || 0));
     this.quizState.survivors = survivorCount;
@@ -6533,6 +6698,16 @@ export class GameRuntime {
       lines: [`생존자 ${survivorCount}명`, this.localQuizAlive ? "생존" : "탈락"],
       footer: "잠시 후 다음 문제"
     });
+    this.setOppositeBillboardResultVisible(true);
+    this.renderOppositeBillboard(
+      {
+        kicker: `문항 ${index} 해설`,
+        title: `정답 ${answer || "?"}`,
+        lines: [explanation || "등록된 해설이 없습니다."],
+        footer: "결과 단계에서만 표시"
+      },
+      true
+    );
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
   }
@@ -6544,6 +6719,9 @@ export class GameRuntime {
     }
     if (hasOwn("phase")) {
       this.quizState.phase = String(payload.phase ?? "idle");
+      if (this.quizState.phase !== "result") {
+        this.setOppositeBillboardResultVisible(false);
+      }
     }
     if (hasOwn("autoMode")) {
       this.quizState.autoMode = payload.autoMode !== false;
@@ -6684,6 +6862,7 @@ export class GameRuntime {
     this.quizState.lockAt = 0;
     this.quizState.prepareEndsAt = 0;
     this.centerBillboardLastCountdown = null;
+    this.setOppositeBillboardResultVisible(false);
     this.setQuizReviewItems(payload?.review);
     this.showRoundOverlay({
       title: "게임이 종료되었습니다",
@@ -6898,7 +7077,8 @@ export class GameRuntime {
       maxQuestions: 50,
       questions,
       endPolicy: {
-        autoFinish: true
+        autoFinish: true,
+        showOppositeBillboard: true
       }
     };
   }
@@ -6927,11 +7107,27 @@ export class GameRuntime {
       })
       .slice(0, maxQuestions);
     const finalQuestions = questions.length > 0 ? questions : this.buildDefaultQuizConfig(10).questions;
+    const sourceEndPolicy =
+      payload?.endPolicy && typeof payload.endPolicy === "object" ? payload.endPolicy : null;
+    const hasShowOppositeBillboard =
+      sourceEndPolicy &&
+      Object.prototype.hasOwnProperty.call(sourceEndPolicy, "showOppositeBillboard");
+    const hasTopLevelShowOppositeBillboard = Object.prototype.hasOwnProperty.call(
+      payload ?? {},
+      "showOppositeBillboard"
+    );
+    const fallbackShowOppositeBillboard =
+      this.quizConfig?.endPolicy?.showOppositeBillboard !== false;
     return {
       maxQuestions,
       questions: finalQuestions,
       endPolicy: {
-        autoFinish: payload?.endPolicy?.autoFinish !== false
+        autoFinish: sourceEndPolicy?.autoFinish !== false,
+        showOppositeBillboard: hasShowOppositeBillboard
+          ? sourceEndPolicy.showOppositeBillboard !== false
+          : hasTopLevelShowOppositeBillboard
+            ? payload.showOppositeBillboard !== false
+            : fallbackShowOppositeBillboard
       }
     };
   }
@@ -6989,6 +7185,10 @@ export class GameRuntime {
     }
     if (this.quizAutoFinishInputEl) {
       this.quizAutoFinishInputEl.checked = this.quizConfig?.endPolicy?.autoFinish !== false;
+    }
+    if (this.quizOppositeBillboardInputEl) {
+      this.quizOppositeBillboardInputEl.checked =
+        this.quizConfig?.endPolicy?.showOppositeBillboard !== false;
     }
 
     const fragment = document.createDocumentFragment();
@@ -7123,10 +7323,13 @@ export class GameRuntime {
       return;
     }
     const autoFinish = this.quizAutoFinishInputEl?.checked !== false;
+    const showOppositeBillboard =
+      this.quizOppositeBillboardInputEl?.checked !== false;
     const payload = {
       questions,
       endPolicy: {
-        autoFinish
+        autoFinish,
+        showOppositeBillboard
       }
     };
     this.quizConfigSaving = true;
@@ -7146,6 +7349,12 @@ export class GameRuntime {
   handleQuizConfigUpdate(payload = {}) {
     this.quizConfig = this.normalizeQuizConfigPayload(payload);
     this.quizState.autoFinish = this.quizConfig?.endPolicy?.autoFinish !== false;
+    this.quizOppositeBillboardEnabled =
+      this.quizConfig?.endPolicy?.showOppositeBillboard !== false;
+    if (!this.quizOppositeBillboardEnabled) {
+      this.quizOppositeBillboardResultVisible = false;
+    }
+    this.applyOppositeBillboardMode();
     if (!this.quizConfigModalEl?.classList.contains("hidden")) {
       this.renderQuizConfigEditor();
     }
