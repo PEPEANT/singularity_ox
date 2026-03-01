@@ -7,6 +7,7 @@
   --accent-danger: #ff7d7d;
   --panel-bg: rgba(7, 20, 33, 0.86);
   --panel-border: rgba(138, 178, 212, 0.62);
+  --mobile-keyboard-inset: 0px;
 }
 
 * {
@@ -1452,7 +1453,7 @@ body.mobile-chat-focus #chat-ui {
   left: max(0px, env(safe-area-inset-left));
   right: max(0px, env(safe-area-inset-right));
   top: max(0px, env(safe-area-inset-top));
-  bottom: max(0px, env(safe-area-inset-bottom));
+  bottom: calc(max(0px, env(safe-area-inset-bottom)) + var(--mobile-keyboard-inset, 0px));
   z-index: 64;
   width: auto;
   border-radius: 0;
@@ -1677,7 +1678,7 @@ body.mobile-chat-focus #chat-header {
     left: max(0px, env(safe-area-inset-left));
     right: max(0px, env(safe-area-inset-right));
     top: max(0px, env(safe-area-inset-top));
-    bottom: max(0px, env(safe-area-inset-bottom));
+    bottom: calc(max(0px, env(safe-area-inset-bottom)) + var(--mobile-keyboard-inset, 0px));
     padding: 9px;
   }
 

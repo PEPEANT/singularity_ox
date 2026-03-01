@@ -524,6 +524,8 @@ export class GameRuntime {
     this.mobileChatUnreadCount = 0;
     this.mobileEventsBound = false;
     this.mobileHoldResetters = [];
+    this.mobileKeyboardInsetPx = 0;
+    this.mobileKeyboardInsetTimer = null;
     this.moderationPanelOpen = false;
     this.moderationOptionsSignature = "";
     this.lastHudAdmissionCountdown = null;
@@ -4805,7 +4807,17 @@ export class GameRuntime {
   bindEvents() {
     this.resolveUiElements();
 
-    window.addEventListener("resize", () => this.onResize());
+    window.addEventListener("resize", () => {
+      this.onResize();
+      this.scheduleMobileKeyboardInsetSync(24);
+    });
+    if (window.visualViewport) {
+      const handleViewportChange = () => {
+        this.scheduleMobileKeyboardInsetSync(0);
+      };
+      window.visualViewport.addEventListener("resize", handleViewportChange, { passive: true });
+      window.visualViewport.addEventListener("scroll", handleViewportChange, { passive: true });
+    }
     window.addEventListener(
       "pointerdown",
       (event) => {
@@ -4973,6 +4985,8 @@ export class GameRuntime {
       this.chatInputEl.addEventListener("focus", () => {
         this.keys.clear();
         this.setChatOpen(true);
+        this.scheduleMobileKeyboardInsetSync(0);
+        this.scheduleMobileKeyboardInsetSync(180);
       });
       this.chatInputEl.addEventListener("keydown", (event) => {
         if (event.code === "Enter") {
@@ -4991,6 +5005,7 @@ export class GameRuntime {
         }
       });
       this.chatInputEl.addEventListener("blur", () => {
+        this.scheduleMobileKeyboardInsetSync(80);
         if (!this.mobileEnabled) {
           this.setChatOpen(false);
           return;
@@ -5752,6 +5767,7 @@ export class GameRuntime {
       this.mobileLookPointerId = null;
       this.mobileLookPadEl?.classList.remove("active");
       this.hideMobileChatPreview();
+      this.setMobileKeyboardInset(0);
       if (typeof document !== "undefined" && document.body) {
         document.body.classList.remove("mobile-chat-focus");
         document.body.classList.remove("mobile-roster-focus");
@@ -5763,6 +5779,60 @@ export class GameRuntime {
     this.applyMobileChatUi();
   }
 
+  setMobileKeyboardInset(insetPx) {
+    const nextInset = Math.max(0, Math.trunc(Number(insetPx) || 0));
+    this.mobileKeyboardInsetPx = nextInset;
+    if (typeof document === "undefined") {
+      return;
+    }
+    document.documentElement?.style?.setProperty("--mobile-keyboard-inset", `${nextInset}px`);
+  }
+
+  scheduleMobileKeyboardInsetSync(delayMs = 0) {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (this.mobileKeyboardInsetTimer) {
+      window.clearTimeout(this.mobileKeyboardInsetTimer);
+      this.mobileKeyboardInsetTimer = null;
+    }
+    const delay = Math.max(0, Math.trunc(Number(delayMs) || 0));
+    this.mobileKeyboardInsetTimer = window.setTimeout(() => {
+      this.mobileKeyboardInsetTimer = null;
+      this.syncMobileKeyboardInset();
+    }, delay);
+  }
+
+  syncMobileKeyboardInset() {
+    if (!this.mobileEnabled || !this.chatOpen || !this.canUseGameplayControls()) {
+      this.setMobileKeyboardInset(0);
+      return;
+    }
+
+    let inset = 0;
+    if (typeof window !== "undefined") {
+      const visualViewport = window.visualViewport;
+      if (visualViewport) {
+        const layoutHeight = Math.max(
+          Number(window.innerHeight) || 0,
+          Number(document?.documentElement?.clientHeight) || 0
+        );
+        const viewportGap =
+          layoutHeight - (Number(visualViewport.height) || 0) - (Number(visualViewport.offsetTop) || 0);
+        inset = Math.max(0, Math.trunc(viewportGap));
+      }
+    }
+
+    // Ignore tiny viewport jitter from browser chrome.
+    if (inset < 56) {
+      inset = 0;
+    }
+    this.setMobileKeyboardInset(inset);
+    if (inset > 0 && this.chatLogEl) {
+      this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+    }
+  }
+
   applyMobileChatUi() {
     this.resolveUiElements();
     const canUseMobileChat = this.mobileEnabled && this.canUseGameplayControls();
@@ -5772,8 +5842,9 @@ export class GameRuntime {
       this.hideMobileChatPreview();
     }
     this.chatUiEl?.classList.toggle("mobile-chat-hidden", this.mobileEnabled && !showChatPanel);
+    let mobileChatFocus = false;
     if (typeof document !== "undefined" && document.body) {
-      const mobileChatFocus = this.mobileEnabled && this.chatOpen && canUseMobileChat;
+      mobileChatFocus = this.mobileEnabled && this.chatOpen && canUseMobileChat;
       document.body.classList.toggle("mobile-chat-focus", mobileChatFocus);
       if (mobileChatFocus) {
         this.releaseMobileInputs();
@@ -5781,6 +5852,12 @@ export class GameRuntime {
           this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
         }
       }
+    }
+    if (mobileChatFocus) {
+      this.scheduleMobileKeyboardInsetSync(0);
+      this.scheduleMobileKeyboardInsetSync(180);
+    } else {
+      this.setMobileKeyboardInset(0);
     }
     this.updateMobileChatToggleButton(canUseMobileChat, showChatPanel);
   }
@@ -6547,6 +6624,14 @@ export class GameRuntime {
       this.chalkLastStamp = null;
     }
     this.applyMobileChatUi();
+    if (this.mobileEnabled) {
+      if (this.chatOpen) {
+        this.scheduleMobileKeyboardInsetSync(0);
+        this.scheduleMobileKeyboardInsetSync(180);
+      } else {
+        this.setMobileKeyboardInset(0);
+      }
+    }
   }
 
   setActiveTool(tool) {
@@ -9552,6 +9637,8 @@ export class GameRuntime {
     }
     this.chatInputEl.focus();
     this.chatInputEl.select();
+    this.scheduleMobileKeyboardInsetSync(0);
+    this.scheduleMobileKeyboardInsetSync(220);
   }
 
   isTextInputTarget(target) {
@@ -10264,6 +10351,7 @@ export class GameRuntime {
     if (this.mobileEnabled) {
       this.refreshMobileMovePadMetrics();
     }
+    this.scheduleMobileKeyboardInsetSync(0);
   }
 }
 
