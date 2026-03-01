@@ -2102,6 +2102,103 @@ function evaluateQuizQuestion(room) {
   scheduleQuizNextQuestion(room);
 }
 
+function resetPlayersForQuestionRewind(room, reason = "quiz-prev-reset") {
+  if (!room) {
+    return;
+  }
+
+  const participants = [];
+  for (const player of room.players.values()) {
+    if (!player) {
+      continue;
+    }
+    if (isPlayerHostModerator(room, player)) {
+      player.admitted = true;
+      player.awaitingAdmission = false;
+      player.alive = true;
+      player.score = 0;
+      player.lastChoice = null;
+      player.lastChoiceReason = "spectator";
+      relocatePlayerToSpectatorZone(room, player, reason);
+      continue;
+    }
+    if (player.admitted === true) {
+      player.awaitingAdmission = false;
+      player.alive = true;
+      player.score = 0;
+      player.lastChoice = null;
+      player.lastChoiceReason = null;
+      participants.push(player);
+      continue;
+    }
+    player.admitted = false;
+    player.awaitingAdmission = false;
+    player.alive = false;
+    player.score = 0;
+    player.lastChoice = null;
+    player.lastChoiceReason = "spectator";
+    relocatePlayerToSpectatorZone(room, player, reason);
+  }
+
+  for (let index = 0; index < participants.length; index += 1) {
+    const player = participants[index];
+    const spawn = buildAdmissionSpawnPoint(index, participants.length);
+    setPlayerAuthoritativeState(player, {
+      x: spawn.x,
+      y: spawn.y,
+      z: spawn.z,
+      yaw: 0,
+      pitch: 0
+    });
+    const targetSocket = io?.sockets?.sockets?.get(player.id);
+    if (targetSocket) {
+      targetSocket.emit("player:correct", {
+        state: player.state,
+        reason
+      });
+    }
+  }
+}
+
+function rewindQuizToPreviousQuestion(room, lockSecondsOverride = null) {
+  if (!room) {
+    return { ok: false, error: "room missing" };
+  }
+
+  const quiz = getRoomQuiz(room);
+  if (!quiz.active) {
+    return { ok: false, error: "quiz is not active" };
+  }
+
+  const currentIndex = Math.max(0, Math.trunc(Number(quiz.questionIndex) || 0));
+  if (currentIndex <= 0) {
+    return { ok: false, error: "no previous question" };
+  }
+
+  const targetIndex = currentIndex - 1;
+  clearQuizLockTimer(quiz);
+  quiz.phase = "start";
+  quiz.lockAt = 0;
+  quiz.prepareEndsAt = 0;
+  quiz.lastResult = null;
+
+  resetPlayersForQuestionRewind(room, "quiz-prev-reset");
+  quiz.questionIndex = targetIndex - 1;
+
+  const nextResult = pushNextQuizQuestion(room, lockSecondsOverride);
+  if (!nextResult?.ok) {
+    return nextResult;
+  }
+
+  emitQuizScore(room, "previous-question");
+  return {
+    ok: true,
+    rewindTo: targetIndex + 1,
+    question: nextResult.question,
+    resetScores: true
+  };
+}
+
 function pushNextQuizQuestion(room, lockSecondsOverride = null) {
   if (!room) {
     return { ok: false, error: "room missing" };
@@ -2858,6 +2955,27 @@ io.on("connection", (socket) => {
 
     const result = pushNextQuizQuestion(room, payload.lockSeconds);
     ack(ackFn, result);
+  });
+
+  socket.on("quiz:prev", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const rewind = rewindQuizToPreviousQuestion(room, payload?.lockSeconds);
+    ack(ackFn, rewind);
   });
 
   socket.on("quiz:force-lock", (ackFn) => {

@@ -406,6 +406,7 @@ export class GameRuntime {
     this.quizReviewBtnEl = document.getElementById("quiz-review-btn");
     this.portalLobbyOpenBtnEl = document.getElementById("portal-open-btn");
     this.portalLobbyStartBtnEl = document.getElementById("portal-admit-btn");
+    this.quizPrevBtnEl = document.getElementById("quiz-prev-btn");
     this.quizNextBtnEl = document.getElementById("quiz-next-btn");
     this.quizLockBtnEl = document.getElementById("quiz-lock-btn");
     this.moderationPanelToggleBtnEl = document.getElementById("moderation-panel-toggle-btn");
@@ -5059,6 +5060,9 @@ export class GameRuntime {
     this.portalLobbyStartBtnEl?.addEventListener("click", () => {
       this.requestPortalLobbyStart();
     });
+    this.quizPrevBtnEl?.addEventListener("click", () => {
+      this.requestQuizPrev();
+    });
     this.quizNextBtnEl?.addEventListener("click", () => {
       this.requestQuizNext();
     });
@@ -5157,6 +5161,9 @@ export class GameRuntime {
     }
     if (!this.portalLobbyStartBtnEl) {
       this.portalLobbyStartBtnEl = document.getElementById("portal-admit-btn");
+    }
+    if (!this.quizPrevBtnEl) {
+      this.quizPrevBtnEl = document.getElementById("quiz-prev-btn");
     }
     if (!this.quizNextBtnEl) {
       this.quizNextBtnEl = document.getElementById("quiz-next-btn");
@@ -8064,6 +8071,7 @@ export class GameRuntime {
       "quiz is not active": "진행 중인 퀴즈가 없습니다.",
       "question is not open": "열린 문제가 없습니다.",
       "question is already open": "이미 문제가 열려 있습니다.",
+      "no previous question": "더 이전 문제는 없습니다.",
       "quiz already active": "이미 퀴즈가 진행 중입니다.",
       "no more questions": "남은 문제가 없습니다.",
       "room missing": "방 정보를 찾을 수 없습니다.",
@@ -8799,6 +8807,8 @@ export class GameRuntime {
     }
     this.quizNextBtnEl &&
       (this.quizNextBtnEl.disabled = !canControl || !active || phase !== "waiting-next");
+    this.quizPrevBtnEl &&
+      (this.quizPrevBtnEl.disabled = !canControl || !active || Math.max(0, this.quizState.questionIndex) <= 1);
     this.quizLockBtnEl &&
       (this.quizLockBtnEl.disabled = !canControl || !active || phase !== "question");
     this.portalTargetInputEl && (this.portalTargetInputEl.disabled = !canControl);
@@ -8973,6 +8983,29 @@ export class GameRuntime {
         return;
       }
       this.appendChatLine("시스템", "방장이 퀴즈를 중지했습니다.", "system");
+    });
+  }
+
+  requestQuizPrev() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("시스템", "오너 토큰이 없어 이전 문제 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("시스템", "오프라인 상태에서는 이전 문제로 이동할 수 없습니다.", "system");
+      return;
+    }
+    this.socket.emit("quiz:prev", {}, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("시스템", `이전 문제 실패: ${this.translateQuizError(response?.error)}`, "system");
+        return;
+      }
+      const rewindTo = Math.max(1, Math.trunc(Number(response?.rewindTo) || 1));
+      this.appendChatLine(
+        "시스템",
+        `이전 문제로 되돌렸습니다. 점수를 초기화하고 문항 ${rewindTo}부터 다시 시작합니다.`,
+        "system"
+      );
     });
   }
 

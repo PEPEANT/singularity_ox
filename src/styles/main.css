@@ -528,6 +528,10 @@ body.mobile-roster-focus #mobile-look-pad {
   background: linear-gradient(140deg, rgba(26, 58, 86, 0.96), rgba(12, 31, 48, 0.98));
 }
 
+#quiz-lock-btn {
+  grid-column: 1 / -1;
+}
+
 #quiz-review-btn {
   background: linear-gradient(140deg, rgba(34, 70, 42, 0.96), rgba(14, 33, 20, 0.98));
 }
