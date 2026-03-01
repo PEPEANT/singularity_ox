@@ -412,6 +412,8 @@ export class GameRuntime {
     this.mobileEventsBound = false;
     this.mobileHoldResetters = [];
     this.moderationPanelOpen = false;
+    this.moderationOptionsSignature = "";
+    this.lastHudAdmissionCountdown = null;
     this.disconnectedByKick = false;
     this.quizConfig = this.buildDefaultQuizConfig(10);
     this.quizOppositeBillboardEnabled =
@@ -7772,6 +7774,25 @@ export class GameRuntime {
     }
     const previousValue = String(this.moderationPlayerSelectEl.value ?? "");
     const candidates = this.getModerationCandidates();
+    const signature = candidates
+      .map(
+        (entry) =>
+          `${String(entry?.id ?? "")}:${String(entry?.name ?? "")}:${entry?.chatMuted === true ? 1 : 0}`
+      )
+      .join("|");
+    if (signature === this.moderationOptionsSignature) {
+      if (candidates.length > 0) {
+        const hasPrevious = candidates.some((entry) => String(entry?.id ?? "") === previousValue);
+        const nextValue = hasPrevious ? previousValue : String(candidates[0]?.id ?? "");
+        if (this.moderationPlayerSelectEl.value !== nextValue) {
+          this.moderationPlayerSelectEl.value = nextValue;
+        }
+      } else if (this.moderationPlayerSelectEl.value !== "") {
+        this.moderationPlayerSelectEl.value = "";
+      }
+      return;
+    }
+    this.moderationOptionsSignature = signature;
     this.moderationPlayerSelectEl.replaceChildren();
 
     if (candidates.length <= 0) {
@@ -7833,7 +7854,9 @@ export class GameRuntime {
       this.quizHostBtnEl.disabled = !canClaimHost || isHost;
     }
     const canControl = isHost;
-    this.refreshModerationTargetOptions();
+    if (canControl && this.moderationPanelOpen) {
+      this.refreshModerationTargetOptions();
+    }
     if (this.moderationPanelToggleBtnEl) {
       this.moderationPanelToggleBtnEl.classList.toggle("hidden", !canControl);
       this.moderationPanelToggleBtnEl.disabled = !canControl;
@@ -8713,6 +8736,12 @@ export class GameRuntime {
       this.updateEntryWaitOverlay();
     }
     if (countdownSeconds > 0) {
+      if (this.lastHudAdmissionCountdown !== countdownSeconds) {
+        this.lastHudAdmissionCountdown = countdownSeconds;
+        this.updateQuizControlUi();
+      }
+    } else if (this.lastHudAdmissionCountdown !== null) {
+      this.lastHudAdmissionCountdown = null;
       this.updateQuizControlUi();
     }
   }
