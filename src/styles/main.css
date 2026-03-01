@@ -344,6 +344,9 @@ canvas {
   bottom: calc(max(14px, env(safe-area-inset-bottom)) + 136px);
   z-index: 47;
   max-width: min(60vw, 280px);
+  max-height: min(34vh, 138px);
+  display: grid;
+  gap: 3px;
   padding: 7px 10px;
   border: 1px solid rgba(182, 214, 240, 0.68);
   border-radius: 10px;
@@ -351,10 +354,15 @@ canvas {
   color: #e8f5ff;
   font: 700 0.62rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
   letter-spacing: 0.02em;
-  white-space: nowrap;
+  overflow: hidden auto;
+  pointer-events: none;
+}
+
+.mobile-chat-preview-line {
+  margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none;
+  white-space: nowrap;
 }
 
 #mobile-action-pad {
@@ -1816,6 +1824,7 @@ body.mobile-chat-focus #chat-header {
     left: max(8px, env(safe-area-inset-left));
     bottom: calc(max(8px, env(safe-area-inset-bottom)) + 130px);
     max-width: min(66vw, 250px);
+    max-height: min(32vh, 124px);
     font-size: 0.58rem;
   }
 

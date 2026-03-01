@@ -87,6 +87,8 @@ const MOVEMENT_KEY_CODES = new Set([
 ]);
 const QUIZ_CONFIG_DRAFT_STORAGE_PREFIX = "singularity_ox.quiz_config_draft.v1";
 const QUIZ_CONFIG_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 21;
+const CHAT_BUBBLE_MIN_LIFETIME_MS = 9000;
+const MOBILE_CHAT_PREVIEW_MIN_LIFETIME_MS = 7000;
 
 export class GameRuntime {
   constructor(mount, options = {}) {
@@ -372,7 +374,12 @@ export class GameRuntime {
       elapsed: 0,
       duration: 1
     };
-    this.chatBubbleLifetimeMs = 4200;
+    const chatConfig = this.worldContent?.chat ?? {};
+    this.chatBubbleLifetimeMs = Math.max(
+      CHAT_BUBBLE_MIN_LIFETIME_MS,
+      Math.trunc(Number(chatConfig.bubbleLifetimeMs) || 0),
+      4200
+    );
     this.chatLogMaxEntries = RUNTIME_TUNING.CHAT_LOG_MAX_ENTRIES;
     this.chatLogEl = document.getElementById("chat-log");
     this.chatControlsEl = document.getElementById("chat-controls");
@@ -504,6 +511,7 @@ export class GameRuntime {
     this.mobileLookDeltaY = 0;
     this.mobileChatPanelVisible = !this.mobileEnabled;
     this.mobileChatPreviewHideTimer = null;
+    this.mobileChatPreviewEntries = [];
     this.mobileChatUnreadCount = 0;
     this.mobileEventsBound = false;
     this.mobileHoldResetters = [];
@@ -5787,6 +5795,27 @@ export class GameRuntime {
     this.applyMobileChatUi();
   }
 
+  renderMobileChatPreviewEntries() {
+    if (!this.mobileChatPreviewEl) {
+      return;
+    }
+    if (!Array.isArray(this.mobileChatPreviewEntries) || this.mobileChatPreviewEntries.length <= 0) {
+      this.mobileChatPreviewEl.replaceChildren();
+      this.mobileChatPreviewEl.classList.add("hidden");
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const text of this.mobileChatPreviewEntries) {
+      const line = document.createElement("p");
+      line.className = "mobile-chat-preview-line";
+      line.textContent = String(text ?? "").trim();
+      fragment.appendChild(line);
+    }
+    this.mobileChatPreviewEl.replaceChildren(fragment);
+    this.mobileChatPreviewEl.classList.remove("hidden");
+  }
+
   showMobileChatPreview(rawText) {
     if (!this.mobileEnabled) {
       return;
@@ -5802,15 +5831,25 @@ export class GameRuntime {
     if (!text) {
       return;
     }
-    this.mobileChatPreviewEl.textContent = text;
-    this.mobileChatPreviewEl.classList.remove("hidden");
+    this.mobileChatPreviewEntries.push(text);
+    if (this.mobileChatPreviewEntries.length > 4) {
+      this.mobileChatPreviewEntries.shift();
+    }
+    this.renderMobileChatPreviewEntries();
     if (this.mobileChatPreviewHideTimer) {
       window.clearTimeout(this.mobileChatPreviewHideTimer);
     }
+    const configuredLifetimeMs = Math.max(
+      0,
+      Math.trunc(Number(this.worldContent?.chat?.previewLifetimeMs) || 0)
+    );
+    const previewLifetimeMs = Math.max(MOBILE_CHAT_PREVIEW_MIN_LIFETIME_MS, configuredLifetimeMs);
     this.mobileChatPreviewHideTimer = window.setTimeout(() => {
       this.mobileChatPreviewHideTimer = null;
+      this.mobileChatPreviewEntries.length = 0;
+      this.mobileChatPreviewEl?.replaceChildren?.();
       this.mobileChatPreviewEl?.classList?.add("hidden");
-    }, 4400);
+    }, previewLifetimeMs);
   }
 
   hideMobileChatPreview() {
@@ -5818,6 +5857,8 @@ export class GameRuntime {
       window.clearTimeout(this.mobileChatPreviewHideTimer);
       this.mobileChatPreviewHideTimer = null;
     }
+    this.mobileChatPreviewEntries.length = 0;
+    this.mobileChatPreviewEl?.replaceChildren?.();
     this.mobileChatPreviewEl?.classList?.add("hidden");
   }
 
@@ -9332,6 +9373,9 @@ export class GameRuntime {
       this.appendChatLine("시스템", "오프라인 상태에서는 채팅을 보낼 수 없습니다.", "system");
       return;
     }
+    const localEchoSignature = `${senderName}|${text}`;
+    this.lastLocalChatEcho = localEchoSignature;
+    this.lastLocalChatEchoAt = performance.now();
 
     this.chatSendInFlight = true;
     this.chatInputEl.value = "";
@@ -9345,6 +9389,10 @@ export class GameRuntime {
       (response = {}) => {
         this.chatSendInFlight = false;
         if (!response?.ok) {
+          if (this.lastLocalChatEcho === localEchoSignature) {
+            this.lastLocalChatEcho = "";
+            this.lastLocalChatEchoAt = 0;
+          }
           if (this.chatInputEl && !this.chatInputEl.value) {
             this.chatInputEl.value = text;
           }
@@ -9355,6 +9403,7 @@ export class GameRuntime {
           );
           return;
         }
+        this.appendChatLine(senderName, text, "self");
         if (this.mobileEnabled) {
           this.hideMobileChatPanel();
           this.showMobileChatPreview(`\uB098: ${text}`);
