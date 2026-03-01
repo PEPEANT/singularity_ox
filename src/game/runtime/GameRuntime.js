@@ -5520,6 +5520,9 @@ export class GameRuntime {
     }
 
     let activePointerId = null;
+    let touchActive = false;
+    const supportsPointerEvents =
+      typeof window !== "undefined" && typeof window.PointerEvent !== "undefined";
 
     const activate = (event) => {
       if (!this.isAcceptedMobilePointer(event)) {
@@ -5573,13 +5576,53 @@ export class GameRuntime {
       this.setMobileKeyState(keyCode, false);
     };
 
+    const activateTouch = (event) => {
+      if (supportsPointerEvents) {
+        return;
+      }
+      if (!this.mobileEnabled || !this.canMovePlayer()) {
+        return;
+      }
+      if (touchActive) {
+        return;
+      }
+      if (event.cancelable) {
+        event.preventDefault();
+      }
+      touchActive = true;
+      button.classList.add("active");
+      this.setMobileKeyState(keyCode, true);
+    };
+
+    const deactivateTouch = (event) => {
+      if (supportsPointerEvents || !touchActive) {
+        return;
+      }
+      if (event?.cancelable) {
+        event.preventDefault();
+      }
+      touchActive = false;
+      button.classList.remove("active");
+      this.setMobileKeyState(keyCode, false);
+    };
+
     button.addEventListener("pointerdown", activate, { passive: false });
     button.addEventListener("pointerup", deactivate, { passive: false });
     button.addEventListener("pointercancel", deactivate, { passive: false });
     button.addEventListener("lostpointercapture", deactivate, { passive: false });
     window.addEventListener("pointerup", deactivate, { passive: false });
     window.addEventListener("pointercancel", deactivate, { passive: false });
-    this.mobileHoldResetters.push(() => deactivate(null));
+    if (!supportsPointerEvents) {
+      button.addEventListener("touchstart", activateTouch, { passive: false });
+      button.addEventListener("touchend", deactivateTouch, { passive: false });
+      button.addEventListener("touchcancel", deactivateTouch, { passive: false });
+      window.addEventListener("touchend", deactivateTouch, { passive: false });
+      window.addEventListener("touchcancel", deactivateTouch, { passive: false });
+    }
+    this.mobileHoldResetters.push(() => {
+      deactivate(null);
+      deactivateTouch(null);
+    });
     button.addEventListener("contextmenu", (event) => {
       event.preventDefault();
     });
@@ -5589,6 +5632,9 @@ export class GameRuntime {
     if (!this.mobileLookPadEl) {
       return;
     }
+
+    const supportsPointerEvents =
+      typeof window !== "undefined" && typeof window.PointerEvent !== "undefined";
 
     const finishLookDrag = (event = null) => {
       if (
@@ -5679,6 +5725,72 @@ export class GameRuntime {
     this.mobileLookPadEl.addEventListener("contextmenu", (event) => {
       event.preventDefault();
     });
+
+    if (!supportsPointerEvents) {
+      this.mobileLookPadEl.addEventListener(
+        "touchstart",
+        (event) => {
+          const touch = event.changedTouches?.[0];
+          if (!touch || !this.mobileEnabled || !this.canMovePlayer()) {
+            return;
+          }
+          if (event.cancelable) {
+            event.preventDefault();
+          }
+          this.mobileLookPointerId = touch.identifier;
+          this.mobileLookLastX = touch.clientX;
+          this.mobileLookLastY = touch.clientY;
+          this.mobileLookPadEl?.classList.add("active");
+        },
+        { passive: false }
+      );
+
+      document.addEventListener(
+        "touchmove",
+        (event) => {
+          if (!this.mobileEnabled || this.mobileLookPointerId === null) {
+            return;
+          }
+          const touch = Array.from(event.changedTouches ?? []).find(
+            (entry) => entry.identifier === this.mobileLookPointerId
+          );
+          if (!touch) {
+            return;
+          }
+          if (event.cancelable) {
+            event.preventDefault();
+          }
+          const deltaX = touch.clientX - this.mobileLookLastX;
+          const deltaY = touch.clientY - this.mobileLookLastY;
+          this.mobileLookLastX = touch.clientX;
+          this.mobileLookLastY = touch.clientY;
+          this.yaw -= deltaX * MOBILE_RUNTIME_SETTINGS.lookSensitivityX;
+          this.pitch -= deltaY * MOBILE_RUNTIME_SETTINGS.lookSensitivityY;
+          this.pitch = THREE.MathUtils.clamp(this.pitch, -1.52, 1.52);
+        },
+        { passive: false }
+      );
+
+      const finishTouchLookDrag = (event) => {
+        if (this.mobileLookPointerId === null) {
+          return;
+        }
+        const matched = Array.from(event?.changedTouches ?? []).some(
+          (entry) => entry.identifier === this.mobileLookPointerId
+        );
+        if (!matched) {
+          return;
+        }
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        this.mobileLookPointerId = null;
+        this.mobileLookPadEl?.classList.remove("active");
+      };
+
+      document.addEventListener("touchend", finishTouchLookDrag, { passive: false });
+      document.addEventListener("touchcancel", finishTouchLookDrag, { passive: false });
+    }
   }
 
   setChatOpen(open) {

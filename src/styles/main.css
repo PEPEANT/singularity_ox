@@ -316,11 +316,13 @@ canvas {
 
 .mobile-move-btn {
   border: 1px solid rgba(167, 204, 233, 0.62);
-  border-radius: 999px;
+  border-radius: 50%;
   background: rgba(10, 24, 40, 0.86);
   color: #e6f5ff;
   font: 800 0.95rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
   letter-spacing: 0.02em;
+  width: 100%;
+  height: 100%;
   aspect-ratio: 1 / 1;
   padding: 0;
   pointer-events: auto;
@@ -368,6 +370,21 @@ canvas {
   text-align: center;
 }
 
+#mobile-roster-btn,
+#mobile-chat-toggle-btn {
+  position: fixed;
+  right: max(14px, env(safe-area-inset-right));
+  z-index: 46;
+}
+
+#mobile-roster-btn {
+  top: max(14px, env(safe-area-inset-top));
+}
+
+#mobile-chat-toggle-btn {
+  top: calc(max(14px, env(safe-area-inset-top)) + 64px);
+}
+
 #mobile-roster-btn.active,
 #mobile-chat-toggle-btn.active,
 #mobile-run-btn.active,
@@ -380,12 +397,11 @@ canvas {
 
 #mobile-look-pad {
   position: fixed;
-  right: max(14px, env(safe-area-inset-right));
-  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 264px);
-  z-index: 44;
-  width: min(44vw, 250px);
-  height: min(24vh, 182px);
-  min-height: 118px;
+  inset: 0;
+  z-index: 20;
+  width: auto;
+  height: auto;
+  min-height: 0;
   display: grid;
   place-items: center;
   border: 0;
@@ -397,7 +413,7 @@ canvas {
 }
 
 #mobile-look-pad.active {
-  background: rgba(17, 40, 62, 0.12);
+  background: rgba(17, 40, 62, 0.08);
 }
 
 .quiz-controls-head {
@@ -1248,13 +1264,13 @@ canvas {
 }
 
 .tool-key {
-  min-width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid rgba(174, 205, 234, 0.48);
-  border-radius: 5px;
+  border-radius: 50%;
   font-size: 0.64rem;
   color: #9ec8ed;
 }
@@ -1665,12 +1681,22 @@ canvas {
     font-size: 0.55rem;
   }
 
-  #mobile-look-pad {
+  #mobile-roster-btn,
+  #mobile-chat-toggle-btn {
     right: max(8px, env(safe-area-inset-right));
-    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 236px);
-    width: min(46vw, 240px);
-    height: min(22vh, 176px);
-    min-height: 112px;
+  }
+
+  #mobile-roster-btn {
+    top: max(8px, env(safe-area-inset-top));
+  }
+
+  #mobile-chat-toggle-btn {
+    top: calc(max(8px, env(safe-area-inset-top)) + 58px);
+  }
+
+  #mobile-look-pad {
+    inset: 0;
+    min-height: 0;
   }
 }
 
@@ -1685,7 +1711,7 @@ canvas {
   }
 
   #mobile-look-pad {
-    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 214px);
-    min-height: 100px;
+    inset: 0;
+    min-height: 0;
   }
 }
