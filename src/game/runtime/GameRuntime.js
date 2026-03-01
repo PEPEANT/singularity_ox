@@ -363,6 +363,7 @@ export class GameRuntime {
       questionIndex: 0,
       totalQuestions: 0,
       lockAt: 0,
+      lockResolveAt: 0,
       questionText: "",
       survivors: 0,
       myScore: 0
@@ -1955,6 +1956,15 @@ export class GameRuntime {
       return false;
     }
     if (this.localAdmissionWaiting) {
+      return false;
+    }
+    const quizPhase = String(this.quizState.phase ?? "");
+    if (
+      this.quizState.active &&
+      this.localQuizAlive &&
+      !this.localSpectatorMode &&
+      (quizPhase === "lock" || quizPhase === "locked")
+    ) {
       return false;
     }
     if (this.quizState.active && !this.localQuizAlive && !this.localSpectatorMode) {
@@ -8267,6 +8277,7 @@ export class GameRuntime {
     this.quizState.questionIndex = 0;
     this.quizState.totalQuestions = 0;
     this.quizState.lockAt = 0;
+    this.quizState.lockResolveAt = 0;
     this.quizState.questionText = "";
     this.quizState.survivors = 0;
     this.quizState.myScore = 0;
@@ -8340,6 +8351,7 @@ export class GameRuntime {
     this.quizState.questionIndex = 0;
     this.quizState.totalQuestions = Math.max(0, Math.trunc(Number(payload.totalQuestions) || 0));
     this.quizState.lockAt = 0;
+    this.quizState.lockResolveAt = 0;
     this.quizState.questionText = "";
     this.localQuizAlive = true;
     this.closeQuizReviewModal();
@@ -8387,6 +8399,7 @@ export class GameRuntime {
       Math.trunc(Number(payload.totalQuestions) || this.quizState.totalQuestions || 1)
     );
     this.quizState.lockAt = Math.max(0, Math.trunc(Number(payload.lockAt) || 0));
+    this.quizState.lockResolveAt = 0;
     this.quizState.questionText = String(payload.text ?? "").trim().slice(0, 180);
     this.quizState.autoStartsAt = 0;
     this.quizState.prepareEndsAt = 0;
@@ -8409,12 +8422,18 @@ export class GameRuntime {
   handleQuizLock(payload = {}) {
     this.quizState.phase = "lock";
     this.quizState.lockAt = 0;
+    this.quizState.lockResolveAt = Math.max(0, Math.trunc(Number(payload.resolveAt) || 0));
     this.setOppositeBillboardResultVisible(false);
     const index = Math.max(
       this.quizState.questionIndex,
       Math.trunc(Number(payload.index) || this.quizState.questionIndex || 0)
     );
     this.quizState.questionIndex = index;
+    if (this.localQuizAlive && !this.localSpectatorMode) {
+      this.keys.clear();
+      this.releaseMobileInputs();
+      this.emitImmediateLocalSync("quiz-lock");
+    }
     this.appendChatLine("시스템", `문항 ${index} 잠금. 판정 중...`, "system");
     this.renderCenterBillboard({
       layout: "explanation",
@@ -8430,6 +8449,7 @@ export class GameRuntime {
 
   handleQuizResult(payload = {}) {
     this.quizState.phase = "result";
+    this.quizState.lockResolveAt = 0;
     const index = Math.max(
       this.quizState.questionIndex,
       Math.trunc(Number(payload.index) || this.quizState.questionIndex || 0)
@@ -8474,6 +8494,7 @@ export class GameRuntime {
 
   handleQuizScore(payload = {}) {
     const hasOwn = (key) => Object.prototype.hasOwnProperty.call(payload, key);
+    const prevPhase = String(this.quizState.phase ?? "idle");
     if (hasOwn("active")) {
       this.quizState.active = Boolean(payload.active);
     }
@@ -8482,6 +8503,16 @@ export class GameRuntime {
       if (this.quizState.phase !== "result") {
         this.setOppositeBillboardResultVisible(false);
       }
+    }
+    if (
+      prevPhase !== this.quizState.phase &&
+      (this.quizState.phase === "lock" || this.quizState.phase === "locked") &&
+      this.localQuizAlive &&
+      !this.localSpectatorMode
+    ) {
+      this.keys.clear();
+      this.releaseMobileInputs();
+      this.emitImmediateLocalSync("quiz-score-lock");
     }
     if (hasOwn("autoMode")) {
       this.quizState.autoMode = payload.autoMode !== false;
@@ -8508,6 +8539,10 @@ export class GameRuntime {
     );
     this.quizState.survivors = Math.max(0, Math.trunc(Number(payload.survivors) || 0));
     this.quizState.lockAt = Math.max(0, Math.trunc(Number(payload.lockAt) || this.quizState.lockAt || 0));
+    this.quizState.lockResolveAt = Math.max(
+      0,
+      Math.trunc(Number(payload.lockResolveAt) || this.quizState.lockResolveAt || 0)
+    );
 
     const myId = String(this.localPlayerId ?? "");
     const leaderboard = Array.isArray(payload.leaderboard) ? payload.leaderboard : [];
@@ -8630,6 +8665,7 @@ export class GameRuntime {
     this.quizState.active = false;
     this.quizState.phase = "ended";
     this.quizState.lockAt = 0;
+    this.quizState.lockResolveAt = 0;
     this.quizState.prepareEndsAt = 0;
     this.centerBillboardLastCountdown = null;
     this.setOppositeBillboardResultVisible(false);
@@ -10486,26 +10522,34 @@ export class GameRuntime {
     label?.material?.dispose?.();
   }
 
-  emitLocalSync(delta) {
+  emitImmediateLocalSync(tag = "manual") {
     if (!this.socket || !this.networkConnected) {
-      return;
+      return false;
     }
-
-    this.remoteSyncClock += delta;
-    if (this.remoteSyncClock < this.networkSyncInterval) {
-      return;
-    }
-    this.remoteSyncClock = 0;
+    const safeTag = String(tag ?? "").trim().slice(0, 24);
     this.localSyncSeq = (this.localSyncSeq + 1) % 2147483647;
-
     this.socket.emit("player:sync", {
       x: this.playerPosition.x,
       y: this.playerPosition.y,
       z: this.playerPosition.z,
       yaw: this.yaw,
       pitch: this.pitch,
-      s: this.localSyncSeq
+      s: this.localSyncSeq,
+      t: safeTag || "manual"
     });
+    this.remoteSyncClock = 0;
+    return true;
+  }
+
+  emitLocalSync(delta) {
+    if (!this.socket || !this.networkConnected) {
+      return;
+    }
+    this.remoteSyncClock += delta;
+    if (this.remoteSyncClock < this.networkSyncInterval) {
+      return;
+    }
+    this.emitImmediateLocalSync("interval");
   }
 
   updateShadowMapRefresh(delta) {

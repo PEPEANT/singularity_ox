@@ -90,6 +90,10 @@ const SERVER_CORRECTION_COOLDOWN_MS = 140;
 const QUIZ_DEFAULT_LOCK_SECONDS = 30;
 const QUIZ_MIN_LOCK_SECONDS = 30;
 const QUIZ_MAX_LOCK_SECONDS = 3600;
+const QUIZ_LOCK_SYNC_GRACE_MS = Math.max(
+  0,
+  Math.min(1200, Math.trunc(Number(process.env.QUIZ_LOCK_SYNC_GRACE_MS ?? 180) || 180))
+);
 const QUIZ_MAX_QUESTIONS = 50;
 const QUIZ_TEXT_MAX_LENGTH = 180;
 const QUIZ_EXPLANATION_MAX_LENGTH = 720;
@@ -234,6 +238,7 @@ function createQuizState() {
     questions: [],
     lockSeconds: QUIZ_DEFAULT_LOCK_SECONDS,
     lockAt: 0,
+    lockResolveAt: 0,
     lockTimer: null,
     nextTimer: null,
     lastResult: null
@@ -1712,6 +1717,7 @@ function clearQuizLockTimer(quiz) {
     clearTimeout(quiz.nextTimer);
     quiz.nextTimer = null;
   }
+  quiz.lockResolveAt = 0;
 }
 
 function resetQuizState(room) {
@@ -1733,6 +1739,7 @@ function resetQuizState(room) {
   quiz.questions = [];
   quiz.lockSeconds = QUIZ_DEFAULT_LOCK_SECONDS;
   quiz.lockAt = 0;
+  quiz.lockResolveAt = 0;
   quiz.lastResult = null;
 }
 
@@ -1988,6 +1995,7 @@ function emitQuizScore(room, reason = "update", targetSocket = null) {
     questionIndex: Math.max(0, Number(quiz.questionIndex) + 1),
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
     lockAt: Number(quiz.lockAt ?? 0),
+    lockResolveAt: Number(quiz.lockResolveAt ?? 0),
     survivors: countQuizSurvivors(room),
     leaderboard: buildQuizLeaderboard(room),
     updatedAt: Date.now()
@@ -2124,6 +2132,16 @@ function emitQuizSnapshot(socket, room) {
       socket.emit("quiz:question", questionPayload);
     }
   }
+  if (quiz.phase === "lock" && quiz.currentQuestion) {
+    socket.emit("quiz:lock", {
+      id: quiz.currentQuestion.id,
+      index: Math.max(1, Number(quiz.questionIndex) + 1),
+      totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
+      lockedAt: Math.max(0, Number(quiz.lockResolveAt || 0) - QUIZ_LOCK_SYNC_GRACE_MS),
+      resolveAt: Number(quiz.lockResolveAt || 0),
+      graceMs: QUIZ_LOCK_SYNC_GRACE_MS
+    });
+  }
 
   if (quiz.lastResult) {
     socket.emit("quiz:result", quiz.lastResult);
@@ -2236,6 +2254,7 @@ function finishQuiz(room, reason = "finished") {
   quiz.active = false;
   quiz.phase = "ended";
   quiz.lockAt = 0;
+  quiz.lockResolveAt = 0;
   quiz.prepareEndsAt = 0;
   quiz.endedAt = Date.now();
 
@@ -2250,29 +2269,21 @@ function finishQuiz(room, reason = "finished") {
   }
 }
 
-function evaluateQuizQuestion(room) {
+function finalizeQuizQuestion(room, lockedAt = Date.now()) {
   if (!room) {
     return;
   }
 
   const quiz = getRoomQuiz(room);
-  if (!quiz.active || quiz.phase !== "question" || !quiz.currentQuestion) {
+  if (!quiz.active || quiz.phase !== "lock" || !quiz.currentQuestion) {
     return;
   }
 
   clearQuizLockTimer(quiz);
 
   const question = quiz.currentQuestion;
-  const lockedAt = Date.now();
-  quiz.phase = "locked";
-  quiz.lockAt = 0;
-
-  io.to(room.code).emit("quiz:lock", {
-    id: question.id,
-    index: Math.max(1, Number(quiz.questionIndex) + 1),
-    totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
-    lockedAt
-  });
+  const normalizedLockedAt = Math.max(0, Math.trunc(Number(lockedAt) || Date.now()));
+  const resolvedAt = Date.now();
 
   const correctPlayerIds = [];
   const eliminatedPlayerIds = [];
@@ -2318,7 +2329,9 @@ function evaluateQuizQuestion(room) {
     explanation: String(question.explanation ?? "").slice(0, QUIZ_EXPLANATION_MAX_LENGTH),
     index: Math.max(1, Number(quiz.questionIndex) + 1),
     totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
-    lockedAt,
+    lockedAt: normalizedLockedAt,
+    resolvedAt,
+    lockGraceMs: Math.max(0, resolvedAt - normalizedLockedAt),
     survivorCount,
     correctPlayerIds,
     eliminatedPlayerIds,
@@ -2363,6 +2376,41 @@ function evaluateQuizQuestion(room) {
   quiz.phase = "waiting-next";
   emitQuizScore(room, "result");
   scheduleQuizNextQuestion(room);
+}
+
+function evaluateQuizQuestion(room) {
+  if (!room) {
+    return false;
+  }
+
+  const quiz = getRoomQuiz(room);
+  if (!quiz.active || quiz.phase !== "question" || !quiz.currentQuestion) {
+    return false;
+  }
+
+  clearQuizLockTimer(quiz);
+
+  const question = quiz.currentQuestion;
+  const lockedAt = Date.now();
+  const resolveAt = lockedAt + QUIZ_LOCK_SYNC_GRACE_MS;
+  quiz.phase = "lock";
+  quiz.lockAt = 0;
+  quiz.lockResolveAt = resolveAt;
+
+  io.to(room.code).emit("quiz:lock", {
+    id: question.id,
+    index: Math.max(1, Number(quiz.questionIndex) + 1),
+    totalQuestions: Math.max(0, Number(quiz.totalQuestions) || 0),
+    lockedAt,
+    resolveAt,
+    graceMs: QUIZ_LOCK_SYNC_GRACE_MS
+  });
+  emitQuizScore(room, "lock");
+
+  quiz.lockTimer = setTimeout(() => {
+    finalizeQuizQuestion(room, lockedAt);
+  }, QUIZ_LOCK_SYNC_GRACE_MS);
+  return true;
 }
 
 function resetPlayersForQuestionRewind(room, reason = "quiz-prev-reset") {
@@ -2442,6 +2490,7 @@ function rewindQuizToPreviousQuestion(room, lockSecondsOverride = null) {
   clearQuizLockTimer(quiz);
   quiz.phase = "start";
   quiz.lockAt = 0;
+  quiz.lockResolveAt = 0;
   quiz.prepareEndsAt = 0;
   quiz.lastResult = null;
 
@@ -2627,6 +2676,7 @@ function startQuiz(room, hostSocketId, payload = {}) {
   quiz.questions = questions;
   quiz.lockSeconds = lockSeconds;
   quiz.lockAt = 0;
+  quiz.lockResolveAt = 0;
   quiz.lastResult = null;
 
   for (const player of room.players.values()) {
