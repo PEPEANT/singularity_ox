@@ -39,16 +39,17 @@ const CENTER_BILLBOARD_BASE_HEIGHT = 512;
 const OPPOSITE_BILLBOARD_BASE_WIDTH = 1280;
 const OPPOSITE_BILLBOARD_BASE_HEIGHT = 720;
 const DYNAMIC_RESOLUTION_SETTINGS = Object.freeze({
-  sampleWindowSeconds: 1.05,
-  downshiftFps: 43,
+  sampleWindowSeconds: 1.2,
+  downshiftFps: 41,
   upshiftFps: 61,
-  downshiftStep: 0.06,
-  upshiftStep: 0.04,
-  downshiftCooldownSeconds: 2.2,
-  upshiftCooldownSeconds: 2.6,
-  idleCooldownSeconds: 1.2,
-  ratioEpsilon: 0.03,
-  stableSamplesRequired: 3
+  downshiftStep: 0.08,
+  upshiftStep: 0.06,
+  downshiftCooldownSeconds: 3.2,
+  upshiftCooldownSeconds: 3.6,
+  idleCooldownSeconds: 1.6,
+  ratioEpsilon: 0.05,
+  stableSamplesRequired: 4,
+  applyDelaySeconds: 0.3
 });
 const ROUND_OVERLAY_SETTINGS = Object.freeze({
   prepareDurationSeconds: 3.2,
@@ -58,12 +59,12 @@ const ROUND_OVERLAY_SETTINGS = Object.freeze({
   fireworkParticleCountMax: 44
 });
 const MOBILE_RUNTIME_SETTINGS = Object.freeze({
-  maxPixelRatio: 1.2,
+  maxPixelRatio: 1.35,
   minNetworkSyncInterval: 0.12,
-  lookSensitivityX: 0.0092,
-  lookSensitivityY: 0.0082,
-  fovLandscape: 92,
-  fovPortrait: 100,
+  lookSensitivityX: 0.0106,
+  lookSensitivityY: 0.0094,
+  fovLandscape: 96,
+  fovPortrait: 104,
   hudRefreshIntervalSeconds: 0.32,
   roundOverlaySpawnIntervalSeconds: 0.46,
   roundOverlayParticleScale: 0.58
@@ -237,7 +238,9 @@ export class GameRuntime {
       frameCount: 0,
       cooldown: 0,
       downshiftSamples: 0,
-      upshiftSamples: 0
+      upshiftSamples: 0,
+      pendingRatio: null,
+      pendingApplyAt: 0
     };
 
     this.fpsState = {
@@ -248,6 +251,8 @@ export class GameRuntime {
     this.hudRefreshClock = 0;
     this.quizBillboardRefreshClock = 0;
     this.shadowRefreshClock = 0;
+    this.shadowRefreshIdleClock = 0;
+    this.pendingShadowRefresh = false;
     this.shadowRefreshReference = {
       ready: false,
       x: 0,
@@ -256,6 +261,9 @@ export class GameRuntime {
       yaw: 0,
       pitch: 0
     };
+    this.remoteAvatarBodyGeometry = null;
+    this.remoteAvatarHeadGeometry = null;
+    this.boundLoop = this.loop.bind(this);
 
     this.socket = null;
     this.socketEndpoint = null;
@@ -664,7 +672,7 @@ export class GameRuntime {
       fps: 0
     });
 
-    this.loop();
+    this.boundLoop();
   }
 
   setupWorld() {
@@ -7178,43 +7186,30 @@ export class GameRuntime {
     let remote = this.remotePlayers.get(id);
     if (!remote) {
       const root = new THREE.Group();
+      const geometries = this.getRemoteAvatarGeometries();
+      const canCastShadow = !this.mobileEnabled && this.renderer.shadowMap.enabled;
+      const defaultRemoteName = this.formatPlayerName("PLAYER");
 
       const body = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.2, 0.64, this.mobileEnabled ? 2 : 4, this.mobileEnabled ? 6 : 8),
-        new THREE.MeshStandardMaterial({
-          color: 0x5f7086,
-          roughness: 0.44,
-          metalness: 0.06,
-          emissive: 0x2d4057,
-          emissiveIntensity: 0.18
-        })
+        geometries.body,
+        this.createRemoteAvatarMaterial("body")
       );
       body.position.y = 0.92;
-      body.castShadow = true;
-      body.receiveShadow = true;
+      body.castShadow = canCastShadow;
+      body.receiveShadow = canCastShadow;
 
       const head = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, this.mobileEnabled ? 8 : 12, this.mobileEnabled ? 8 : 12),
-        new THREE.MeshStandardMaterial({
-          color: 0x7e8e9b,
-          roughness: 0.36,
-          metalness: 0.05,
-          emissive: 0x3e4f63,
-          emissiveIntensity: 0.2
-        })
+        geometries.head,
+        this.createRemoteAvatarMaterial("head")
       );
       head.position.y = 1.62;
-      head.castShadow = true;
-      head.receiveShadow = true;
+      head.castShadow = canCastShadow;
+      head.receiveShadow = canCastShadow;
 
-      const nameLabel = this.createTextLabel("플레이어", "name");
+      const nameLabel = this.createTextLabel(defaultRemoteName, "name");
       nameLabel.position.set(0, 2.12, 0);
 
-      const chatLabel = this.createTextLabel("", "chat");
-      chatLabel.position.set(0, 2.5, 0);
-      chatLabel.visible = false;
-
-      root.add(body, head, nameLabel, chatLabel);
+      root.add(body, head, nameLabel);
       root.position.set(0, 0, 0);
       this.scene.add(root);
 
@@ -7223,8 +7218,8 @@ export class GameRuntime {
         body,
         head,
         nameLabel,
-        chatLabel,
-        name: "플레이어",
+        chatLabel: null,
+        name: defaultRemoteName,
         alive: true,
         spectator: false,
         admitted: true,
@@ -7316,8 +7311,9 @@ export class GameRuntime {
 
     this.disposeTextLabel(remote.nameLabel);
     this.disposeTextLabel(remote.chatLabel);
+    remote.body?.material?.dispose?.();
+    remote.head?.material?.dispose?.();
     this.scene.remove(remote.mesh);
-    disposeMeshTree(remote.mesh);
     this.remotePlayers.delete(id);
   }
 
@@ -7446,7 +7442,7 @@ export class GameRuntime {
       remote.mesh.position.lerp(remote.targetPosition, alpha);
       remote.mesh.rotation.y = lerpAngle(remote.mesh.rotation.y, remote.targetYaw, alpha);
 
-      if (remote.chatLabel.visible && now >= remote.chatExpireAt) {
+      if (remote.chatLabel?.visible && now >= remote.chatExpireAt) {
         remote.chatLabel.visible = false;
       }
 
@@ -7512,8 +7508,12 @@ export class GameRuntime {
       this.setTextLabel(remote.nameLabel, senderName, "name");
     }
 
-    this.setTextLabel(remote.chatLabel, text, "chat");
-    remote.chatLabel.visible = true;
+    const chatLabel = this.ensureRemoteChatLabel(remote);
+    if (!chatLabel) {
+      return;
+    }
+    this.setTextLabel(chatLabel, text, "chat");
+    chatLabel.visible = true;
     remote.chatExpireAt = performance.now() + this.chatBubbleLifetimeMs;
   }
 
@@ -9500,10 +9500,79 @@ export class GameRuntime {
     return name;
   }
 
+  getRemoteAvatarGeometries() {
+    if (!this.remoteAvatarBodyGeometry) {
+      this.remoteAvatarBodyGeometry = new THREE.CapsuleGeometry(
+        0.2,
+        0.64,
+        this.mobileEnabled ? 2 : 4,
+        this.mobileEnabled ? 6 : 8
+      );
+    }
+    if (!this.remoteAvatarHeadGeometry) {
+      this.remoteAvatarHeadGeometry = new THREE.SphereGeometry(
+        0.22,
+        this.mobileEnabled ? 8 : 12,
+        this.mobileEnabled ? 8 : 12
+      );
+    }
+    return {
+      body: this.remoteAvatarBodyGeometry,
+      head: this.remoteAvatarHeadGeometry
+    };
+  }
+
+  createRemoteAvatarMaterial(kind = "body") {
+    const palette =
+      kind === "head"
+        ? {
+            color: 0x7e8e9b,
+            roughness: 0.36,
+            metalness: 0.05,
+            emissive: 0x3e4f63,
+            emissiveIntensity: 0.2
+          }
+        : {
+            color: 0x5f7086,
+            roughness: 0.44,
+            metalness: 0.06,
+            emissive: 0x2d4057,
+            emissiveIntensity: 0.18
+          };
+    if (this.mobileEnabled) {
+      return new THREE.MeshLambertMaterial({
+        color: palette.color,
+        emissive: palette.emissive,
+        emissiveIntensity: palette.emissiveIntensity
+      });
+    }
+    return new THREE.MeshStandardMaterial(palette);
+  }
+
+  ensureRemoteChatLabel(remote) {
+    if (!remote) {
+      return null;
+    }
+    if (remote.chatLabel) {
+      return remote.chatLabel;
+    }
+    const chatLabel = this.createTextLabel("", "chat");
+    chatLabel.position.set(0, 2.5, 0);
+    chatLabel.visible = false;
+    remote.mesh?.add(chatLabel);
+    remote.chatLabel = chatLabel;
+    return chatLabel;
+  }
+
   createTextLabel(text, kind = "name") {
     const canvas = document.createElement("canvas");
-    canvas.width = 512;
-    canvas.height = kind === "chat" ? 144 : 112;
+    if (this.mobileEnabled) {
+      canvas.width = kind === "chat" ? 384 : 320;
+      canvas.height = kind === "chat" ? 112 : 92;
+    } else {
+      canvas.width = 512;
+      canvas.height = kind === "chat" ? 144 : 112;
+    }
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -9568,7 +9637,11 @@ export class GameRuntime {
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.fillStyle = kind === "chat" ? "#f0f8ff" : "#e8f8ff";
-      context.font = kind === "chat" ? "600 40px Bahnschrift" : "700 38px Bahnschrift";
+      if (this.mobileEnabled) {
+        context.font = kind === "chat" ? "600 32px Bahnschrift" : "700 30px Bahnschrift";
+      } else {
+        context.font = kind === "chat" ? "600 40px Bahnschrift" : "700 38px Bahnschrift";
+      }
       context.fillText(text, width * 0.5, height * 0.53);
     }
 
@@ -9599,6 +9672,7 @@ export class GameRuntime {
   disposeTextLabel(label) {
     const map = label?.material?.map;
     map?.dispose?.();
+    label?.material?.dispose?.();
   }
 
   emitLocalSync(delta) {
@@ -9628,6 +9702,7 @@ export class GameRuntime {
       return;
     }
 
+    this.shadowRefreshClock += delta;
     const reference = this.shadowRefreshReference;
     if (!reference?.ready) {
       reference.ready = true;
@@ -9636,11 +9711,6 @@ export class GameRuntime {
       reference.z = this.playerPosition.z;
       reference.yaw = this.yaw;
       reference.pitch = this.pitch;
-    }
-
-    this.shadowRefreshClock += delta;
-    if (this.shadowRefreshClock < RUNTIME_TUNING.SHADOW_UPDATE_INTERVAL_SECONDS) {
-      return;
     }
 
     const dx = this.playerPosition.x - reference.x;
@@ -9654,19 +9724,34 @@ export class GameRuntime {
       this.pointerLocked &&
       performance.now() - this.lastLookInputAt <
         DESKTOP_RUNTIME_SETTINGS.orientationCorrectionInputLockMs;
-    const movedEnough = moveDistanceSq >= 0.12;
-    const turnedEnough = !recentLookInput && (yawDelta >= 0.035 || pitchDelta >= 0.024);
-    if (!movedEnough && !turnedEnough) {
-      this.shadowRefreshClock = RUNTIME_TUNING.SHADOW_UPDATE_INTERVAL_SECONDS * 0.7;
+    const movedEnough = moveDistanceSq >= 0.2;
+    const turnedEnough = !recentLookInput && (yawDelta >= 0.05 || pitchDelta >= 0.034);
+    if (movedEnough || turnedEnough) {
+      this.pendingShadowRefresh = true;
+      this.shadowRefreshIdleClock = 0;
+      reference.x = this.playerPosition.x;
+      reference.y = this.playerPosition.y;
+      reference.z = this.playerPosition.z;
+      reference.yaw = this.yaw;
+      reference.pitch = this.pitch;
+      return;
+    }
+
+    if (!this.pendingShadowRefresh) {
+      return;
+    }
+
+    this.shadowRefreshIdleClock += delta;
+    if (this.shadowRefreshIdleClock < RUNTIME_TUNING.SHADOW_UPDATE_SETTLE_SECONDS) {
+      return;
+    }
+    if (this.shadowRefreshClock < RUNTIME_TUNING.SHADOW_UPDATE_INTERVAL_SECONDS) {
       return;
     }
 
     this.shadowRefreshClock = 0;
-    reference.x = this.playerPosition.x;
-    reference.y = this.playerPosition.y;
-    reference.z = this.playerPosition.z;
-    reference.yaw = this.yaw;
-    reference.pitch = this.pitch;
+    this.shadowRefreshIdleClock = 0;
+    this.pendingShadowRefresh = false;
     this.renderer.shadowMap.needsUpdate = true;
     this.markPerformanceFlag("shadowRefresh");
   }
@@ -9892,7 +9977,14 @@ export class GameRuntime {
     const renderMs = performance.now() - renderStart;
     const frameMs = performance.now() - frameStart;
     this.reportPerformanceHitch(frameMs, renderMs);
-    requestAnimationFrame(() => this.loop());
+    requestAnimationFrame(this.boundLoop);
+  }
+
+  applyPixelRatio(ratio) {
+    this.renderer.setPixelRatio(ratio);
+    if (this.composer) {
+      this.composer.setPixelRatio(ratio);
+    }
   }
 
   updateDynamicResolution(delta) {
@@ -9953,14 +10045,29 @@ export class GameRuntime {
     }
 
     if (Math.abs(targetRatio - this.currentPixelRatio) < DYNAMIC_RESOLUTION_SETTINGS.ratioEpsilon) {
+      config.pendingRatio = null;
+      config.pendingApplyAt = 0;
       return;
     }
 
-    this.currentPixelRatio = Number(targetRatio.toFixed(2));
-    this.renderer.setPixelRatio(this.currentPixelRatio);
-    if (this.composer) {
-      this.composer.setPixelRatio(this.currentPixelRatio);
+    const roundedTargetRatio = Number(targetRatio.toFixed(2));
+    const now = performance.now();
+    if (
+      !Number.isFinite(config.pendingRatio) ||
+      Math.abs(roundedTargetRatio - config.pendingRatio) >= DYNAMIC_RESOLUTION_SETTINGS.ratioEpsilon
+    ) {
+      config.pendingRatio = roundedTargetRatio;
+      config.pendingApplyAt = now + DYNAMIC_RESOLUTION_SETTINGS.applyDelaySeconds * 1000;
+      return;
     }
+    if (now < config.pendingApplyAt) {
+      return;
+    }
+
+    this.currentPixelRatio = roundedTargetRatio;
+    this.applyPixelRatio(this.currentPixelRatio);
+    config.pendingRatio = null;
+    config.pendingApplyAt = 0;
     this.markPerformanceFlag("dynamicResolutionShift");
   }
 
@@ -9970,6 +10077,8 @@ export class GameRuntime {
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = shadowEnabled;
     this.shadowRefreshClock = 0;
+    this.shadowRefreshIdleClock = 0;
+    this.pendingShadowRefresh = false;
     if (this.shadowRefreshReference) {
       this.shadowRefreshReference.ready = false;
     }
@@ -10030,6 +10139,8 @@ export class GameRuntime {
     this.dynamicResolution.downshiftSamples = 0;
     this.dynamicResolution.upshiftSamples = 0;
     this.dynamicResolution.cooldown = 0;
+    this.dynamicResolution.pendingRatio = null;
+    this.dynamicResolution.pendingApplyAt = 0;
     this.networkSyncInterval = this.mobileEnabled
       ? Math.max(this.baseNetworkSyncInterval, MOBILE_RUNTIME_SETTINGS.minNetworkSyncInterval)
       : this.baseNetworkSyncInterval;
@@ -10044,10 +10155,7 @@ export class GameRuntime {
     const clampedRatio = THREE.MathUtils.clamp(this.currentPixelRatio, minPixelRatio, this.maxPixelRatio);
     if (Math.abs(clampedRatio - this.currentPixelRatio) > 0.01) {
       this.currentPixelRatio = Number(clampedRatio.toFixed(2));
-      this.renderer.setPixelRatio(this.currentPixelRatio);
-      if (this.composer) {
-        this.composer.setPixelRatio(this.currentPixelRatio);
-      }
+      this.applyPixelRatio(this.currentPixelRatio);
     }
 
     const viewportWidth = window.innerWidth;
