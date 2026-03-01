@@ -146,6 +146,7 @@
       <div id="mobile-move-pad" aria-label="이동 패드">
         <div id="mobile-move-thumb" aria-hidden="true"></div>
       </div>
+      <div id="mobile-chat-preview" class="hidden" aria-live="polite"></div>
       <div id="mobile-action-pad" aria-label="액션 패드">
         <button id="mobile-jump-btn" type="button">점프</button>
         <button id="mobile-run-btn" type="button">질주</button>
@@ -157,17 +158,21 @@
     <div id="mobile-look-pad" class="hidden" aria-hidden="true"></div>
 
     <div id="chat-ui" aria-label="채팅">
+      <div id="chat-header">
+        <strong id="chat-title">채팅</strong>
+        <button id="chat-close-btn" type="button">닫기</button>
+      </div>
       <div id="chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
       <div id="chat-controls" class="hidden">
         <input
           id="chat-input"
           type="text"
           maxlength="120"
-          placeholder="엔터로 전송"
+          placeholder="메시지 입력 후 전송"
           autocomplete="off"
         />
         <button id="chat-send-btn" type="button">전송</button>
-        <button id="chat-hide-btn" type="button">숨기기</button>
+        <button id="chat-hide-btn" type="button">접기</button>
       </div>
     </div>
 
