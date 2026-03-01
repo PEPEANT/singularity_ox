@@ -77,6 +77,25 @@
         <input id="portal-target-input" type="url" placeholder="https://포탈-이동-링크" />
         <button id="portal-target-save-btn" type="button">포탈 링크 저장</button>
       </div>
+      <div class="quiz-controls-row billboard-media-row">
+        <select id="billboard-target-select">
+          <option value="board1">전광판 1 (해설)</option>
+          <option value="board2">전광판 2 (진행)</option>
+        </select>
+        <select id="billboard-media-preset-select">
+          <option value="none">미디어 없음</option>
+          <option value="gemini-image">기본 이미지 (Gemini)</option>
+          <option value="sample-mp3">기본 오디오 (MP3)</option>
+        </select>
+        <input
+          id="billboard-media-url-input"
+          type="url"
+          placeholder="커스텀 미디어/MP3 URL (선택)"
+          autocomplete="off"
+        />
+        <button id="billboard-media-apply-btn" type="button">전광판 적용</button>
+        <button id="billboard-media-clear-btn" type="button">중지</button>
+      </div>
       <div id="quiz-controls-note">방장이 퀴즈를 제어할 수 있습니다.</div>
     </div>
 

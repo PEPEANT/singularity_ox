@@ -589,6 +589,36 @@ body.mobile-roster-focus #mobile-look-pad {
   gap: 5px;
 }
 
+#quiz-controls select,
+#billboard-media-url-input {
+  width: 100%;
+  height: 33px;
+  padding: 0 9px;
+  border: 1px solid rgba(171, 208, 238, 0.66);
+  border-radius: 8px;
+  background: rgba(10, 26, 42, 0.92);
+  color: #edf6ff;
+  font: 700 0.63rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+  outline: none;
+}
+
+#quiz-controls select:focus,
+#billboard-media-url-input:focus {
+  border-color: rgba(203, 233, 255, 0.95);
+  box-shadow: 0 0 0 2px rgba(134, 179, 218, 0.22);
+}
+
+.billboard-media-row {
+  grid-template-columns: 1fr;
+  gap: 5px;
+}
+
+#billboard-media-apply-btn,
+#billboard-media-clear-btn {
+  height: 32px;
+}
+
 #portal-target-input {
   width: 100%;
   height: 33px;
@@ -1684,6 +1714,12 @@ body.mobile-chat-focus #chat-header {
   #portal-target-input {
     height: 31px;
     font-size: 0.62rem;
+  }
+
+  #quiz-controls select,
+  #billboard-media-url-input {
+    height: 31px;
+    font-size: 0.61rem;
   }
 
   #hub-billboard {

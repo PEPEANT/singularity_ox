@@ -106,6 +106,8 @@ const CHAT_HISTORY_MAX_ENTRIES = Math.max(
   20,
   Math.min(200, Math.trunc(Number(process.env.CHAT_HISTORY_MAX_ENTRIES ?? 80) || 80))
 );
+const BILLBOARD_MEDIA_URL_MAX_LENGTH = 420;
+const BILLBOARD_MEDIA_VISUAL_TYPES = new Set(["none", "video", "image"]);
 
 const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
   Object.freeze({
@@ -241,6 +243,7 @@ function createRoom(code, persistent = false) {
     hostId: null,
     players: new Map(),
     portalTargetUrl: DEFAULT_PORTAL_TARGET_URL,
+    billboardMedia: createDefaultBillboardMediaState(),
     entryGate: {
       portalOpen: false,
       openedAt: 0,
@@ -581,6 +584,97 @@ function sanitizePortalTargetUrl(raw) {
   } catch {
     return "";
   }
+}
+
+function sanitizeBillboardMediaUrl(raw) {
+  const value = String(raw ?? "")
+    .trim()
+    .slice(0, BILLBOARD_MEDIA_URL_MAX_LENGTH);
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("/")) {
+    return value;
+  }
+  try {
+    const target = new URL(value);
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      return "";
+    }
+    return target.toString().slice(0, BILLBOARD_MEDIA_URL_MAX_LENGTH);
+  } catch {
+    return "";
+  }
+}
+
+function createDefaultBillboardMediaState() {
+  return {
+    board1: { visualType: "none", visualUrl: "", audioUrl: "" },
+    board2: { visualType: "none", visualUrl: "", audioUrl: "" }
+  };
+}
+
+function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null) {
+  const fallback =
+    fallbackEntry && typeof fallbackEntry === "object"
+      ? fallbackEntry
+      : { visualType: "none", visualUrl: "", audioUrl: "" };
+  const entry = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
+  const requestedType = String(entry.visualType ?? entry.type ?? fallback.visualType ?? "none")
+    .trim()
+    .toLowerCase();
+  const visualType = BILLBOARD_MEDIA_VISUAL_TYPES.has(requestedType)
+    ? requestedType
+    : String(fallback.visualType ?? "none");
+  const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
+  const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+  if (visualType === "none") {
+    return { visualType: "none", visualUrl: "", audioUrl };
+  }
+  if (!visualUrl) {
+    return { visualType: "none", visualUrl: "", audioUrl };
+  }
+  return { visualType, visualUrl, audioUrl };
+}
+
+function ensureRoomBillboardMedia(room) {
+  if (!room || typeof room !== "object") {
+    return createDefaultBillboardMediaState();
+  }
+  if (!room.billboardMedia || typeof room.billboardMedia !== "object") {
+    room.billboardMedia = createDefaultBillboardMediaState();
+  }
+  room.billboardMedia.board1 = sanitizeBillboardMediaEntry(room.billboardMedia.board1);
+  room.billboardMedia.board2 = sanitizeBillboardMediaEntry(room.billboardMedia.board2);
+  return room.billboardMedia;
+}
+
+function sanitizeRoomBillboardMediaPayload(payload = {}, current = null) {
+  const baseState =
+    current && typeof current === "object"
+      ? {
+          board1: sanitizeBillboardMediaEntry(current.board1),
+          board2: sanitizeBillboardMediaEntry(current.board2)
+        }
+      : createDefaultBillboardMediaState();
+  const source = payload && typeof payload === "object" ? payload : {};
+  const target = String(source.target ?? source.board ?? "").trim().toLowerCase();
+  if (target) {
+    if (target !== "board1" && target !== "board2") {
+      return { ok: false, error: "invalid billboard target", media: baseState };
+    }
+    const next = {
+      board1: sanitizeBillboardMediaEntry(baseState.board1),
+      board2: sanitizeBillboardMediaEntry(baseState.board2)
+    };
+    next[target] = sanitizeBillboardMediaEntry(source.media ?? source.value ?? source, baseState[target]);
+    return { ok: true, media: next };
+  }
+  const next = {
+    board1: sanitizeBillboardMediaEntry(source.board1 ?? baseState.board1, baseState.board1),
+    board2: sanitizeBillboardMediaEntry(source.board2 ?? baseState.board2, baseState.board2)
+  };
+  return { ok: true, media: next };
 }
 
 function hasOwnerAccess(ownerKeyRaw) {
@@ -1570,11 +1664,16 @@ function resetQuizState(room) {
 function serializeRoom(room) {
   pruneRoomPlayers(room);
   const gate = ensureRoomEntryGate(room);
+  const billboardMedia = ensureRoomBillboardMedia(room);
   const priorityQueue = normalizeEntryGateQueueIds(room, gate.nextPriorityIds);
   return {
     code: room.code,
     hostId: room.hostId,
     portalTargetUrl: sanitizePortalTargetUrl(room?.portalTargetUrl ?? ""),
+    billboardMedia: {
+      board1: sanitizeBillboardMediaEntry(billboardMedia.board1),
+      board2: sanitizeBillboardMediaEntry(billboardMedia.board2)
+    },
     entryGate: {
       portalOpen: gate.portalOpen === true,
       waitingPlayers: countWaitingPlayers(room),
@@ -3432,6 +3531,33 @@ io.on("connection", (socket) => {
     io.to(room.code).emit("portal:target:update", updatePayload);
     emitRoomUpdate(room);
     ack(ackFn, { ok: true, ...updatePayload });
+  });
+
+  socket.on("billboard:media:set", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+
+    const current = ensureRoomBillboardMedia(room);
+    const next = sanitizeRoomBillboardMediaPayload(payload, current);
+    if (!next?.ok) {
+      ack(ackFn, { ok: false, error: next?.error || "invalid billboard media" });
+      return;
+    }
+    room.billboardMedia = next.media;
+    emitRoomUpdate(room);
+    ack(ackFn, { ok: true, media: next.media, updatedAt: Date.now() });
   });
 
   socket.on("host:kick-player", (payload = {}, ackFn) => {

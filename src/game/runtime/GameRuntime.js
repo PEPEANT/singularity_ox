@@ -33,7 +33,43 @@ function parseSeconds(raw, fallback, min = 0.1) {
 }
 
 const NPC_GREETING_VIDEO_URL = new URL("../../../mp4/grok-video.webm", import.meta.url).href;
-const MEGA_AD_VIDEO_URL = new URL("../../../mp4/YTDown0.mp4", import.meta.url).href;
+const BILLBOARD_PRESET_IMAGE_URL = new URL(
+  "../../../mp4/Gemini_Generated_Image_3lk4q93lk4q93lk4.png",
+  import.meta.url
+).href;
+const BILLBOARD_PRESET_AUDIO_URL = "/assets/audio/weapons/gunshot_0.mp3";
+function sanitizeBillboardMediaUrl(raw) {
+  const value = String(raw ?? "").trim().slice(0, 420);
+  if (!value) {
+    return "";
+  }
+  if (value.startsWith("/")) {
+    return value;
+  }
+  try {
+    const target = new URL(value, window.location.href);
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      return "";
+    }
+    return target.toString().slice(0, 420);
+  } catch {
+    return "";
+  }
+}
+
+function inferBillboardVisualTypeFromUrl(rawUrl) {
+  const url = String(rawUrl ?? "").trim().toLowerCase();
+  if (!url) {
+    return "none";
+  }
+  if (/\.(mp4|webm|mov|m4v)(\?.*)?$/.test(url)) {
+    return "video";
+  }
+  if (/\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/.test(url)) {
+    return "image";
+  }
+  return "none";
+}
 const CENTER_BILLBOARD_BASE_WIDTH = 1024;
 const CENTER_BILLBOARD_BASE_HEIGHT = 512;
 const OPPOSITE_BILLBOARD_BASE_WIDTH = 1280;
@@ -198,6 +234,7 @@ export class GameRuntime {
     this.centerBillboardCanvas = null;
     this.centerBillboardContext = null;
     this.centerBillboardTexture = null;
+    this.centerBillboardScreenMaterial = null;
     this.centerBillboardLastSignature = "";
     this.centerBillboardLastCountdown = null;
     this.megaAdVideoEl = null;
@@ -207,6 +244,11 @@ export class GameRuntime {
     this.megaAdTextContext = null;
     this.megaAdTextTexture = null;
     this.megaAdTextLastSignature = "";
+    this.billboardMediaState = this.buildDefaultBillboardMediaState();
+    this.billboardMediaRuntime = {
+      board1: { texture: null, videoEl: null, audioEl: null, sourceTag: "" },
+      board2: { texture: null, videoEl: null, audioEl: null, sourceTag: "" }
+    };
     this.chalkLayer = null;
     this.chalkStampGeometry = null;
     this.chalkStampTexture = null;
@@ -448,6 +490,11 @@ export class GameRuntime {
     this.quizOppositeBillboardInputEl = document.getElementById("quiz-opposite-billboard-input");
     this.quizQuestionListEl = document.getElementById("quiz-question-list");
     this.quizConfigStatusEl = document.getElementById("quiz-config-status");
+    this.billboardTargetSelectEl = document.getElementById("billboard-target-select");
+    this.billboardMediaPresetSelectEl = document.getElementById("billboard-media-preset-select");
+    this.billboardMediaUrlInputEl = document.getElementById("billboard-media-url-input");
+    this.billboardMediaApplyBtnEl = document.getElementById("billboard-media-apply-btn");
+    this.billboardMediaClearBtnEl = document.getElementById("billboard-media-clear-btn");
     this.quizReviewModalEl = document.getElementById("quiz-review-modal");
     this.quizReviewCloseBtnEl = document.getElementById("quiz-review-close-btn");
     this.quizReviewPrevBtnEl = document.getElementById("quiz-review-prev-btn");
@@ -3241,6 +3288,240 @@ export class GameRuntime {
     this.scene.add(this.spectatorStandsGroup);
   }
 
+  buildDefaultBillboardMediaState() {
+    return {
+      board1: { visualType: "none", visualUrl: "", audioUrl: "" },
+      board2: { visualType: "none", visualUrl: "", audioUrl: "" }
+    };
+  }
+
+  normalizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null) {
+    const fallback =
+      fallbackEntry && typeof fallbackEntry === "object"
+        ? fallbackEntry
+        : { visualType: "none", visualUrl: "", audioUrl: "" };
+    const entry = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
+    const requestedType = String(entry.visualType ?? entry.type ?? fallback.visualType ?? "none")
+      .trim()
+      .toLowerCase();
+    const visualType = requestedType === "video" || requestedType === "image" ? requestedType : "none";
+    const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
+    const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+    if (visualType === "none") {
+      return { visualType: "none", visualUrl: "", audioUrl };
+    }
+    if (!visualUrl) {
+      return { visualType: "none", visualUrl: "", audioUrl };
+    }
+    return { visualType, visualUrl, audioUrl };
+  }
+
+  normalizeBillboardMediaState(rawState = {}) {
+    const source = rawState && typeof rawState === "object" ? rawState : {};
+    const fallback = this.billboardMediaState ?? this.buildDefaultBillboardMediaState();
+    return {
+      board1: this.normalizeBillboardMediaEntry(source.board1, fallback.board1),
+      board2: this.normalizeBillboardMediaEntry(source.board2, fallback.board2)
+    };
+  }
+
+  releaseBillboardMediaChannel(boardKey) {
+    const runtime = this.billboardMediaRuntime?.[boardKey];
+    if (!runtime) {
+      return;
+    }
+    if (runtime.videoEl) {
+      runtime.videoEl.pause();
+      runtime.videoEl.removeAttribute("src");
+      runtime.videoEl.load();
+      runtime.videoEl = null;
+    }
+    if (runtime.audioEl) {
+      runtime.audioEl.pause();
+      runtime.audioEl.removeAttribute("src");
+      runtime.audioEl.load();
+      runtime.audioEl = null;
+    }
+    if (runtime.texture) {
+      runtime.texture.dispose?.();
+      runtime.texture = null;
+    }
+    runtime.sourceTag = "";
+  }
+
+  applyCenterBillboardMode() {
+    const material = this.centerBillboardScreenMaterial;
+    const fallbackTexture = this.centerBillboardTexture;
+    if (!material || !fallbackTexture) {
+      return;
+    }
+    const mediaTexture = this.billboardMediaRuntime?.board1?.texture ?? null;
+    const nextMap = mediaTexture ?? fallbackTexture;
+    if (material.map !== nextMap) {
+      material.map = nextMap;
+      material.needsUpdate = true;
+    }
+  }
+
+  setupBillboardMediaChannel(boardKey, entry) {
+    this.releaseBillboardMediaChannel(boardKey);
+    const runtime = this.billboardMediaRuntime?.[boardKey];
+    if (!runtime) {
+      return;
+    }
+
+    const visualType = String(entry?.visualType ?? "none");
+    const visualUrl = sanitizeBillboardMediaUrl(entry?.visualUrl ?? "");
+    const audioUrl = sanitizeBillboardMediaUrl(entry?.audioUrl ?? "");
+
+    if (visualType === "video" && visualUrl) {
+      const video = document.createElement("video");
+      video.src = visualUrl;
+      video.preload = this.mobileEnabled ? "metadata" : "auto";
+      video.loop = true;
+      video.muted = Boolean(audioUrl);
+      video.playsInline = true;
+      video.autoplay = true;
+      video.crossOrigin = "anonymous";
+      video.setAttribute("playsinline", "");
+      video.setAttribute("webkit-playsinline", "");
+
+      const videoTexture = new THREE.VideoTexture(video);
+      videoTexture.colorSpace = THREE.SRGBColorSpace;
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
+      videoTexture.generateMipmaps = false;
+      runtime.videoEl = video;
+      runtime.texture = videoTexture;
+      runtime.sourceTag = `video:${visualUrl}`;
+      video.play().catch(() => {});
+    } else if (visualType === "image" && visualUrl) {
+      const texture = this.textureLoader.load(
+        visualUrl,
+        () => {
+          this.applyCenterBillboardMode();
+          this.applyOppositeBillboardMode();
+        },
+        undefined,
+        () => {}
+      );
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.generateMipmaps = false;
+      runtime.texture = texture;
+      runtime.sourceTag = `image:${visualUrl}`;
+    }
+
+    if (audioUrl) {
+      const audio = document.createElement("audio");
+      audio.src = audioUrl;
+      audio.loop = true;
+      audio.preload = "auto";
+      audio.play().catch(() => {});
+      runtime.audioEl = audio;
+    }
+  }
+
+  applyBillboardMediaState(rawState = {}) {
+    const previous = this.billboardMediaState ?? this.buildDefaultBillboardMediaState();
+    const next = this.normalizeBillboardMediaState(rawState);
+    this.billboardMediaState = next;
+
+    for (const boardKey of ["board1", "board2"]) {
+      const prevEntry = previous?.[boardKey] ?? {};
+      const nextEntry = next?.[boardKey] ?? {};
+      const changed =
+        String(prevEntry.visualType ?? "") !== String(nextEntry.visualType ?? "") ||
+        String(prevEntry.visualUrl ?? "") !== String(nextEntry.visualUrl ?? "") ||
+        String(prevEntry.audioUrl ?? "") !== String(nextEntry.audioUrl ?? "");
+      if (changed) {
+        this.setupBillboardMediaChannel(boardKey, nextEntry);
+      }
+    }
+    this.applyCenterBillboardMode();
+    this.applyOppositeBillboardMode();
+  }
+
+  buildBillboardMediaPayloadFromUi(clearOnly = false) {
+    const target = String(this.billboardTargetSelectEl?.value ?? "board1").trim().toLowerCase();
+    const board = target === "board2" ? "board2" : "board1";
+    if (clearOnly) {
+      return {
+        target: board,
+        media: { visualType: "none", visualUrl: "", audioUrl: "" }
+      };
+    }
+
+    const customUrl = sanitizeBillboardMediaUrl(this.billboardMediaUrlInputEl?.value ?? "");
+    const preset = String(this.billboardMediaPresetSelectEl?.value ?? "none").trim().toLowerCase();
+    if (customUrl) {
+      const lower = customUrl.toLowerCase();
+      if (/\.(mp3|wav|ogg|m4a)(\?.*)?$/.test(lower)) {
+        return {
+          target: board,
+          media: { visualType: "none", visualUrl: "", audioUrl: customUrl }
+        };
+      }
+      const visualType = inferBillboardVisualTypeFromUrl(customUrl);
+      if (visualType === "none") {
+        return null;
+      }
+      return {
+        target: board,
+        media: { visualType, visualUrl: customUrl, audioUrl: "" }
+      };
+    }
+
+    if (preset === "gemini-image") {
+      return {
+        target: board,
+        media: { visualType: "image", visualUrl: BILLBOARD_PRESET_IMAGE_URL, audioUrl: "" }
+      };
+    }
+    if (preset === "sample-mp3") {
+      return {
+        target: board,
+        media: { visualType: "none", visualUrl: "", audioUrl: BILLBOARD_PRESET_AUDIO_URL }
+      };
+    }
+    return {
+      target: board,
+      media: { visualType: "none", visualUrl: "", audioUrl: "" }
+    };
+  }
+
+  requestBillboardMediaApply(clearOnly = false) {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("시스템", "오너 토큰이 없어 전광판 제어 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("시스템", "오프라인 상태에서는 전광판을 제어할 수 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("시스템", "방장만 전광판 미디어를 제어할 수 있습니다.", "system");
+      return;
+    }
+
+    const payload = this.buildBillboardMediaPayloadFromUi(clearOnly);
+    if (!payload) {
+      this.appendChatLine("시스템", "지원되는 미디어 URL(mp4/webm/png/jpg/mp3)만 사용할 수 있습니다.", "system");
+      return;
+    }
+    this.socket.emit("billboard:media:set", payload, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("시스템", `전광판 반영 실패: ${this.translateQuizError(response?.error)}`, "system");
+        return;
+      }
+      if (response?.media) {
+        this.applyBillboardMediaState(response.media);
+      }
+      this.appendChatLine("시스템", "전광판 미디어를 반영했습니다.", "system");
+    });
+  }
+
   clearMegaAdScreen() {
     if (this.megaAdVideoEl) {
       this.megaAdVideoEl.pause();
@@ -3320,14 +3601,14 @@ export class GameRuntime {
     frame.receiveShadow = true;
     group.add(frame);
 
+    const configuredUrl = String(config.videoUrl ?? "").trim();
     const allowMobileVideo = config.mobileVideoEnabled === true;
-    const useVideoTexture = !this.mobileEnabled || allowMobileVideo;
+    const useVideoTexture = Boolean(configuredUrl) && (!this.mobileEnabled || allowMobileVideo);
     let video = null;
     let videoTexture = null;
     if (useVideoTexture) {
       video = document.createElement("video");
-      const configuredUrl = String(config.videoUrl ?? "").trim();
-      video.src = configuredUrl || MEGA_AD_VIDEO_URL;
+      video.src = configuredUrl;
       video.preload = this.mobileEnabled ? "metadata" : "auto";
       video.loop = true;
       video.muted = true;
@@ -3461,24 +3742,14 @@ export class GameRuntime {
       return;
     }
 
-    const useText =
-      this.quizOppositeBillboardEnabled !== false &&
-      this.quizOppositeBillboardResultVisible === true &&
-      Boolean(this.megaAdTextTexture);
-    const hasVideo = Boolean(this.megaAdVideoTexture && this.megaAdVideoEl);
-    const nextMap = useText
-      ? this.megaAdTextTexture
-      : this.megaAdVideoTexture ?? this.megaAdTextTexture;
+    const mediaTexture = this.billboardMediaRuntime?.board2?.texture ?? null;
+    const nextMap = mediaTexture ?? this.megaAdTextTexture;
     if (this.megaAdScreenMaterial.map !== nextMap) {
       this.megaAdScreenMaterial.map = nextMap ?? null;
       this.megaAdScreenMaterial.needsUpdate = true;
     }
 
-    if (useText || !hasVideo) {
-      this.megaAdVideoEl?.pause?.();
-    } else {
-      this.kickMegaAdVideoPlayback();
-    }
+    this.megaAdVideoEl?.pause?.();
   }
 
   setOppositeBillboardResultVisible(visible) {
@@ -3570,6 +3841,128 @@ export class GameRuntime {
     this.applyOppositeBillboardMode();
   }
 
+  getQuizAliveCountEstimate() {
+    const rosterAlive = this.roomRoster.reduce((count, entry) => {
+      if (!entry || entry.spectator === true || entry.admitted === false) {
+        return count;
+      }
+      return count + (entry.alive !== false ? 1 : 0);
+    }, 0);
+    if (rosterAlive > 0) {
+      return rosterAlive;
+    }
+    const survivorCount = Math.max(0, Math.trunc(Number(this.quizState?.survivors) || 0));
+    if (survivorCount > 0) {
+      return survivorCount;
+    }
+    return Math.max(0, Math.trunc(Number(this.entryGateState?.admittedPlayers) || 0));
+  }
+
+  buildQuizProgressBillboardPayload() {
+    const active = Boolean(this.quizState.active);
+    const phase = String(this.quizState.phase ?? "idle");
+    const phaseKor = this.formatQuizPhase(phase);
+    const questionIndex = Math.max(0, Math.trunc(Number(this.quizState.questionIndex) || 0));
+    const totalQuestions = Math.max(0, Math.trunc(Number(this.quizState.totalQuestions) || 0));
+    const roundLabel = totalQuestions > 0 ? `${questionIndex}/${totalQuestions}` : `${questionIndex}/?`;
+    const survivorCount = this.getQuizAliveCountEstimate();
+    const myState = this.localSpectatorMode ? "관전" : this.localQuizAlive ? "생존" : "탈락";
+
+    const payload = {
+      kicker: "진행 현황",
+      title: `라운드 ${roundLabel}`,
+      lines: [
+        `남은 인원 ${survivorCount}명`,
+        `단계 ${phaseKor}`,
+        `내 상태 ${myState}`
+      ],
+      footer: "후면 전광판: 인원/상태/진행도"
+    };
+
+    if (!active) {
+      const autoSeconds = this.getAutoStartCountdownSeconds();
+      if (phase === "ended") {
+        payload.kicker = "라운드 종료";
+        payload.title = "다음 라운드 준비";
+        payload.lines = [
+          `남은 인원 ${survivorCount}명`,
+          "단계 종료",
+          "호스트 시작 대기"
+        ];
+      } else if (autoSeconds > 0) {
+        payload.kicker = "자동 시작";
+        payload.title = `${autoSeconds}초 후 시작`;
+        payload.lines = [
+          `남은 인원 ${survivorCount}명`,
+          `라운드 ${roundLabel}`,
+          "단계 대기"
+        ];
+      } else {
+        payload.kicker = "대기";
+        payload.title = "입장/시작 대기";
+        payload.lines = [
+          `남은 인원 ${survivorCount}명`,
+          `라운드 ${roundLabel}`,
+          "호스트 조작 대기"
+        ];
+      }
+      return payload;
+    }
+
+    if (phase === "start") {
+      const seconds = this.getQuizPrepareSeconds();
+      payload.lines = [
+        `남은 인원 ${survivorCount}명`,
+        `시작 준비 ${seconds}초`,
+        `내 상태 ${myState}`
+      ];
+      return payload;
+    }
+
+    if (phase === "question") {
+      const seconds = this.getQuizCountdownSeconds();
+      payload.lines = [
+        `남은 인원 ${survivorCount}명`,
+        `제한 시간 ${seconds}초`,
+        `내 상태 ${myState}`
+      ];
+      return payload;
+    }
+
+    if (phase === "lock") {
+      payload.lines = [
+        `남은 인원 ${survivorCount}명`,
+        "정답 판정 중",
+        `내 상태 ${myState}`
+      ];
+      return payload;
+    }
+
+    if (phase === "result") {
+      payload.lines = [
+        `남은 인원 ${survivorCount}명`,
+        "결과 공개",
+        `내 상태 ${myState}`
+      ];
+      return payload;
+    }
+
+    if (phase === "waiting-next") {
+      payload.lines = [
+        `남은 인원 ${survivorCount}명`,
+        "다음 문제 대기",
+        `내 상태 ${myState}`
+      ];
+      return payload;
+    }
+
+    return payload;
+  }
+
+  renderQuizProgressBillboard(force = false) {
+    this.renderOppositeBillboard(this.buildQuizProgressBillboardPayload(), force);
+  }
+
   clearCenterBillboard() {
     if (this.centerBillboardGroup) {
       this.scene.remove(this.centerBillboardGroup);
@@ -3580,6 +3973,7 @@ export class GameRuntime {
       this.centerBillboardTexture.dispose();
     }
     this.centerBillboardTexture = null;
+    this.centerBillboardScreenMaterial = null;
     this.centerBillboardCanvas = null;
     this.centerBillboardContext = null;
     this.centerBillboardLastSignature = "";
@@ -3636,16 +4030,14 @@ export class GameRuntime {
     frame.receiveShadow = true;
     group.add(frame);
 
-    const screen = new THREE.Mesh(
-      new THREE.PlaneGeometry(width, height),
-      new THREE.MeshStandardMaterial({
-        map: panelTexture,
-        emissive: 0x3f7fc3,
-        emissiveIntensity: Number(config.screenGlow) || 0.34,
-        roughness: 0.32,
-        metalness: 0.08
-      })
-    );
+    const screenMaterial = new THREE.MeshStandardMaterial({
+      map: panelTexture,
+      emissive: 0x3f7fc3,
+      emissiveIntensity: Number(config.screenGlow) || 0.34,
+      roughness: 0.32,
+      metalness: 0.08
+    });
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(width, height), screenMaterial);
     screen.position.y = boardCenterY;
     screen.position.z = 0.28;
     group.add(screen);
@@ -3700,12 +4092,14 @@ export class GameRuntime {
 
     this.centerBillboardGroup = group;
     this.scene.add(this.centerBillboardGroup);
+    this.centerBillboardScreenMaterial = screenMaterial;
     this.renderCenterBillboard({
       kicker: "실시간",
       title: lines[0] ?? "메가 OX 퀴즈",
       lines: lines.slice(1),
       footer: "진행자 대기 중"
     });
+    this.applyCenterBillboardMode();
   }
 
   renderCenterBillboard(payload = {}) {
@@ -3715,6 +4109,8 @@ export class GameRuntime {
       return;
     }
 
+    const layout = String(payload.layout ?? "default").trim().toLowerCase();
+    const explanationLayout = layout === "explanation";
     const kicker = String(payload.kicker ?? "실시간").trim().slice(0, 32);
     const title = String(payload.title ?? "메가 OX 퀴즈").trim().slice(0, 90);
     const footer = String(payload.footer ?? "").trim().slice(0, 80);
@@ -3722,8 +4118,9 @@ export class GameRuntime {
     const lines = lineSource
       .map((line) => String(line ?? "").trim())
       .filter(Boolean)
-      .slice(0, 4);
-    const signature = `${kicker}|${title}|${footer}|${lines.join("||")}`;
+      .slice(0, explanationLayout ? 1 : 4);
+    const explanationText = String(payload.explanation ?? lines[0] ?? "").trim().slice(0, 720);
+    const signature = `${layout}|${kicker}|${title}|${footer}|${lines.join("||")}|${explanationText}`;
     if (signature === this.centerBillboardLastSignature) {
       return;
     }
@@ -3751,30 +4148,44 @@ export class GameRuntime {
     context.fillText(kicker || "실시간", CENTER_BILLBOARD_BASE_WIDTH * 0.5, 82);
 
     context.fillStyle = "#f3f8ff";
-    context.font = "800 60px 'Bahnschrift'";
+    context.font = explanationLayout ? "800 54px 'Bahnschrift'" : "800 60px 'Bahnschrift'";
     this.drawBillboardWrappedText(
       context,
       title || "메가 OX 퀴즈",
       CENTER_BILLBOARD_BASE_WIDTH * 0.5,
-      168,
+      explanationLayout ? 150 : 168,
       CENTER_BILLBOARD_BASE_WIDTH - 120,
-      66,
+      explanationLayout ? 56 : 66,
       2
     );
 
-    const baseY = 282;
-    context.fillStyle = "#dbe9ff";
-    context.font = "700 42px 'Segoe UI'";
-    for (let index = 0; index < lines.length; index += 1) {
+    if (explanationLayout) {
+      context.fillStyle = "#dbe9ff";
+      context.font = "700 34px 'Segoe UI'";
       this.drawBillboardWrappedText(
         context,
-        lines[index],
+        explanationText || "해설이 없습니다.",
         CENTER_BILLBOARD_BASE_WIDTH * 0.5,
-        baseY + index * 60,
-        CENTER_BILLBOARD_BASE_WIDTH - 150,
-        48,
-        1
+        304,
+        CENTER_BILLBOARD_BASE_WIDTH - 126,
+        42,
+        6
       );
+    } else {
+      const baseY = 282;
+      context.fillStyle = "#dbe9ff";
+      context.font = "700 42px 'Segoe UI'";
+      for (let index = 0; index < lines.length; index += 1) {
+        this.drawBillboardWrappedText(
+          context,
+          lines[index],
+          CENTER_BILLBOARD_BASE_WIDTH * 0.5,
+          baseY + index * 60,
+          CENTER_BILLBOARD_BASE_WIDTH - 150,
+          48,
+          1
+        );
+      }
     }
 
     if (footer) {
@@ -3786,7 +4197,6 @@ export class GameRuntime {
 
     this.centerBillboardTexture.needsUpdate = true;
   }
-
   drawBillboardWrappedText(context, rawText, x, y, maxWidth, lineHeight, maxLines = 1) {
     const text = String(rawText ?? "").trim();
     if (!text) {
@@ -3795,10 +4205,11 @@ export class GameRuntime {
 
     const hasWhitespace = /\s/.test(text);
     const words = hasWhitespace ? text.split(/\s+/) : Array.from(text);
+    const joiner = hasWhitespace ? " " : "";
     const lines = [];
     let current = "";
     for (const word of words) {
-      const candidate = current ? `${current} ${word}` : word;
+      const candidate = current ? `${current}${joiner}${word}` : word;
       if (context.measureText(candidate).width <= maxWidth) {
         current = candidate;
       } else if (current) {
@@ -5197,6 +5608,12 @@ export class GameRuntime {
     this.quizConfigResetBtnEl?.addEventListener("click", () => {
       this.resetQuizConfigEditor();
     });
+    this.billboardMediaApplyBtnEl?.addEventListener("click", () => {
+      this.requestBillboardMediaApply(false);
+    });
+    this.billboardMediaClearBtnEl?.addEventListener("click", () => {
+      this.requestBillboardMediaApply(true);
+    });
     this.quizSlotCountInputEl?.addEventListener("change", () => {
       this.applyQuizSlotCountChange();
     });
@@ -5385,6 +5802,21 @@ export class GameRuntime {
     }
     if (!this.quizConfigStatusEl) {
       this.quizConfigStatusEl = document.getElementById("quiz-config-status");
+    }
+    if (!this.billboardTargetSelectEl) {
+      this.billboardTargetSelectEl = document.getElementById("billboard-target-select");
+    }
+    if (!this.billboardMediaPresetSelectEl) {
+      this.billboardMediaPresetSelectEl = document.getElementById("billboard-media-preset-select");
+    }
+    if (!this.billboardMediaUrlInputEl) {
+      this.billboardMediaUrlInputEl = document.getElementById("billboard-media-url-input");
+    }
+    if (!this.billboardMediaApplyBtnEl) {
+      this.billboardMediaApplyBtnEl = document.getElementById("billboard-media-apply-btn");
+    }
+    if (!this.billboardMediaClearBtnEl) {
+      this.billboardMediaClearBtnEl = document.getElementById("billboard-media-clear-btn");
     }
     if (!this.quizReviewModalEl) {
       this.quizReviewModalEl = document.getElementById("quiz-review-modal");
@@ -7101,6 +7533,9 @@ export class GameRuntime {
     if (typeof room?.portalTargetUrl === "string") {
       this.applyPortalTarget(room.portalTargetUrl, { announce: false });
     }
+    if (room && Object.prototype.hasOwnProperty.call(room, "billboardMedia")) {
+      this.applyBillboardMediaState(room.billboardMedia ?? {});
+    }
     const seen = new Set();
     let localSeen = false;
     let localHostSpectator = false;
@@ -7793,11 +8228,13 @@ export class GameRuntime {
     this.closeQuizReviewModal();
     this.setOppositeBillboardResultVisible(false);
     this.renderCenterBillboard({
-      kicker: "실시간",
-      title: "메가 OX 퀴즈",
-      lines: ["진행자 대기 중"],
-      footer: "선착순 50명 참가, 초과 인원 관전"
+      layout: "explanation",
+      kicker: "해설 전광판",
+      title: "해설 대기 중",
+      explanation: "문항 결과가 공개되면 이 전광판에 해설이 표시됩니다.",
+      footer: "전면 전광판: 해설 전용"
     });
+    this.renderQuizProgressBillboard(true);
     this.updateQuizControlUi();
   }
 
@@ -7821,11 +8258,13 @@ export class GameRuntime {
         "system"
       );
       this.renderCenterBillboard({
-        kicker: "자동 모드",
-        title: `${seconds}초 후 시작`,
-        lines: ["준비하세요", "라운드 시작 후 O/X 구역으로 이동"],
-        footer: "진행자 수동 제어 가능"
+        layout: "explanation",
+        kicker: "해설 전광판",
+        title: "해설 대기 중",
+        explanation: `${seconds}초 후 게임이 시작됩니다. 정답 공개 시 문항 해설이 이 전광판에 표시됩니다.`,
+        footer: "전면 전광판: 해설 전용"
       });
+      this.renderQuizProgressBillboard(true);
       this.hud.setStatus(this.getStatusText());
     }
   }
@@ -7873,11 +8312,13 @@ export class GameRuntime {
       durationSeconds: Math.max(prepareSeconds, 2.2)
     });
     this.renderCenterBillboard({
-      kicker: "OX 퀴즈 10",
-      title: "게임이 곧 시작됩니다",
-      lines: [`총 문제 ${totalText}개`, `${prepareSeconds}초 후 시작`],
-      footer: "시작 위치에서 대기하세요"
+      layout: "explanation",
+      kicker: "해설 전광판",
+      title: "해설 대기 중",
+      explanation: `총 ${totalText}문항이 곧 시작됩니다. 정답 공개 시 문항 해설이 전면 전광판에 표시됩니다.`,
+      footer: "전면 전광판: 해설 전용"
     });
+    this.renderQuizProgressBillboard(true);
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
   }
@@ -7921,11 +8362,13 @@ export class GameRuntime {
     this.quizState.questionIndex = index;
     this.appendChatLine("시스템", `문항 ${index} 잠금. 판정 중...`, "system");
     this.renderCenterBillboard({
-      kicker: `문항 ${index}/${Math.max(this.quizState.totalQuestions, index)}`,
-      title: "잠금",
-      lines: ["이동 불가", "서버 판정 중"],
-      footer: "결과 대기"
+      layout: "explanation",
+      kicker: "해설 전광판",
+      title: `문항 ${index} 해설 대기`,
+      explanation: "정답 판정이 끝나면 문항 해설을 전면 전광판에 표시합니다.",
+      footer: "전면 전광판: 해설 전용"
     });
+    this.renderQuizProgressBillboard(true);
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
   }
@@ -7963,21 +8406,14 @@ export class GameRuntime {
       "system"
     );
     this.renderCenterBillboard({
-      kicker: `문항 ${index}/${Math.max(this.quizState.totalQuestions, index)}`,
+      layout: "explanation",
+      kicker: `문항 ${index} 해설`,
       title: `정답 ${answer || "?"}`,
-      lines: [`생존자 ${survivorCount}명`, this.localQuizAlive ? "생존" : "탈락"],
-      footer: "잠시 후 다음 문제"
+      explanation: explanation || "등록된 해설이 없습니다.",
+      footer: "전면 전광판: 해설 전용"
     });
-    this.setOppositeBillboardResultVisible(true);
-    this.renderOppositeBillboard(
-      {
-        kicker: `문항 ${index} 해설`,
-        title: `정답 ${answer || "?"}`,
-        lines: [explanation || "등록된 해설이 없습니다."],
-        footer: "결과 단계에서만 표시"
-      },
-      true
-    );
+    this.setOppositeBillboardResultVisible(false);
+    this.renderQuizProgressBillboard(true);
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
   }
@@ -8148,13 +8584,11 @@ export class GameRuntime {
     if (isHost) {
       this.hideRoundOverlay();
       this.renderCenterBillboard({
-        kicker: "OX 퀴즈",
-        title: "다음 라운드 준비",
-        lines:
-          ranking.length > 0
-            ? ranking.slice(0, 3).map((entry) => `${entry.rank}위 ${entry.name} (${entry.score}점)`)
-            : ["순위 데이터 없음"],
-        footer: "진행자 제어에서 입장 열기/입장 시작/시작을 진행하세요"
+        layout: "explanation",
+        kicker: "해설 전광판",
+        title: "라운드 종료",
+        explanation: "이번 라운드가 종료되었습니다. 다음 라운드 결과 공개 시 다시 해설을 표시합니다.",
+        footer: "전면 전광판: 해설 전용"
       });
     } else {
       this.showRoundOverlay({
@@ -8170,16 +8604,15 @@ export class GameRuntime {
         durationSeconds: ROUND_OVERLAY_SETTINGS.endDurationSeconds
       });
       this.renderCenterBillboard({
-        kicker: "OX 퀴즈 10",
-        title: "게임이 종료되었습니다",
-        lines:
-          ranking.length > 0
-            ? ranking.slice(0, 3).map((entry) => `${entry.rank}위 ${entry.name} (${entry.score}점)`)
-            : ["승자 없음"],
-        footer: "호스트가 다음 게임을 시작합니다"
+        layout: "explanation",
+        kicker: "해설 전광판",
+        title: "라운드 종료",
+        explanation: "이번 라운드가 종료되었습니다. 호스트가 다음 라운드를 시작하면 해설 전광판이 갱신됩니다.",
+        footer: "전면 전광판: 해설 전용"
       });
     }
 
+    this.renderQuizProgressBillboard(true);
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
     if (!isHost && this.quizReviewItems.length > 0) {
@@ -8191,50 +8624,81 @@ export class GameRuntime {
     }
   }
   syncQuizBillboard(force = false) {
+    const renderExplanationWaiting = (title, explanation) => {
+      this.renderCenterBillboard({
+        layout: "explanation",
+        kicker: "해설 전광판",
+        title,
+        explanation,
+        footer: "전면 전광판: 해설 전용"
+      });
+    };
+
     if (!this.quizState.active) {
       const autoSeconds = this.getAutoStartCountdownSeconds();
       if (autoSeconds > 0) {
         this.centerBillboardLastCountdown = autoSeconds;
-        this.renderCenterBillboard({
-          kicker: "자동 모드",
-          title: "다음 라운드",
-          lines: [`${autoSeconds}초 후 시작`, "대기"],
-          footer: "진행자 수동 시작 가능"
-        });
+        renderExplanationWaiting(
+          "해설 대기 중",
+          `${autoSeconds}초 후 라운드가 시작됩니다. 정답 공개 시 이 전광판에 문항 해설이 표시됩니다.`
+        );
+      } else if (force || this.centerBillboardLastCountdown !== null) {
+        this.centerBillboardLastCountdown = null;
+        renderExplanationWaiting(
+          "해설 대기 중",
+          "문항 결과가 공개되면 이 전광판에 해설이 표시됩니다."
+        );
       }
+      this.renderQuizProgressBillboard(force || autoSeconds > 0);
       return;
     }
 
     if (this.quizState.phase === "start") {
       const seconds = this.getQuizPrepareSeconds();
       this.centerBillboardLastCountdown = seconds;
-      this.renderCenterBillboard({
-        kicker: "OX 퀴즈 10",
-        title: "게임이 곧 시작됩니다",
-        lines: [`${seconds}초 후 시작`, "시작 위치에서 대기"],
-        footer: "곧 첫 문항이 공개됩니다"
-      });
+      renderExplanationWaiting(
+        "해설 대기 중",
+        `${seconds}초 후 첫 문항이 열립니다. 정답 공개 시 문항 해설이 이 전광판에 표시됩니다.`
+      );
+      this.renderQuizProgressBillboard(force || seconds > 0);
       return;
     }
 
     if (this.quizState.phase === "question") {
       const seconds = this.getQuizCountdownSeconds();
       this.centerBillboardLastCountdown = seconds;
-      this.renderCenterBillboard({
-        kicker: `문항 ${this.quizState.questionIndex}/${Math.max(this.quizState.totalQuestions, this.quizState.questionIndex)}`,
-        title: this.quizState.questionText || "문제",
-        lines: [
-          `남은 시간 ${seconds}초`,
-          this.localQuizAlive ? "상태: 생존" : "상태: 탈락"
-        ],
-        footer: "지금 O 또는 X 구역으로 이동"
-      });
+      renderExplanationWaiting(
+        "해설 대기 중",
+        `현재 문항 진행 중입니다. 제한 시간 ${seconds}초 후 정답과 해설이 공개됩니다.`
+      );
+      this.renderQuizProgressBillboard(force || seconds > 0);
+      return;
+    }
+
+    if (this.quizState.phase === "lock") {
+      this.centerBillboardLastCountdown = null;
+      renderExplanationWaiting(
+        "해설 대기 중",
+        "문항이 잠금 상태입니다. 판정이 끝나면 문항 해설이 표시됩니다."
+      );
+      this.renderQuizProgressBillboard(true);
+      return;
+    }
+
+    if (this.quizState.phase === "waiting-next") {
+      this.centerBillboardLastCountdown = null;
+      renderExplanationWaiting(
+        "해설 대기 중",
+        "다음 문항을 준비 중입니다. 결과 공개 단계에서 전면 전광판에 해설이 표시됩니다."
+      );
+      this.renderQuizProgressBillboard(true);
       return;
     }
 
     if (force) {
       this.centerBillboardLastCountdown = null;
     }
+    this.renderQuizProgressBillboard(force);
   }
 
   getQuizCountdownSeconds() {
@@ -8324,6 +8788,8 @@ export class GameRuntime {
       "invalid question config": "문항 설정 형식이 올바르지 않습니다.",
       unauthorized: "권한이 없습니다.",
       "invalid portal target": "포탈 링크 형식이 잘못되었습니다. http(s) 주소만 허용됩니다.",
+      "invalid billboard target": "전광판 대상이 올바르지 않습니다.",
+      "invalid billboard media": "전광판 미디어 형식이 올바르지 않습니다.",
       "chat muted": "채팅이 금지된 상태입니다.",
       "chat-muted": "채팅이 금지된 상태입니다.",
       "chat blocked": "채팅이 제한된 상태입니다.",
@@ -9093,6 +9559,11 @@ export class GameRuntime {
       (this.quizLockBtnEl.disabled = !canControl || !active || phase !== "question");
     this.portalTargetInputEl && (this.portalTargetInputEl.disabled = !canControl);
     this.portalTargetSaveBtnEl && (this.portalTargetSaveBtnEl.disabled = !canControl);
+    this.billboardTargetSelectEl && (this.billboardTargetSelectEl.disabled = !canControl);
+    this.billboardMediaPresetSelectEl && (this.billboardMediaPresetSelectEl.disabled = !canControl);
+    this.billboardMediaUrlInputEl && (this.billboardMediaUrlInputEl.disabled = !canControl);
+    this.billboardMediaApplyBtnEl && (this.billboardMediaApplyBtnEl.disabled = !canControl);
+    this.billboardMediaClearBtnEl && (this.billboardMediaClearBtnEl.disabled = !canControl);
 
     if (this.quizControlsNoteEl) {
       if (!isHost) {
