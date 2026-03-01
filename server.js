@@ -754,7 +754,7 @@ function projectStateOutsideQuizArena(state = {}) {
   } else {
     next.z = QUIZ_ARENA_MAX_Z + QUIZ_SPECTATOR_ARENA_EXIT_PADDING;
   }
-  next.y = Math.max(ADMISSION_SPAWN_Y, Number(current.y) || ADMISSION_SPAWN_Y);
+  next.y = ADMISSION_SPAWN_Y;
   return {
     corrected: true,
     state: sanitizePlayerState(next)

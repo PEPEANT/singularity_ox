@@ -335,16 +335,12 @@ export class GameRuntime {
     const arenaBackWallCenterX = Number.isFinite(Number(arenaBackWall?.centerX))
       ? Number(arenaBackWall.centerX)
       : 0;
-    const arenaBackWallCenterY = Number.isFinite(Number(arenaBackWall?.centerY))
-      ? Number(arenaBackWall.centerY)
-      : 8.8;
-    const arenaBackWallHeight = Math.max(6, Number(arenaBackWall?.height) || 16);
     const arenaBackWallCenterZ = Number.isFinite(Number(arenaBackWall?.centerZ))
       ? Number(arenaBackWall.centerZ)
       : -32;
     this.spectatorSpawn = new THREE.Vector3(
       arenaBackWallCenterX,
-      arenaBackWallCenterY + arenaBackWallHeight * 0.58,
+      GAME_CONSTANTS.PLAYER_HEIGHT,
       arenaBackWallCenterZ + 6.2
     );
     const oZoneConfig = this.worldContent?.oxArena?.oZone ?? {};
@@ -1994,6 +1990,8 @@ export class GameRuntime {
     this.enforceSpectatorArenaGuard();
     this.yaw = this.getLookYaw(this.playerPosition, this.tempVecA.set(0, GAME_CONSTANTS.PLAYER_HEIGHT, 0));
     this.pitch = -0.08;
+    this.playerPosition.y = GAME_CONSTANTS.PLAYER_HEIGHT;
+    this.onGround = true;
     this.lastSafePosition.set(this.playerPosition.x, GAME_CONSTANTS.PLAYER_HEIGHT, this.playerPosition.z);
     this.appendChatLine(
       "시스템",
@@ -2013,9 +2011,9 @@ export class GameRuntime {
     this.spectatorFollowId = null;
     this.spectatorFollowIndex = -1;
     this.verticalVelocity = 0;
-    this.playerPosition.y = Math.max(this.playerPosition.y, this.spectatorSpawn.y - 1.2);
+    this.playerPosition.y = GAME_CONSTANTS.PLAYER_HEIGHT;
     this.enforceSpectatorArenaGuard();
-    this.onGround = false;
+    this.onGround = true;
     this.appendChatLine(
       "시스템",
       "진행자 관전 모드가 활성화되었습니다. 진행자는 탈락하지 않습니다.",
@@ -2164,19 +2162,19 @@ export class GameRuntime {
       this.spectatorFollowIndex = -1;
     }
 
-    const keyForward =
+    const keyboardForward =
       (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) -
       (this.keys.has("KeyS") || this.keys.has("ArrowDown") ? 1 : 0);
-    const keyStrafe =
+    const keyboardStrafe =
       (this.keys.has("KeyD") || this.keys.has("ArrowRight") ? 1 : 0) -
       (this.keys.has("KeyA") || this.keys.has("ArrowLeft") ? 1 : 0);
-    const keyVertical =
-      (this.keys.has("Space") ? 1 : 0) -
-      (this.keys.has("ControlLeft") || this.keys.has("ControlRight") ? 1 : 0);
+    const mobileForward = this.mobileEnabled ? -this.mobileMoveVectorY : 0;
+    const mobileStrafe = this.mobileEnabled ? this.mobileMoveVectorX : 0;
+    const keyForward = THREE.MathUtils.clamp(keyboardForward + mobileForward, -1, 1);
+    const keyStrafe = THREE.MathUtils.clamp(keyboardStrafe + mobileStrafe, -1, 1);
 
     const sprinting = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
     const speed = (sprinting ? GAME_CONSTANTS.PLAYER_SPRINT : GAME_CONSTANTS.PLAYER_SPEED) * 1.25;
-    const moveStep = speed * delta;
 
     const sinYaw = Math.sin(this.yaw);
     const cosYaw = Math.cos(this.yaw);
@@ -2187,23 +2185,34 @@ export class GameRuntime {
         .set(0, 0, 0)
         .addScaledVector(this.moveForwardVec, keyForward)
         .addScaledVector(this.moveRightVec, keyStrafe);
+      const inputMagnitude = Math.min(1, this.moveVec.length());
       if (this.moveVec.lengthSq() > 0.0001) {
         this.moveVec.normalize();
       }
+      const moveStep = speed * delta * inputMagnitude;
       this.playerPosition.x += this.moveVec.x * moveStep;
       this.playerPosition.z += this.moveVec.z * moveStep;
     }
-    if (keyVertical !== 0) {
-      this.playerPosition.y += keyVertical * moveStep * 0.72;
+
+    if (this.keys.has("Space") && this.onGround) {
+      this.verticalVelocity = GAME_CONSTANTS.JUMP_FORCE;
+      this.onGround = false;
+    }
+    this.verticalVelocity += GAME_CONSTANTS.PLAYER_GRAVITY * delta;
+    this.playerPosition.y += this.verticalVelocity * delta;
+    if (this.playerPosition.y <= GAME_CONSTANTS.PLAYER_HEIGHT) {
+      this.playerPosition.y = GAME_CONSTANTS.PLAYER_HEIGHT;
+      this.verticalVelocity = 0;
+      this.onGround = true;
+    } else {
+      this.onGround = false;
     }
 
     const worldLimit = this.getBoundaryHardLimit();
     this.playerPosition.x = THREE.MathUtils.clamp(this.playerPosition.x, -worldLimit, worldLimit);
     this.playerPosition.z = THREE.MathUtils.clamp(this.playerPosition.z, -worldLimit, worldLimit);
     this.enforceSpectatorArenaGuard();
-    this.playerPosition.y = THREE.MathUtils.clamp(this.playerPosition.y, 4, 72);
-    this.verticalVelocity = 0;
-    this.onGround = false;
+    this.lastSafePosition.set(this.playerPosition.x, GAME_CONSTANTS.PLAYER_HEIGHT, this.playerPosition.z);
 
     this.camera.position.copy(this.playerPosition);
     this.camera.rotation.y = this.yaw;
