@@ -2061,6 +2061,7 @@ export class GameRuntime {
     this.spectatorFollowIndex = -1;
     this.verticalVelocity = -1.4;
     this.keys.clear();
+    this.releaseMobileInputs();
     this.appendChatLine(
       "시스템",
       `탈락했습니다 (${String(reasonLabel)}). 관전자 구역으로 이동합니다...`,
@@ -5414,6 +5415,23 @@ export class GameRuntime {
       this.setRosterTabVisible(false);
       this.chalkDrawingActive = false;
     });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "hidden") {
+        return;
+      }
+      this.keys.clear();
+      this.releaseMobileInputs();
+      this.setRosterTabVisible(false);
+      this.chalkDrawingActive = false;
+      this.chalkLastStamp = null;
+    });
+    window.addEventListener("pagehide", () => {
+      this.keys.clear();
+      this.releaseMobileInputs();
+      this.setRosterTabVisible(false);
+      this.chalkDrawingActive = false;
+      this.chalkLastStamp = null;
+    });
 
     this.renderer.domElement.addEventListener("click", () => {
       this.kickMegaAdVideoPlayback();
@@ -7270,6 +7288,8 @@ export class GameRuntime {
       this.networkConnected = false;
       this.chatSendInFlight = false;
       this.localPlayerId = null;
+      this.keys.clear();
+      this.releaseMobileInputs();
       this.clearRemotePlayers();
       this.roomRoster = [];
       this.localAdmissionWaiting = false;
@@ -7309,6 +7329,8 @@ export class GameRuntime {
     socket.on("connect_error", () => {
       this.networkConnected = false;
       this.chatSendInFlight = false;
+      this.keys.clear();
+      this.releaseMobileInputs();
       this.roomRoster = [];
       this.localAdmissionWaiting = false;
       this.entryGateState = {
