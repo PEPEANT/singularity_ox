@@ -123,6 +123,7 @@ const MOVEMENT_KEY_CODES = new Set([
   "ShiftRight"
 ]);
 const QUIZ_CONFIG_DRAFT_STORAGE_PREFIX = "singularity_ox.quiz_config_draft.v1";
+const QUIZ_CATEGORY_STORAGE_PREFIX = "singularity_ox.quiz_category.v1";
 const QUIZ_CONFIG_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 21;
 const LAST_ROOM_CODE_STORAGE_KEY = "singularity_ox.last_room_code.v1";
 const QUIZ_MIN_TIME_LIMIT_SECONDS = 30;
@@ -487,6 +488,8 @@ export class GameRuntime {
     this.quizConfigCloseBtnEl = document.getElementById("quiz-config-close-btn");
     this.quizConfigSaveBtnEl = document.getElementById("quiz-config-save-btn");
     this.quizConfigResetBtnEl = document.getElementById("quiz-config-reset-btn");
+    this.quizCategoryTukgalLoadBtnEl = document.getElementById("quiz-category-tukgal-load-btn");
+    this.quizCategoryTukgalSaveBtnEl = document.getElementById("quiz-category-tukgal-save-btn");
     this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
     this.quizAutoFinishInputEl = document.getElementById("quiz-auto-finish-input");
     this.quizOppositeBillboardInputEl = document.getElementById("quiz-opposite-billboard-input");
@@ -5666,6 +5669,12 @@ export class GameRuntime {
     this.quizConfigResetBtnEl?.addEventListener("click", () => {
       this.resetQuizConfigEditor();
     });
+    this.quizCategoryTukgalLoadBtnEl?.addEventListener("click", () => {
+      this.loadQuizCategory("특갤");
+    });
+    this.quizCategoryTukgalSaveBtnEl?.addEventListener("click", () => {
+      this.saveQuizCategory("특갤");
+    });
     this.billboardMediaApplyBtnEl?.addEventListener("click", () => {
       this.requestBillboardMediaApply(false);
     });
@@ -5845,6 +5854,12 @@ export class GameRuntime {
     }
     if (!this.quizConfigResetBtnEl) {
       this.quizConfigResetBtnEl = document.getElementById("quiz-config-reset-btn");
+    }
+    if (!this.quizCategoryTukgalLoadBtnEl) {
+      this.quizCategoryTukgalLoadBtnEl = document.getElementById("quiz-category-tukgal-load-btn");
+    }
+    if (!this.quizCategoryTukgalSaveBtnEl) {
+      this.quizCategoryTukgalSaveBtnEl = document.getElementById("quiz-category-tukgal-save-btn");
     }
     if (!this.quizSlotCountInputEl) {
       this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
@@ -9285,6 +9300,244 @@ export class GameRuntime {
     this.renderQuizConfigEditor();
     this.persistQuizConfigDraft({ immediate: true, updateState: true });
     this.setQuizConfigStatus("기본 문항 템플릿으로 초기화했습니다.");
+  }
+
+  getQuizCategoryStorageKey(name) {
+    const safe = String(name ?? "").trim().replace(/\s+/g, "_").slice(0, 32);
+    if (!safe) {
+      return "";
+    }
+    return `${QUIZ_CATEGORY_STORAGE_PREFIX}.${safe}`;
+  }
+
+  saveQuizCategory(name) {
+    if (typeof window === "undefined" || !window.localStorage) {
+      this.setQuizConfigStatus("저장 실패: 로컬 스토리지를 사용할 수 없습니다.", true);
+      return;
+    }
+    const key = this.getQuizCategoryStorageKey(name);
+    if (!key) {
+      return;
+    }
+    const questions = this.collectQuizConfigQuestionsFromEditor();
+    if (questions.length <= 0) {
+      this.setQuizConfigStatus("저장할 문항이 없습니다.", true);
+      return;
+    }
+    const payload = {
+      version: 1,
+      name: String(name),
+      savedAt: Date.now(),
+      questions
+    };
+    try {
+      window.localStorage.setItem(key, JSON.stringify(payload));
+      this.setQuizConfigStatus(`'${name}' 카테고리에 ${questions.length}개 문항을 저장했습니다.`);
+    } catch {
+      this.setQuizConfigStatus("저장 실패: 스토리지 용량 초과.", true);
+    }
+  }
+
+  loadQuizCategory(name) {
+    if (typeof window === "undefined" || !window.localStorage) {
+      this.setQuizConfigStatus("불러오기 실패: 로컬 스토리지를 사용할 수 없습니다.", true);
+      return;
+    }
+    const key = this.getQuizCategoryStorageKey(name);
+    if (!key) {
+      return;
+    }
+    let questions = [];
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (raw) {
+        const payload = JSON.parse(raw);
+        questions = Array.isArray(payload?.questions) ? payload.questions : [];
+      }
+    } catch {
+      // ignore corrupted data — fall through to builtin
+    }
+    if (questions.length <= 0) {
+      const builtin = this.getQuizCategoryBuiltinPreset(name);
+      if (builtin && builtin.length > 0) {
+        questions = builtin;
+      } else {
+        this.setQuizConfigStatus(`'${name}' 카테고리에 저장된 문항이 없습니다.`, true);
+        return;
+      }
+    }
+    const normalized = this.normalizeQuizConfigPayload({
+      maxQuestions: 50,
+      questions,
+      endPolicy: this.quizConfig?.endPolicy ?? { autoFinish: true, showOppositeBillboard: true }
+    });
+    this.quizConfig = normalized;
+    this.renderQuizConfigEditor();
+    this.persistQuizConfigDraft({ immediate: true, updateState: true });
+    this.setQuizConfigStatus(`'${name}' 카테고리 ${questions.length}개 문항을 불러왔습니다. 저장 버튼으로 서버에 반영하세요.`);
+  }
+
+  getQuizCategoryBuiltinPreset(name) {
+    if (name !== "특갤") {
+      return null;
+    }
+    return [
+      {
+        text: "특이점(Singularity)은 기존의 기준값과 법칙으로 예측 모델이 더 이상 적용되지 않는 상이한 지점을 의미한다.",
+        answer: "O",
+        explanation: "기술 변화가 급격히 변해 인간 삶의 기준을 바꿔버릴 수밖에 없는 지점."
+      },
+      {
+        text: "LLM은 그럴듯한 거짓말(환각)을 할 수 있다.",
+        answer: "O",
+        explanation: "대형 언어 모델은 사실이 아닌 내용을 그럴듯하게 생성하는 환각(Hallucination) 현상이 알려져 있다."
+      },
+      {
+        text: "머스크는 우리가 이미 특이점에 진입했다고 봤다.",
+        answer: "O",
+        explanation: "머스크가 \"이미 진입\" 취지 발언을 여러 차례 했다."
+      },
+      {
+        text: "세계 경제는 성장하고 있지만, 그것은 개발도상국엔 해당되지 않는다.",
+        answer: "X",
+        explanation: "극빈층 감소 예시 등 개도국도 경제적 개선이 있었다 → 문장 부정."
+      },
+      {
+        text: "「특이점이 온다」 마이너 갤러리 개설일은 2019-08-02이다.",
+        answer: "X",
+        explanation: "2019-08-01이라고 명시."
+      },
+      {
+        text: "오늘날 신경과학은 다양한 자료를 바탕으로 뇌 모델을 만들고 시뮬레이션하고 있다.",
+        answer: "O",
+        explanation: "스캔/연결 모델/실험 등으로 모델링·검증 흐름 존재."
+      },
+      {
+        text: "UBI는 더 큰 수준의 고소득(생활 여유 포함)을 보장하자는 담론으로 쓰이기도 한다.",
+        answer: "X",
+        explanation: "그건 UBI가 아니라 UHI(Universal High Income) 쪽 개념."
+      },
+      {
+        text: "1945년 4월 19일자 글에서 고든 무어가 \"직접 전자공학의 미래…\"라고 했다.",
+        answer: "X",
+        explanation: "책 163p 참고 메모 기준 — 그 인용/구성이 맞지 않는다는 취지."
+      },
+      {
+        text: "머스크는 2028년 말 AI가 최강 인간 지능을 능가한다고 했다.",
+        answer: "X",
+        explanation: "2025말~2026년 내로 발언이 수정됨 → 원문장 X."
+      },
+      {
+        text: "\"뒤를 멀리 돌아볼수록 앞을 더 멀리 내다볼 수 있다.\" -칼 세이건-",
+        answer: "X",
+        explanation: "이 명언은 윈스턴 처칠의 것으로 정정해둠 → '칼 세이건' 표기는 X."
+      },
+      {
+        text: "지금 여러분과 함께 플레이하는 이 공간엔 AI가 있다.",
+        answer: "X",
+        explanation: "아직 구현 못함."
+      },
+      {
+        text: "특이점 OX 대기방 가상 캐릭터 이름은 \"차연\"이다.",
+        answer: "O",
+        explanation: "데리다의 '차연(Différance)' 개념에서 따온 이름."
+      },
+      {
+        text: "머슴닷컴(Mersoom) 업로드 일시는 2026년 1월 31일이다.",
+        answer: "X",
+        explanation: "실제 업로드는 2026.02.01 12:44:41."
+      },
+      {
+        text: "유전 알고리즘은 사업현장에 아직 동원되지 못했다.",
+        answer: "X",
+        explanation: "이미 대기업·플랫폼 등에서 쓰이고 있고, 오픈소스+클라우드로 확산 중."
+      },
+      {
+        text: "CIM은 최적화·물류 능률화에서 점차 AI 기법을 확대하고 있다.",
+        answer: "O",
+        explanation: "CIM+AI 결합이 확대되는 흐름은 실제로 존재한다."
+      },
+      {
+        text: "\"과학은 조직된 삶, 지혜는 조직된 지식\"이라고 칸트가 말했다.",
+        answer: "X",
+        explanation: "정확한 문구는 반대 — '과학은 조직된 지식, 지혜는 조직된 삶'."
+      },
+      {
+        text: "제작자는 이 게임을 만드는 데 일주일이 걸렸다.",
+        answer: "X",
+        explanation: "3일 만에 만들었다 → X."
+      },
+      {
+        text: "Hawking–Penrose 특이점 정리의 개념이 의식의 물리적 기초가 된다.",
+        answer: "X",
+        explanation: "커넥톰은 wiring diagram일 뿐, 작동 원리가 아님 → 직결은 X."
+      },
+      {
+        text: "실온 초전도체에서 위상 보호가 불가능하므로 대규모 양자컴퓨터는 물리적으로 불가능하다.",
+        answer: "X",
+        explanation: "단정이 너무 큼. 연구는 계속 진행 중 → X."
+      },
+      {
+        text: "0 이상 999 이하 정수 중 숫자 9가 포함된 수는 271개이다.",
+        answer: "O",
+        explanation: "9가 없는 수: 각 자리에 0~8 → 9³ = 729개. 1000 - 729 = 271."
+      },
+      {
+        text: "\"이 문장은 거짓이다\"는 O 또는 X로 판정할 수 있다.",
+        answer: "X",
+        explanation: "라이어(Liar) 패러독스 — 참도 거짓도 될 수 없어 판정 불가."
+      },
+      {
+        text: "이 게임의 가상 인물 '자연'은 포스트모더니즘→해체주의 흐름에서 파생된 인물이다.",
+        answer: "O",
+        explanation: "ㅇㅇ"
+      },
+      {
+        text: "이전 수복 최종 업데이트 버전은 V7.9이다.",
+        answer: "X",
+        explanation: "V7.1로 정리됨 → V7.9는 X."
+      },
+      {
+        text: "조건을 만족하는 경우의 수는 32,760개이다.",
+        answer: "O",
+        explanation: "O(맞음)"
+      },
+      {
+        text: "오픈소스는 무조건 상업적 사용이 금지된다.",
+        answer: "X",
+        explanation: "라이선스에 따라 MIT·Apache 등은 상업적 사용을 허용한다."
+      },
+      {
+        text: "AI 생성 결과물도 저작권·라이선스 문제가 생길 수 있다.",
+        answer: "O",
+        explanation: "학습 데이터 및 생성 결과물의 저작권 귀속은 법적으로 논의 중."
+      },
+      {
+        text: "GitHub Pages는 정적 웹페이지 배포에 쓰인다.",
+        answer: "O",
+        explanation: "HTML/CSS/JS 정적 파일을 무료로 호스팅할 수 있다."
+      },
+      {
+        text: "확률 50%인 사건을 10번 반복하면 반드시 5번 성공한다.",
+        answer: "X",
+        explanation: "기댓값이 5번이지, 5번이 보장되지는 않는다."
+      },
+      {
+        text: "\"A이면 B\"에서 A가 거짓일 때 명제 전체는 참이 될 수 있다.",
+        answer: "O",
+        explanation: "전건이 거짓이면 명제 전체는 항상 참(vacuous truth)."
+      },
+      {
+        text: "정수 '0'은 짝수다.",
+        answer: "O",
+        explanation: "2의 배수 정의상 짝수. 0 = 2 × 0."
+      },
+      {
+        text: "Git은 변경 이력을 저장하는 버전관리 시스템이다.",
+        answer: "O",
+        explanation: "분산형 버전관리 시스템(DVCS)으로 파일의 변경 이력을 추적한다."
+      }
+    ];
   }
 
   openQuizConfigModal() {

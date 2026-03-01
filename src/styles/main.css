@@ -752,10 +752,23 @@ body.mobile-roster-focus #mobile-look-pad {
 }
 
 .quiz-config-toolbar {
-  display: grid;
-  grid-template-columns: auto 76px auto auto auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
+}
+
+.quiz-toolbar-sep {
+  width: 1px;
+  height: 22px;
+  background: rgba(163, 207, 238, 0.35);
+  align-self: center;
+}
+
+#quiz-category-tukgal-load-btn,
+#quiz-category-tukgal-save-btn {
+  border-color: rgba(178, 238, 200, 0.68);
+  color: #d4ffe8;
 }
 
 .quiz-config-toolbar label {
@@ -1862,33 +1875,33 @@ body.mobile-chat-focus #chat-header {
   }
 
   .quiz-config-toolbar {
-    grid-template-columns: 1fr 62px 1fr 1fr;
+    display: flex;
+    flex-wrap: wrap;
     gap: 6px;
   }
 
   .quiz-config-toolbar label[for="quiz-slot-count-input"] {
-    grid-column: 1;
+    grid-column: unset;
   }
 
   #quiz-slot-count-input {
-    grid-column: 2;
+    grid-column: unset;
   }
 
   .quiz-checkbox {
-    justify-self: end;
+    justify-self: unset;
   }
 
   .quiz-config-toolbar .quiz-checkbox:nth-of-type(1) {
-    grid-column: 3;
+    grid-column: unset;
   }
 
   .quiz-config-toolbar .quiz-checkbox:nth-of-type(2) {
-    grid-column: 4;
+    grid-column: unset;
   }
 
   #quiz-config-reset-btn {
-    grid-column: 1 / -1;
-    width: 100%;
+    grid-column: unset;
   }
 
   .quiz-question-row {
