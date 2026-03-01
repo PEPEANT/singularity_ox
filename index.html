@@ -82,27 +82,12 @@
       </div>
     </div>
 
-    <div id="lobby-screen" class="hidden" aria-modal="true" role="dialog" aria-labelledby="lobby-title">
+    <div id="lobby-screen" class="hidden" aria-modal="true" role="dialog" aria-label="대기실">
       <form id="lobby-form" novalidate>
-        <p class="lobby-kicker">특이점 OX</p>
-        <h2 id="lobby-title">대기실</h2>
-        <p id="lobby-status">서버에 연결 중...</p>
-        <div id="lobby-stats">
-          <div class="lobby-stat">
-            <span class="lobby-stat-key">활성 방</span>
-            <span id="lobby-room-count">0</span>
-          </div>
-          <div class="lobby-stat">
-            <span class="lobby-stat-key">대기 인원</span>
-            <span id="lobby-player-count">0</span>
-          </div>
-        </div>
-        <p id="lobby-top-room">현재 방 정보를 불러오는 중...</p>
         <div id="lobby-slot-summary" aria-live="polite">
           <p id="lobby-slot-participants">참가 슬롯 0/50</p>
           <p id="lobby-slot-spectators">관전자 슬롯 0/70</p>
         </div>
-        <label for="lobby-name-input">닉네임</label>
         <input
           id="lobby-name-input"
           type="text"

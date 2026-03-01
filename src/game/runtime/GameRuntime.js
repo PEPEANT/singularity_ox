@@ -39,17 +39,17 @@ const CENTER_BILLBOARD_BASE_HEIGHT = 512;
 const OPPOSITE_BILLBOARD_BASE_WIDTH = 1280;
 const OPPOSITE_BILLBOARD_BASE_HEIGHT = 720;
 const DYNAMIC_RESOLUTION_SETTINGS = Object.freeze({
-  sampleWindowSeconds: 1.35,
-  downshiftFps: 36,
-  upshiftFps: 55,
-  downshiftStep: 0.06,
-  upshiftStep: 0.05,
-  downshiftCooldownSeconds: 4.2,
-  upshiftCooldownSeconds: 2.8,
-  idleCooldownSeconds: 1.8,
+  sampleWindowSeconds: 1.6,
+  downshiftFps: 33,
+  upshiftFps: 54,
+  downshiftStep: 0.04,
+  upshiftStep: 0.06,
+  downshiftCooldownSeconds: 5.2,
+  upshiftCooldownSeconds: 2.4,
+  idleCooldownSeconds: 2.2,
   ratioEpsilon: 0.04,
-  stableSamplesRequired: 5,
-  applyDelaySeconds: 0.45
+  stableSamplesRequired: 6,
+  applyDelaySeconds: 0.65
 });
 const ROUND_OVERLAY_SETTINGS = Object.freeze({
   prepareDurationSeconds: 3.2,
@@ -59,7 +59,7 @@ const ROUND_OVERLAY_SETTINGS = Object.freeze({
   fireworkParticleCountMax: 44
 });
 const MOBILE_RUNTIME_SETTINGS = Object.freeze({
-  maxPixelRatio: 1.45,
+  maxPixelRatio: 1.6,
   minNetworkSyncInterval: 0.12,
   lookSensitivityX: 0.0106,
   lookSensitivityY: 0.0094,
@@ -713,7 +713,7 @@ export class GameRuntime {
     this.setupCloudLayer();
 
     const maxAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
-    const anisotropy = this.mobileEnabled ? Math.min(2, maxAnisotropy) : maxAnisotropy;
+    const anisotropy = this.mobileEnabled ? Math.min(4, maxAnisotropy) : maxAnisotropy;
     const ground = world.ground;
     const configureGroundTexture = (texture, colorSpace = null) => {
       if (!texture) {

@@ -10,7 +10,7 @@ export const GAME_CONSTANTS = {
   REMOTE_LERP_SPEED: 12,
   REMOTE_STALE_TIMEOUT_MS: 15000,
   DYNAMIC_RESOLUTION: {
-    mobileMinRatio: 0.9,
+    mobileMinRatio: 1,
     desktopMinRatio: 0.85
   }
 };

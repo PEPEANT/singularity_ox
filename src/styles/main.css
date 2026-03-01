@@ -871,7 +871,7 @@ body.mobile-roster-focus #mobile-look-pad {
   inset: 0;
   z-index: 82;
   display: grid;
-  place-items: center;
+  place-items: stretch;
   padding:
     max(18px, env(safe-area-inset-top))
     max(18px, env(safe-area-inset-right))
@@ -886,14 +886,16 @@ body.mobile-roster-focus #mobile-look-pad {
 }
 
 #lobby-form {
-  width: min(96vw, 640px);
+  width: min(100%, 640px);
+  margin: auto;
   max-height: calc(
     100vh - max(18px, env(safe-area-inset-top)) - max(18px, env(safe-area-inset-bottom)) - 8px
   );
   max-height: calc(
     100dvh - max(18px, env(safe-area-inset-top)) - max(18px, env(safe-area-inset-bottom)) - 8px
   );
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   padding: 20px;
   overflow-y: auto;
@@ -1560,9 +1562,9 @@ body.mobile-chat-focus #chat-header {
     top: auto;
     left: 8px;
     right: 8px;
-    bottom: 194px;
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 218px);
     width: auto;
-    max-height: 44vh;
+    max-height: min(44vh, calc(100dvh - max(8px, env(safe-area-inset-top)) - 246px));
     padding: 8px 9px;
   }
 
@@ -1620,32 +1622,12 @@ body.mobile-chat-focus #chat-header {
   }
 
   #lobby-form {
-    width: min(96vw, 640px);
-    max-height: calc(
-      100vh - max(10px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom)) - 6px
-    );
-    max-height: calc(
-      100dvh - max(10px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom)) - 6px
-    );
+    width: 100%;
+    height: calc(100dvh - max(10px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom)));
+    max-height: none;
+    min-height: 0;
     padding: 14px;
-    gap: 8px;
-  }
-
-  #lobby-title {
-    font-size: 1.04rem;
-  }
-
-  #lobby-status {
-    font-size: 0.76rem;
-  }
-
-  #lobby-stats {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .lobby-stat span:last-child {
-    font-size: 0.9rem;
+    gap: 10px;
   }
 
   #hub-phase-title {
