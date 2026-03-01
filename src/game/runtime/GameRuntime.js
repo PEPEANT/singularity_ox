@@ -3865,18 +3865,43 @@ export class GameRuntime {
     const questionIndex = Math.max(0, Math.trunc(Number(this.quizState.questionIndex) || 0));
     const totalQuestions = Math.max(0, Math.trunc(Number(this.quizState.totalQuestions) || 0));
     const roundLabel = totalQuestions > 0 ? `${questionIndex}/${totalQuestions}` : `${questionIndex}/?`;
-    const survivorCount = this.getQuizAliveCountEstimate();
-    const myState = this.localSpectatorMode ? "관전" : this.localQuizAlive ? "생존" : "탈락";
+    const roster = Array.isArray(this.roomRoster) ? this.roomRoster : [];
+    const admittedRoster = roster.filter((entry) => entry && entry.admitted !== false);
+    const totalCountFromRoster = admittedRoster.length;
+    const spectatorCountFromRoster = admittedRoster.reduce(
+      (count, entry) => count + (entry?.spectator === true ? 1 : 0),
+      0
+    );
+    const aliveCountFromRoster = admittedRoster.reduce((count, entry) => {
+      if (entry?.spectator === true) {
+        return count;
+      }
+      return count + (entry?.alive !== false ? 1 : 0);
+    }, 0);
+    const totalCountFallback = Math.max(
+      0,
+      Math.trunc(
+        Number(this.entryGateState?.admittedPlayers) || 0
+      ) + Math.trunc(Number(this.entryGateState?.spectatorPlayers) || 0)
+    );
+    const spectatorFallback = Math.max(0, Math.trunc(Number(this.entryGateState?.spectatorPlayers) || 0));
+    const aliveFallback = this.getQuizAliveCountEstimate();
+
+    const totalCount = totalCountFromRoster > 0 ? totalCountFromRoster : totalCountFallback;
+    const spectatorCount = spectatorCountFromRoster > 0 ? spectatorCountFromRoster : spectatorFallback;
+    const aliveCount = aliveCountFromRoster > 0 ? aliveCountFromRoster : aliveFallback;
+    const eliminatedCount = Math.max(0, totalCount - spectatorCount - aliveCount);
 
     const payload = {
       kicker: "진행 현황",
-      title: `라운드 ${roundLabel}`,
+      title: `라운드 ${roundLabel} · ${phaseKor}`,
       lines: [
-        `남은 인원 ${survivorCount}명`,
-        `단계 ${phaseKor}`,
-        `내 상태 ${myState}`
+        `전체 ${totalCount}명`,
+        `생존 ${aliveCount}명`,
+        `탈락 ${eliminatedCount}명`,
+        `관전 ${spectatorCount}명`
       ],
-      footer: "후면 전광판: 인원/상태/진행도"
+      footer: ""
     };
 
     if (!active) {
@@ -3884,75 +3909,29 @@ export class GameRuntime {
       if (phase === "ended") {
         payload.kicker = "라운드 종료";
         payload.title = "다음 라운드 준비";
-        payload.lines = [
-          `남은 인원 ${survivorCount}명`,
-          "단계 종료",
-          "호스트 시작 대기"
-        ];
       } else if (autoSeconds > 0) {
         payload.kicker = "자동 시작";
-        payload.title = `${autoSeconds}초 후 시작`;
-        payload.lines = [
-          `남은 인원 ${survivorCount}명`,
-          `라운드 ${roundLabel}`,
-          "단계 대기"
-        ];
+        payload.title = `라운드 ${roundLabel} · ${autoSeconds}초 후 시작`;
       } else {
         payload.kicker = "대기";
         payload.title = "입장/시작 대기";
-        payload.lines = [
-          `남은 인원 ${survivorCount}명`,
-          `라운드 ${roundLabel}`,
-          "호스트 조작 대기"
-        ];
       }
       return payload;
     }
 
     if (phase === "start") {
       const seconds = this.getQuizPrepareSeconds();
-      payload.lines = [
-        `남은 인원 ${survivorCount}명`,
-        `시작 준비 ${seconds}초`,
-        `내 상태 ${myState}`
-      ];
+      payload.title = `라운드 ${roundLabel} · 시작 준비 ${seconds}초`;
       return payload;
     }
 
     if (phase === "question") {
       const seconds = this.getQuizCountdownSeconds();
-      payload.lines = [
-        `남은 인원 ${survivorCount}명`,
-        `제한 시간 ${seconds}초`,
-        `내 상태 ${myState}`
-      ];
+      payload.title = `라운드 ${roundLabel} · 제한 시간 ${seconds}초`;
       return payload;
     }
 
-    if (phase === "lock") {
-      payload.lines = [
-        `남은 인원 ${survivorCount}명`,
-        "정답 판정 중",
-        `내 상태 ${myState}`
-      ];
-      return payload;
-    }
-
-    if (phase === "result") {
-      payload.lines = [
-        `남은 인원 ${survivorCount}명`,
-        "결과 공개",
-        `내 상태 ${myState}`
-      ];
-      return payload;
-    }
-
-    if (phase === "waiting-next") {
-      payload.lines = [
-        `남은 인원 ${survivorCount}명`,
-        "다음 문제 대기",
-        `내 상태 ${myState}`
-      ];
+    if (phase === "lock" || phase === "waiting-next" || phase === "result") {
       return payload;
     }
 
@@ -8229,10 +8208,10 @@ export class GameRuntime {
     this.setOppositeBillboardResultVisible(false);
     this.renderCenterBillboard({
       layout: "explanation",
-      kicker: "해설 전광판",
-      title: "해설 대기 중",
-      explanation: "문항 결과가 공개되면 이 전광판에 해설이 표시됩니다.",
-      footer: "전면 전광판: 해설 전용"
+      kicker: "문제 전광판",
+      title: "문항 대기 중",
+      explanation: "문항이 시작되면 이 전광판에 문제가 표시됩니다.",
+      footer: ""
     });
     this.renderQuizProgressBillboard(true);
     this.updateQuizControlUi();
@@ -8259,10 +8238,10 @@ export class GameRuntime {
       );
       this.renderCenterBillboard({
         layout: "explanation",
-        kicker: "해설 전광판",
-        title: "해설 대기 중",
-        explanation: `${seconds}초 후 게임이 시작됩니다. 정답 공개 시 문항 해설이 이 전광판에 표시됩니다.`,
-        footer: "전면 전광판: 해설 전용"
+        kicker: "문제 전광판",
+        title: "문항 대기 중",
+        explanation: `${seconds}초 후 게임이 시작됩니다. 첫 문항이 열리면 이 전광판에 문제가 표시됩니다.`,
+        footer: ""
       });
       this.renderQuizProgressBillboard(true);
       this.hud.setStatus(this.getStatusText());
@@ -8313,10 +8292,10 @@ export class GameRuntime {
     });
     this.renderCenterBillboard({
       layout: "explanation",
-      kicker: "해설 전광판",
-      title: "해설 대기 중",
-      explanation: `총 ${totalText}문항이 곧 시작됩니다. 정답 공개 시 문항 해설이 전면 전광판에 표시됩니다.`,
-      footer: "전면 전광판: 해설 전용"
+      kicker: "문제 전광판",
+      title: "문항 대기 중",
+      explanation: `총 ${totalText}문항이 곧 시작됩니다. 문항 시작 시 문제가 이 전광판에 표시됩니다.`,
+      footer: ""
     });
     this.renderQuizProgressBillboard(true);
     this.hud.setStatus(this.getStatusText());
@@ -8363,10 +8342,10 @@ export class GameRuntime {
     this.appendChatLine("시스템", `문항 ${index} 잠금. 판정 중...`, "system");
     this.renderCenterBillboard({
       layout: "explanation",
-      kicker: "해설 전광판",
-      title: `문항 ${index} 해설 대기`,
-      explanation: "정답 판정이 끝나면 문항 해설을 전면 전광판에 표시합니다.",
-      footer: "전면 전광판: 해설 전용"
+      kicker: "문제 전광판",
+      title: `문항 ${index} 잠금`,
+      explanation: this.quizState.questionText || "현재 문항을 판정 중입니다.",
+      footer: ""
     });
     this.renderQuizProgressBillboard(true);
     this.hud.setStatus(this.getStatusText());
@@ -8381,7 +8360,6 @@ export class GameRuntime {
     );
     this.quizState.questionIndex = index;
     const answer = String(payload.answer ?? "").trim().toUpperCase();
-    const explanation = String(payload.explanation ?? "").trim().slice(0, 720);
     this.triggerTrapdoorForAnswer(answer);
     const survivorCount = Math.max(0, Math.trunc(Number(payload.survivorCount) || 0));
     this.quizState.survivors = survivorCount;
@@ -8407,10 +8385,10 @@ export class GameRuntime {
     );
     this.renderCenterBillboard({
       layout: "explanation",
-      kicker: `문항 ${index} 해설`,
+      kicker: `문항 ${index} 문제`,
       title: `정답 ${answer || "?"}`,
-      explanation: explanation || "등록된 해설이 없습니다.",
-      footer: "전면 전광판: 해설 전용"
+      explanation: this.quizState.questionText || "문항 텍스트가 없습니다.",
+      footer: ""
     });
     this.setOppositeBillboardResultVisible(false);
     this.renderQuizProgressBillboard(true);
@@ -8585,10 +8563,10 @@ export class GameRuntime {
       this.hideRoundOverlay();
       this.renderCenterBillboard({
         layout: "explanation",
-        kicker: "해설 전광판",
+        kicker: "문제 전광판",
         title: "라운드 종료",
-        explanation: "이번 라운드가 종료되었습니다. 다음 라운드 결과 공개 시 다시 해설을 표시합니다.",
-        footer: "전면 전광판: 해설 전용"
+        explanation: "이번 라운드가 종료되었습니다. 다음 라운드 시작 시 새 문항이 표시됩니다.",
+        footer: ""
       });
     } else {
       this.showRoundOverlay({
@@ -8605,10 +8583,10 @@ export class GameRuntime {
       });
       this.renderCenterBillboard({
         layout: "explanation",
-        kicker: "해설 전광판",
+        kicker: "문제 전광판",
         title: "라운드 종료",
-        explanation: "이번 라운드가 종료되었습니다. 호스트가 다음 라운드를 시작하면 해설 전광판이 갱신됩니다.",
-        footer: "전면 전광판: 해설 전용"
+        explanation: "이번 라운드가 종료되었습니다. 호스트가 다음 라운드를 시작하면 새 문항이 표시됩니다.",
+        footer: ""
       });
     }
 
@@ -8624,13 +8602,13 @@ export class GameRuntime {
     }
   }
   syncQuizBillboard(force = false) {
-    const renderExplanationWaiting = (title, explanation) => {
+    const renderQuestionPanel = (title, questionText) => {
       this.renderCenterBillboard({
         layout: "explanation",
-        kicker: "해설 전광판",
+        kicker: "문제 전광판",
         title,
-        explanation,
-        footer: "전면 전광판: 해설 전용"
+        explanation: String(questionText ?? "").trim() || "문항 텍스트가 없습니다.",
+        footer: ""
       });
     };
 
@@ -8638,16 +8616,13 @@ export class GameRuntime {
       const autoSeconds = this.getAutoStartCountdownSeconds();
       if (autoSeconds > 0) {
         this.centerBillboardLastCountdown = autoSeconds;
-        renderExplanationWaiting(
-          "해설 대기 중",
-          `${autoSeconds}초 후 라운드가 시작됩니다. 정답 공개 시 이 전광판에 문항 해설이 표시됩니다.`
+        renderQuestionPanel(
+          "문항 대기 중",
+          `${autoSeconds}초 후 라운드가 시작됩니다.`
         );
       } else if (force || this.centerBillboardLastCountdown !== null) {
         this.centerBillboardLastCountdown = null;
-        renderExplanationWaiting(
-          "해설 대기 중",
-          "문항 결과가 공개되면 이 전광판에 해설이 표시됩니다."
-        );
+        renderQuestionPanel("문항 대기 중", "문항이 시작되면 문제가 표시됩니다.");
       }
       this.renderQuizProgressBillboard(force || autoSeconds > 0);
       return;
@@ -8656,41 +8631,34 @@ export class GameRuntime {
     if (this.quizState.phase === "start") {
       const seconds = this.getQuizPrepareSeconds();
       this.centerBillboardLastCountdown = seconds;
-      renderExplanationWaiting(
-        "해설 대기 중",
-        `${seconds}초 후 첫 문항이 열립니다. 정답 공개 시 문항 해설이 이 전광판에 표시됩니다.`
-      );
+      renderQuestionPanel("문항 대기 중", `${seconds}초 후 첫 문항이 열립니다.`);
       this.renderQuizProgressBillboard(force || seconds > 0);
       return;
     }
 
     if (this.quizState.phase === "question") {
       const seconds = this.getQuizCountdownSeconds();
+      const index = Math.max(1, this.quizState.questionIndex);
+      const total = Math.max(this.quizState.totalQuestions, index);
+      const question = this.quizState.questionText || "문항 텍스트가 없습니다.";
       this.centerBillboardLastCountdown = seconds;
-      renderExplanationWaiting(
-        "해설 대기 중",
-        `현재 문항 진행 중입니다. 제한 시간 ${seconds}초 후 정답과 해설이 공개됩니다.`
-      );
+      renderQuestionPanel(`문항 ${index}/${total}`, `${question}\n남은 시간 ${seconds}초`);
       this.renderQuizProgressBillboard(force || seconds > 0);
       return;
     }
 
     if (this.quizState.phase === "lock") {
+      const index = Math.max(1, this.quizState.questionIndex);
+      const total = Math.max(this.quizState.totalQuestions, index);
       this.centerBillboardLastCountdown = null;
-      renderExplanationWaiting(
-        "해설 대기 중",
-        "문항이 잠금 상태입니다. 판정이 끝나면 문항 해설이 표시됩니다."
-      );
+      renderQuestionPanel(`문항 ${index}/${total} 잠금`, this.quizState.questionText || "문항 판정 중");
       this.renderQuizProgressBillboard(true);
       return;
     }
 
     if (this.quizState.phase === "waiting-next") {
       this.centerBillboardLastCountdown = null;
-      renderExplanationWaiting(
-        "해설 대기 중",
-        "다음 문항을 준비 중입니다. 결과 공개 단계에서 전면 전광판에 해설이 표시됩니다."
-      );
+      renderQuestionPanel("다음 문항 대기", "곧 다음 문항이 표시됩니다.");
       this.renderQuizProgressBillboard(true);
       return;
     }
