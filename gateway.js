@@ -634,10 +634,9 @@ async function findQuickJoinTarget(preferredCode = null) {
   const preferred = sanitizeRoomCode(preferredCode);
   if (preferred) {
     const exact = await findClusterRoomByCode(preferred);
-    if (!exact || !isRoomJoinable(exact)) {
-      return null;
+    if (exact && isRoomJoinable(exact)) {
+      return toAssignmentTarget(exact);
     }
-    return toAssignmentTarget(exact);
   }
 
   const rooms = await collectClusterRooms({ forcePeerRefresh: false, refreshLocal: true });
@@ -674,6 +673,7 @@ function buildRedirectPayload(socket, target, playerName, ownerClaim = false) {
     {
       roomCode,
       name: sanitizeName(playerName),
+      ownerClaim: ownerClaim === true,
       owner: ownerClaim === true,
       exp: expiresAt,
       gatewayId: GATEWAY_INSTANCE_ID

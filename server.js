@@ -3118,7 +3118,7 @@ io.on("connection", (socket) => {
       return;
     }
     socket.data.playerName = sanitizeName(verified.payload?.name ?? socket.data.playerName);
-    socket.data.ownerClaim = Boolean(verified.payload?.ownerClaim);
+    socket.data.ownerClaim = Boolean(verified.payload?.ownerClaim ?? verified.payload?.owner);
   }
 
   playerCount += 1;
