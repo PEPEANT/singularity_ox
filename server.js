@@ -1494,6 +1494,10 @@ function pickNextHostId(room) {
       return socketId;
     }
   }
+  // When owner key is configured, host must be claimed via owner link/key.
+  if (ROOM_OWNER_KEY) {
+    return null;
+  }
   return room.players.keys().next().value ?? null;
 }
 
