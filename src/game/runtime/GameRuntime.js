@@ -490,6 +490,8 @@ export class GameRuntime {
     this.quizConfigResetBtnEl = document.getElementById("quiz-config-reset-btn");
     this.quizCategoryTukgalLoadBtnEl = document.getElementById("quiz-category-tukgal-load-btn");
     this.quizCategoryTukgalSaveBtnEl = document.getElementById("quiz-category-tukgal-save-btn");
+    this.quizCategoryHistoryLoadBtnEl = document.getElementById("quiz-category-history-load-btn");
+    this.quizCategoryHistorySaveBtnEl = document.getElementById("quiz-category-history-save-btn");
     this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
     this.quizAutoFinishInputEl = document.getElementById("quiz-auto-finish-input");
     this.quizOppositeBillboardInputEl = document.getElementById("quiz-opposite-billboard-input");
@@ -2497,6 +2499,9 @@ export class GameRuntime {
     const portalLinked = this.entryGateState?.portalOpen === true && Boolean(this.portalTargetUrl);
     this.portalPhase = portalLinked ? "open" : "idle";
     this.updatePortalVisual();
+    if (portalLinked && !this.portalTransitioning && this.isPlayerInPortalZone()) {
+      this.triggerPortalTransfer();
+    }
   }
 
   updatePortalVisual() {
@@ -2688,8 +2693,22 @@ export class GameRuntime {
     return target.toString();
   }
 
+  isPortalTransferAllowed() {
+    if (!this.portalTargetUrl) {
+      return false;
+    }
+    if (this.hubFlowEnabled) {
+      return this.portalPhase === "open";
+    }
+    return this.entryGateState?.portalOpen === true;
+  }
+
   triggerPortalTransfer() {
     if (this.portalTransitioning) {
+      return;
+    }
+    if (!this.isPortalTransferAllowed()) {
+      this.appendChatLine("SYSTEM", "Portal is closed. Wait for host to open it.", "system");
       return;
     }
 
@@ -5685,6 +5704,12 @@ export class GameRuntime {
     this.quizCategoryTukgalSaveBtnEl?.addEventListener("click", () => {
       this.saveQuizCategory("특갤");
     });
+    this.quizCategoryHistoryLoadBtnEl?.addEventListener("click", () => {
+      this.loadQuizCategory("역사상식");
+    });
+    this.quizCategoryHistorySaveBtnEl?.addEventListener("click", () => {
+      this.saveQuizCategory("역사상식");
+    });
     this.billboardMediaApplyBtnEl?.addEventListener("click", () => {
       this.requestBillboardMediaApply(false);
     });
@@ -5870,6 +5895,12 @@ export class GameRuntime {
     }
     if (!this.quizCategoryTukgalSaveBtnEl) {
       this.quizCategoryTukgalSaveBtnEl = document.getElementById("quiz-category-tukgal-save-btn");
+    }
+    if (!this.quizCategoryHistoryLoadBtnEl) {
+      this.quizCategoryHistoryLoadBtnEl = document.getElementById("quiz-category-history-load-btn");
+    }
+    if (!this.quizCategoryHistorySaveBtnEl) {
+      this.quizCategoryHistorySaveBtnEl = document.getElementById("quiz-category-history-save-btn");
     }
     if (!this.quizSlotCountInputEl) {
       this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
@@ -9403,6 +9434,136 @@ export class GameRuntime {
   }
 
   getQuizCategoryBuiltinPreset(name) {
+    if (name === "역사상식") {
+      return [
+        {
+          text: "고려를 건국한 인물은 왕건이다.",
+          answer: "O",
+          explanation: "918년 왕건이 궁예를 몰아내고 고려를 건국했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "세종대왕이 훈민정음을 창제한 해는 1443년이다.",
+          answer: "O",
+          explanation: "1443년 창제, 1446년 반포. 창제와 반포는 구분해야 한다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "임진왜란이 발생한 해는 1592년이다.",
+          answer: "O",
+          explanation: "1592년 일본이 조선을 침략하며 임진왜란이 시작되었다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "조선을 건국한 인물은 이성계이다.",
+          answer: "O",
+          explanation: "1392년 이성계가 고려를 무너뜨리고 조선을 건국했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "삼국 통일을 이룬 나라는 고구려이다.",
+          answer: "X",
+          explanation: "676년 신라가 당나라 세력을 몰아내고 삼국통일을 완성했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "조선의 수도는 처음부터 끝까지 한양(서울)이었다.",
+          answer: "X",
+          explanation: "태종 때 잠시 개성으로 환도했다가 다시 한양으로 돌아왔다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "을사조약(1905)으로 조선은 외교권을 박탈당했다.",
+          answer: "O",
+          explanation: "일본이 대한제국의 외교권을 강제로 빼앗은 조약이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "강화도 조약(1876)은 조선이 일본과 맺은 최초의 근대 조약이다.",
+          answer: "O",
+          explanation: "불평등 조약으로 조선의 문호를 강제 개방시켰다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "고조선을 세운 시조는 동명성왕이다.",
+          answer: "X",
+          explanation: "고조선의 시조는 단군왕검이다. 동명성왕은 고구려의 시조다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "병자호란에서 조선 인조는 청나라에 항복하였다.",
+          answer: "O",
+          explanation: "1637년 인조가 삼전도에서 청 태종에게 항복의 예를 올렸다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "광개토대왕은 신라의 왕이다.",
+          answer: "X",
+          explanation: "광개토대왕은 고구려 19대 왕으로, 영토를 크게 확장했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "3·1 운동은 1919년에 일어났다.",
+          answer: "O",
+          explanation: "1919년 3월 1일 독립선언서 낭독과 함께 전국적 독립운동이 시작됐다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "대한민국 임시정부가 수립된 곳은 베이징이다.",
+          answer: "X",
+          explanation: "1919년 중국 상하이에서 수립되었다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "동학농민운동(갑오농민전쟁)이 일어난 해는 1894년이다.",
+          answer: "O",
+          explanation: "1894년 전봉준을 중심으로 반봉건·반외세 운동이 전개되었다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "고려의 팔만대장경은 해인사에 보관되어 있다.",
+          answer: "O",
+          explanation: "경남 합천 해인사 장경판전에 보관 중이며, 유네스코 세계유산이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "훈민정음 해례본은 유네스코 세계기록유산에 등재되어 있다.",
+          answer: "O",
+          explanation: "1997년 유네스코 세계기록유산으로 등재되었다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "조선 시대 최초의 사화는 무오사화(1498)이다.",
+          answer: "O",
+          explanation: "연산군 때 김일손의 사초가 문제가 되어 사림파가 탄압받은 사건이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "국채보상운동(1907)은 국민이 자발적으로 일본 차관을 갚자는 운동이었다.",
+          answer: "O",
+          explanation: "대구에서 시작되어 전국으로 확산된 국민 모금 운동이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "신라의 마지막 왕은 경애왕이다.",
+          answer: "X",
+          explanation: "신라의 마지막 왕은 경순왕(56대)이다. 경애왕은 55대 왕이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이순신 장군의 명량해전은 1597년에 치러졌다.",
+          answer: "O",
+          explanation: "12척의 배로 133척의 왜선을 물리친 세계 해전사의 기적이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "6·25 전쟁은 미국이 먼저 남한을 침공하며 시작되었다.",
+          answer: "X",
+          explanation: "1950년 6월 25일 북한이 38선을 넘어 남침하며 전쟁이 시작되었다.",
+          timeLimitSeconds: 30
+        }
+      ];
+    }
     if (name !== "특갤") {
       return null;
     }

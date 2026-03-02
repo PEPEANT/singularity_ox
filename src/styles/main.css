@@ -772,6 +772,12 @@ body.mobile-roster-focus #mobile-look-pad {
   color: #d4ffe8;
 }
 
+#quiz-category-history-load-btn,
+#quiz-category-history-save-btn {
+  border-color: rgba(255, 200, 140, 0.68);
+  color: #ffe4c2;
+}
+
 .quiz-config-toolbar label {
   color: #cde8fb;
   font: 700 0.62rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
