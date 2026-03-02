@@ -96,6 +96,35 @@
         <button id="billboard-media-apply-btn" type="button">전광판 적용</button>
         <button id="billboard-media-clear-btn" type="button">중지</button>
       </div>
+      <div class="quiz-controls-row billboard-playlist-row">
+        <label for="billboard-playlist-input">후면 전광판 MP4 목록 (한 줄 1개, 입력 순서대로 재생)</label>
+        <textarea
+          id="billboard-playlist-input"
+          rows="4"
+          placeholder="https://example.com/intro.mp4&#10;https://example.com/round1.mp4&#10;https://example.com/round2.mp4"
+          autocomplete="off"
+          spellcheck="false"
+        ></textarea>
+        <div class="quiz-controls-row billboard-playlist-actions-row">
+          <button id="billboard-playlist-load-btn" type="button">목록 불러오기</button>
+          <button id="billboard-playlist-play-btn" type="button">재생</button>
+          <button id="billboard-playlist-pause-btn" type="button">일시정지</button>
+        </div>
+        <div class="quiz-controls-row billboard-playlist-actions-row">
+          <button id="billboard-playlist-prev-btn" type="button">이전</button>
+          <button id="billboard-playlist-next-btn" type="button">다음</button>
+          <label class="billboard-playlist-auto-label" for="billboard-playlist-auto-input">
+            <input id="billboard-playlist-auto-input" type="checkbox" checked />
+            자동 다음
+          </label>
+        </div>
+        <div class="quiz-controls-row billboard-playlist-actions-row">
+          <select id="billboard-playlist-index-select">
+            <option value="">목록 비어 있음</option>
+          </select>
+          <button id="billboard-playlist-select-btn" type="button">선택 재생</button>
+        </div>
+      </div>
       <div id="quiz-controls-note">방장이 퀴즈를 제어할 수 있습니다.</div>
     </div>
 

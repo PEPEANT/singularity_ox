@@ -297,7 +297,8 @@ export const BASE_VOID_PACK = {
         spawn: [0, GAME_CONSTANTS.PLAYER_HEIGHT, -8]
       },
       portal: {
-        position: [0, 0.08, 22],
+        // Keep the transfer gate outside the OX arena on the right side.
+        position: [44, 0.08, 14],
         radius: 4.4,
         cooldownSeconds: 60,
         warningSeconds: 16,

@@ -38,6 +38,7 @@ const BILLBOARD_PRESET_IMAGE_URL = new URL(
   import.meta.url
 ).href;
 const BILLBOARD_PRESET_AUDIO_URL = "/assets/audio/weapons/gunshot_0.mp3";
+const BILLBOARD_PLAYLIST_MAX_ITEMS = 40;
 function sanitizeBillboardMediaUrl(raw) {
   const value = String(raw ?? "").trim().slice(0, 420);
   if (!value) {
@@ -248,8 +249,8 @@ export class GameRuntime {
     this.megaAdTextLastSignature = "";
     this.billboardMediaState = this.buildDefaultBillboardMediaState();
     this.billboardMediaRuntime = {
-      board1: { texture: null, videoEl: null, audioEl: null, sourceTag: "" },
-      board2: { texture: null, videoEl: null, audioEl: null, sourceTag: "" }
+      board1: { texture: null, videoEl: null, audioEl: null, sourceTag: "", videoEndedHandler: null },
+      board2: { texture: null, videoEl: null, audioEl: null, sourceTag: "", videoEndedHandler: null }
     };
     this.chalkLayer = null;
     this.chalkStampGeometry = null;
@@ -376,9 +377,12 @@ export class GameRuntime {
       elapsed: 0,
       velocityY: 0
     };
+    this.serverHostSpectator = false;
+    this.hostSpectatorOverride = false;
     this.spectatorFollowId = null;
     this.spectatorFollowIndex = -1;
     this.spectatorFollowOffset = new THREE.Vector3(0, 2.5, 6.8);
+    this.spectatorViewMode = "third";
     this.spectatorSpawn = new THREE.Vector3(0, GAME_CONSTANTS.PLAYER_HEIGHT, -32);
     const oZoneConfig = this.worldContent?.oxArena?.oZone ?? {};
     const xZoneConfig = this.worldContent?.oxArena?.xZone ?? {};
@@ -502,6 +506,16 @@ export class GameRuntime {
     this.billboardMediaUrlInputEl = document.getElementById("billboard-media-url-input");
     this.billboardMediaApplyBtnEl = document.getElementById("billboard-media-apply-btn");
     this.billboardMediaClearBtnEl = document.getElementById("billboard-media-clear-btn");
+    this.billboardPlaylistInputEl = document.getElementById("billboard-playlist-input");
+    this.billboardPlaylistLoadBtnEl = document.getElementById("billboard-playlist-load-btn");
+    this.billboardPlaylistPlayBtnEl = document.getElementById("billboard-playlist-play-btn");
+    this.billboardPlaylistPauseBtnEl = document.getElementById("billboard-playlist-pause-btn");
+    this.billboardPlaylistPrevBtnEl = document.getElementById("billboard-playlist-prev-btn");
+    this.billboardPlaylistNextBtnEl = document.getElementById("billboard-playlist-next-btn");
+    this.billboardPlaylistAutoInputEl = document.getElementById("billboard-playlist-auto-input");
+    this.billboardPlaylistIndexSelectEl = document.getElementById("billboard-playlist-index-select");
+    this.billboardPlaylistSelectBtnEl = document.getElementById("billboard-playlist-select-btn");
+    this.billboardPlaylistOptionsSignature = "";
     this.quizReviewModalEl = document.getElementById("quiz-review-modal");
     this.quizReviewCloseBtnEl = document.getElementById("quiz-review-close-btn");
     this.quizReviewPrevBtnEl = document.getElementById("quiz-review-prev-btn");
@@ -2089,6 +2103,7 @@ export class GameRuntime {
     this.localEliminationDrop.elapsed = 0;
     this.localEliminationDrop.velocityY = 0;
     this.localSpectatorMode = true;
+    this.spectatorViewMode = "third";
     this.verticalVelocity = 0;
     this.playerPosition.copy(this.spectatorSpawn);
     this.enforceSpectatorArenaGuard();
@@ -2097,6 +2112,7 @@ export class GameRuntime {
     this.playerPosition.y = GAME_CONSTANTS.PLAYER_HEIGHT;
     this.onGround = true;
     this.lastSafePosition.set(this.playerPosition.x, GAME_CONSTANTS.PLAYER_HEIGHT, this.playerPosition.z);
+    this.showSpectatorControlHint();
     this.appendChatLine(
       "시스템",
       "관전 모드: WASD 이동, SPACE/CTRL 상하 이동, V로 생존자 관전 전환",
@@ -2112,12 +2128,14 @@ export class GameRuntime {
     this.localEliminationDrop.active = false;
     this.localEliminationDrop.elapsed = 0;
     this.localEliminationDrop.velocityY = 0;
+    this.spectatorViewMode = "third";
     this.spectatorFollowId = null;
     this.spectatorFollowIndex = -1;
     this.verticalVelocity = 0;
     this.playerPosition.y = GAME_CONSTANTS.PLAYER_HEIGHT;
     this.enforceSpectatorArenaGuard();
     this.onGround = true;
+    this.showSpectatorControlHint();
     this.appendChatLine(
       "시스템",
       "진행자 관전 모드가 활성화되었습니다. 진행자는 탈락하지 않습니다.",
@@ -2130,6 +2148,7 @@ export class GameRuntime {
     this.localEliminationDrop.active = false;
     this.localEliminationDrop.elapsed = 0;
     this.localEliminationDrop.velocityY = 0;
+    this.spectatorViewMode = "third";
     this.spectatorFollowId = null;
     this.spectatorFollowIndex = -1;
     this.verticalVelocity = 0;
@@ -2150,6 +2169,113 @@ export class GameRuntime {
     return Math.max(0, Math.ceil((startsAt - Date.now()) / 1000));
   }
 
+  showSpectatorControlHint() {
+    if (!this.localSpectatorMode) {
+      return;
+    }
+    this.appendChatLine(
+      "시스템",
+      "관전자 조작: V 생존자 전환, C 1인칭/3인칭 전환, X 관전 해제(자유 관전)",
+      "system"
+    );
+    if (this.isLocalHost() && this.serverHostSpectator) {
+      this.appendChatLine(
+        "SYSTEM",
+        "Host-only: press Z to fully release host spectator mode.",
+        "system"
+      );
+    }
+  }
+
+  clearSpectatorFollowTarget(announce = true) {
+    const hadTarget = Boolean(this.spectatorFollowId);
+    this.spectatorFollowId = null;
+    this.spectatorFollowIndex = -1;
+    this.spectatorViewMode = "third";
+    if (announce && hadTarget) {
+      this.appendChatLine("시스템", "관전 해제: 자유 관전 모드로 전환합니다.", "system");
+    }
+    return hadTarget;
+  }
+
+  toggleSpectatorViewMode() {
+    if (!this.localSpectatorMode) {
+      return;
+    }
+    if (!this.spectatorFollowId) {
+      this.appendChatLine(
+        "시스템",
+        "시점 전환은 생존자 추적 중에만 가능합니다. 먼저 V로 대상을 선택하세요.",
+        "system"
+      );
+      return;
+    }
+    this.spectatorViewMode = this.spectatorViewMode === "first" ? "third" : "first";
+    const viewLabel = this.spectatorViewMode === "first" ? "1인칭" : "3인칭";
+    this.appendChatLine("시스템", `관전 시점을 ${viewLabel}으로 전환했습니다.`, "system");
+  }
+
+  toggleHostSpectatorModeOverride() {
+    if (!this.isLocalHost()) {
+      this.appendChatLine("SYSTEM", "Host only.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("SYSTEM", "Network connection is required.", "system");
+      return;
+    }
+
+    const nextParticipating = !this.hostSpectatorOverride;
+    this.socket.emit(
+      "host:set-participating",
+      { participating: nextParticipating },
+      (response = {}) => {
+        if (!response?.ok) {
+          this.appendChatLine(
+            "SYSTEM",
+            `Host spectator toggle failed: ${this.translateQuizError(response?.error)}`,
+            "system"
+          );
+          return;
+        }
+
+        const participating = response?.participating === true;
+        this.hostSpectatorOverride = participating;
+        this.serverHostSpectator = response?.spectator === true;
+
+        if (participating) {
+          this.localSpectatorMode = false;
+          this.localEliminationDrop.active = false;
+          this.localEliminationDrop.elapsed = 0;
+          this.localEliminationDrop.velocityY = 0;
+          this.spectatorViewMode = "third";
+          this.spectatorFollowId = null;
+          this.spectatorFollowIndex = -1;
+          this.verticalVelocity = 0;
+          this.playerPosition.y = GAME_CONSTANTS.PLAYER_HEIGHT;
+          this.onGround = true;
+          this.lastSafePosition.set(
+            this.playerPosition.x,
+            GAME_CONSTANTS.PLAYER_HEIGHT,
+            this.playerPosition.z
+          );
+          this.appendChatLine(
+            "SYSTEM",
+            "Host spectator mode fully released. Press Z again to restore.",
+            "system"
+          );
+          this.emitImmediateLocalSync("host-spectator-release");
+          return;
+        }
+
+        this.appendChatLine("SYSTEM", "Host spectator mode restored.", "system");
+        if (this.quizState.active && this.serverHostSpectator) {
+          this.enterHostSpectatorMode();
+        }
+      }
+    );
+  }
+
   cycleSpectatorTarget() {
     if (!this.localSpectatorMode) {
       return;
@@ -2158,8 +2284,7 @@ export class GameRuntime {
       ([, remote]) => Boolean(remote?.alive)
     );
     if (candidates.length === 0) {
-      this.spectatorFollowId = null;
-      this.spectatorFollowIndex = -1;
+      this.clearSpectatorFollowTarget(false);
       this.appendChatLine("시스템", "관전할 생존자가 없습니다.", "system");
       return;
     }
@@ -2171,8 +2296,7 @@ export class GameRuntime {
     } else {
       const nextIndex = currentIndex + 1;
       if (nextIndex >= candidates.length) {
-        this.spectatorFollowId = null;
-        this.spectatorFollowIndex = -1;
+        this.clearSpectatorFollowTarget(false);
         this.appendChatLine("시스템", "자유 관전 모드로 전환합니다.", "system");
         return;
       }
@@ -2182,6 +2306,7 @@ export class GameRuntime {
 
     const target = this.remotePlayers.get(this.spectatorFollowId);
     const targetName = this.formatPlayerName(target?.name);
+    this.showSpectatorControlHint();
     this.appendChatLine("시스템", `${targetName} 관전 중`, "system");
   }
 
@@ -2243,18 +2368,44 @@ export class GameRuntime {
       const target = this.remotePlayers.get(this.spectatorFollowId);
       if (target?.alive) {
         const followPos = target.mesh.position;
-        const lookYaw = this.getLookYaw(this.playerPosition, followPos);
-        const sinYaw = Math.sin(lookYaw);
-        const cosYaw = Math.cos(lookYaw);
+        const targetYaw = Number(target.mesh?.rotation?.y);
+        const followYaw = Number.isFinite(targetYaw)
+          ? targetYaw
+          : this.getLookYaw(this.playerPosition, followPos);
+        const sinYaw = Math.sin(followYaw);
+        const cosYaw = Math.cos(followYaw);
+        const alpha = THREE.MathUtils.clamp(1 - Math.exp(-8 * delta), 0, 1);
+        if (this.spectatorViewMode === "first") {
+          const eyeDistance = 0.26;
+          const eyeHeight = GAME_CONSTANTS.PLAYER_HEIGHT * 0.94;
+          this.tempVecA.set(
+            followPos.x - sinYaw * eyeDistance,
+            followPos.y + eyeHeight,
+            followPos.z - cosYaw * eyeDistance
+          );
+          this.playerPosition.lerp(this.tempVecA, alpha);
+          const worldLimit = this.getBoundaryHardLimit();
+          this.playerPosition.x = THREE.MathUtils.clamp(this.playerPosition.x, -worldLimit, worldLimit);
+          this.playerPosition.z = THREE.MathUtils.clamp(this.playerPosition.z, -worldLimit, worldLimit);
+          this.yaw = lerpAngle(this.yaw, followYaw, alpha);
+          this.pitch = THREE.MathUtils.lerp(this.pitch, -0.02, alpha);
+          this.camera.position.copy(this.playerPosition);
+          this.camera.rotation.y = this.yaw;
+          this.camera.rotation.x = this.pitch;
+          return true;
+        }
+
         const offset = this.spectatorFollowOffset;
         this.tempVecA.set(
           followPos.x + sinYaw * offset.z,
           followPos.y + offset.y,
           followPos.z + cosYaw * offset.z
         );
-        const alpha = THREE.MathUtils.clamp(1 - Math.exp(-8 * delta), 0, 1);
         this.playerPosition.lerp(this.tempVecA, alpha);
-        this.enforceSpectatorArenaGuard();
+        const worldLimit = this.getBoundaryHardLimit();
+        this.playerPosition.x = THREE.MathUtils.clamp(this.playerPosition.x, -worldLimit, worldLimit);
+        this.playerPosition.z = THREE.MathUtils.clamp(this.playerPosition.z, -worldLimit, worldLimit);
+        const lookYaw = this.getLookYaw(this.playerPosition, followPos);
         this.yaw = lerpAngle(this.yaw, lookYaw, alpha);
         this.pitch = THREE.MathUtils.lerp(this.pitch, -0.18, alpha);
         this.camera.position.copy(this.playerPosition);
@@ -2262,8 +2413,7 @@ export class GameRuntime {
         this.camera.rotation.x = this.pitch;
         return true;
       }
-      this.spectatorFollowId = null;
-      this.spectatorFollowIndex = -1;
+      this.clearSpectatorFollowTarget(true);
     }
 
     const keyboardForward =
@@ -3371,18 +3521,80 @@ export class GameRuntime {
     this.scene.add(this.spectatorStandsGroup);
   }
 
-  buildDefaultBillboardMediaState() {
+  buildDefaultBillboardMediaEntry() {
     return {
-      board1: { visualType: "none", visualUrl: "", audioUrl: "" },
-      board2: { visualType: "none", visualUrl: "", audioUrl: "" }
+      visualType: "none",
+      visualUrl: "",
+      audioUrl: "",
+      playlist: [],
+      playlistIndex: 0,
+      playlistEnabled: false,
+      playlistAutoAdvance: true,
+      playlistPlaying: true
     };
   }
 
-  normalizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null) {
+  buildDefaultBillboardMediaState() {
+    return {
+      board1: this.buildDefaultBillboardMediaEntry(),
+      board2: this.buildDefaultBillboardMediaEntry()
+    };
+  }
+
+  normalizeBillboardPlaylistItem(rawItem = {}, fallbackItem = null) {
+    const fallback =
+      fallbackItem && typeof fallbackItem === "object"
+        ? fallbackItem
+        : { visualType: "video", visualUrl: "", audioUrl: "" };
+    const entry =
+      typeof rawItem === "string"
+        ? { visualType: "video", visualUrl: rawItem, audioUrl: "" }
+        : rawItem && typeof rawItem === "object"
+          ? rawItem
+          : {};
+    const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
+    if (!visualUrl) {
+      return { visualType: "none", visualUrl: "", audioUrl: "" };
+    }
+    const requestedType = String(entry.visualType ?? entry.type ?? fallback.visualType ?? "video")
+      .trim()
+      .toLowerCase();
+    const inferredType = inferBillboardVisualTypeFromUrl(visualUrl);
+    const visualType =
+      requestedType === "video" || requestedType === "image"
+        ? requestedType
+        : inferredType === "video" || inferredType === "image"
+          ? inferredType
+          : "video";
+    const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+    return { visualType, visualUrl, audioUrl };
+  }
+
+  normalizeBillboardPlaylist(rawPlaylist = [], fallbackPlaylist = []) {
+    const source = Array.isArray(rawPlaylist) ? rawPlaylist : [];
+    const fallback = Array.isArray(fallbackPlaylist) ? fallbackPlaylist : [];
+    const next = [];
+    for (let index = 0; index < source.length; index += 1) {
+      if (next.length >= BILLBOARD_PLAYLIST_MAX_ITEMS) {
+        break;
+      }
+      const item = this.normalizeBillboardPlaylistItem(source[index], fallback[index]);
+      if (!item.visualUrl || item.visualType === "none") {
+        continue;
+      }
+      next.push(item);
+    }
+    return next;
+  }
+
+  normalizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null, boardKey = "board1") {
+    const allowPlaylist = String(boardKey ?? "")
+      .trim()
+      .toLowerCase() === "board2";
     const fallback =
       fallbackEntry && typeof fallbackEntry === "object"
         ? fallbackEntry
-        : { visualType: "none", visualUrl: "", audioUrl: "" };
+        : this.buildDefaultBillboardMediaEntry();
     const entry = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
     const requestedType = String(entry.visualType ?? entry.type ?? fallback.visualType ?? "none")
       .trim()
@@ -3390,22 +3602,91 @@ export class GameRuntime {
     const visualType = requestedType === "video" || requestedType === "image" ? requestedType : "none";
     const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
     const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
-    if (visualType === "none") {
-      return { visualType: "none", visualUrl: "", audioUrl };
+    const fallbackPlaylist = allowPlaylist ? this.normalizeBillboardPlaylist(fallback.playlist ?? []) : [];
+    const playlist = allowPlaylist
+      ? this.normalizeBillboardPlaylist(entry.playlist ?? fallbackPlaylist, fallbackPlaylist)
+      : [];
+    const rawPlaylistIndex = Number(entry.playlistIndex ?? entry.index ?? fallback.playlistIndex ?? 0);
+    let playlistIndex = Number.isFinite(rawPlaylistIndex) ? Math.trunc(rawPlaylistIndex) : 0;
+    if (playlist.length > 0) {
+      playlistIndex = ((playlistIndex % playlist.length) + playlist.length) % playlist.length;
+    } else {
+      playlistIndex = 0;
     }
-    if (!visualUrl) {
-      return { visualType: "none", visualUrl: "", audioUrl };
+    const playlistEnabled =
+      allowPlaylist &&
+      (entry.playlistEnabled ?? fallback.playlistEnabled ?? false) === true &&
+      playlist.length > 0;
+    const playlistAutoAdvance = allowPlaylist
+      ? (entry.playlistAutoAdvance ?? fallback.playlistAutoAdvance ?? true) !== false
+      : true;
+    const playlistPlaying = allowPlaylist
+      ? (entry.playlistPlaying ?? fallback.playlistPlaying ?? true) !== false
+      : true;
+    if (playlistEnabled && playlist.length > 0) {
+      const active = playlist[playlistIndex] ?? { visualType: "none", visualUrl: "", audioUrl: "" };
+      return {
+        visualType: active.visualType,
+        visualUrl: active.visualUrl,
+        audioUrl: active.audioUrl,
+        playlist,
+        playlistIndex,
+        playlistEnabled: true,
+        playlistAutoAdvance,
+        playlistPlaying
+      };
     }
-    return { visualType, visualUrl, audioUrl };
+    if (visualType === "none" || !visualUrl) {
+      return {
+        visualType: "none",
+        visualUrl: "",
+        audioUrl,
+        playlist,
+        playlistIndex,
+        playlistEnabled: false,
+        playlistAutoAdvance,
+        playlistPlaying
+      };
+    }
+    return {
+      visualType,
+      visualUrl,
+      audioUrl,
+      playlist,
+      playlistIndex,
+      playlistEnabled: false,
+      playlistAutoAdvance,
+      playlistPlaying
+    };
   }
 
   normalizeBillboardMediaState(rawState = {}) {
     const source = rawState && typeof rawState === "object" ? rawState : {};
     const fallback = this.billboardMediaState ?? this.buildDefaultBillboardMediaState();
     return {
-      board1: this.normalizeBillboardMediaEntry(source.board1, fallback.board1),
-      board2: this.normalizeBillboardMediaEntry(source.board2, fallback.board2)
+      board1: this.normalizeBillboardMediaEntry(source.board1, fallback.board1, "board1"),
+      board2: this.normalizeBillboardMediaEntry(source.board2, fallback.board2, "board2")
     };
+  }
+
+  buildBillboardMediaEntrySignature(entry = {}) {
+    const playlist = Array.isArray(entry?.playlist) ? entry.playlist : [];
+    const playlistSignature = playlist
+      .map(
+        (item) =>
+          `${String(item?.visualType ?? "none")}:${String(item?.visualUrl ?? "")}:${String(item?.audioUrl ?? "")}`
+      )
+      .join("||");
+    return [
+      String(entry?.visualType ?? "none"),
+      String(entry?.visualUrl ?? ""),
+      String(entry?.audioUrl ?? ""),
+      entry?.playlistEnabled === true ? "1" : "0",
+      entry?.playlistAutoAdvance !== false ? "1" : "0",
+      entry?.playlistPlaying !== false ? "1" : "0",
+      String(Math.max(0, Math.trunc(Number(entry?.playlistIndex) || 0))),
+      playlistSignature
+    ].join("~");
   }
 
   releaseBillboardMediaChannel(boardKey) {
@@ -3413,6 +3694,10 @@ export class GameRuntime {
     if (!runtime) {
       return;
     }
+    if (runtime.videoEl && runtime.videoEndedHandler) {
+      runtime.videoEl.removeEventListener("ended", runtime.videoEndedHandler);
+    }
+    runtime.videoEndedHandler = null;
     if (runtime.videoEl) {
       runtime.videoEl.pause();
       runtime.videoEl.removeAttribute("src");
@@ -3446,6 +3731,33 @@ export class GameRuntime {
     }
   }
 
+  requestBillboardPlaylistAdvanceFromEnded() {
+    if (!this.socket || !this.networkConnected || !this.ownerAccessEnabled || !this.isLocalHost()) {
+      return;
+    }
+    const board2 = this.normalizeBillboardMediaEntry(this.billboardMediaState?.board2 ?? {}, null, "board2");
+    const playlist = Array.isArray(board2?.playlist) ? board2.playlist : [];
+    if (!(board2?.playlistEnabled === true && board2?.playlistAutoAdvance === true) || playlist.length <= 1) {
+      return;
+    }
+    const nextIndex = (Math.max(0, Math.trunc(Number(board2?.playlistIndex) || 0)) + 1) % playlist.length;
+    const payload = {
+      target: "board2",
+      media: this.normalizeBillboardMediaEntry(
+        {
+          ...board2,
+          playlist,
+          playlistIndex: nextIndex,
+          playlistEnabled: true,
+          playlistPlaying: true
+        },
+        board2,
+        "board2"
+      )
+    };
+    this.sendBillboardMediaPayload(payload, { silentSuccess: true, silentFailure: true });
+  }
+
   setupBillboardMediaChannel(boardKey, entry) {
     this.releaseBillboardMediaChannel(boardKey);
     const runtime = this.billboardMediaRuntime?.[boardKey];
@@ -3456,18 +3768,30 @@ export class GameRuntime {
     const visualType = String(entry?.visualType ?? "none");
     const visualUrl = sanitizeBillboardMediaUrl(entry?.visualUrl ?? "");
     const audioUrl = sanitizeBillboardMediaUrl(entry?.audioUrl ?? "");
+    const playlist = Array.isArray(entry?.playlist) ? entry.playlist : [];
+    const playlistEnabled = boardKey === "board2" && entry?.playlistEnabled === true && playlist.length > 0;
+    const playlistAutoAdvance = playlistEnabled && entry?.playlistAutoAdvance === true;
+    const playlistPlaying = !playlistEnabled || entry?.playlistPlaying !== false;
 
     if (visualType === "video" && visualUrl) {
       const video = document.createElement("video");
       video.src = visualUrl;
       video.preload = this.mobileEnabled ? "metadata" : "auto";
-      video.loop = true;
+      video.loop = !(playlistAutoAdvance && playlist.length > 1);
       video.muted = Boolean(audioUrl);
       video.playsInline = true;
-      video.autoplay = true;
+      video.autoplay = playlistPlaying;
       video.crossOrigin = "anonymous";
       video.setAttribute("playsinline", "");
       video.setAttribute("webkit-playsinline", "");
+
+      if (playlistAutoAdvance && playlist.length > 1) {
+        const endedHandler = () => {
+          this.requestBillboardPlaylistAdvanceFromEnded();
+        };
+        runtime.videoEndedHandler = endedHandler;
+        video.addEventListener("ended", endedHandler);
+      }
 
       const videoTexture = new THREE.VideoTexture(video);
       videoTexture.colorSpace = THREE.SRGBColorSpace;
@@ -3477,7 +3801,9 @@ export class GameRuntime {
       runtime.videoEl = video;
       runtime.texture = videoTexture;
       runtime.sourceTag = `video:${visualUrl}`;
-      video.play().catch(() => {});
+      if (playlistPlaying) {
+        video.play().catch(() => {});
+      }
     } else if (visualType === "image" && visualUrl) {
       const texture = this.textureLoader.load(
         visualUrl,
@@ -3501,7 +3827,9 @@ export class GameRuntime {
       audio.src = audioUrl;
       audio.loop = true;
       audio.preload = "auto";
-      audio.play().catch(() => {});
+      if (playlistPlaying) {
+        audio.play().catch(() => {});
+      }
       runtime.audioEl = audio;
     }
   }
@@ -3515,15 +3843,14 @@ export class GameRuntime {
       const prevEntry = previous?.[boardKey] ?? {};
       const nextEntry = next?.[boardKey] ?? {};
       const changed =
-        String(prevEntry.visualType ?? "") !== String(nextEntry.visualType ?? "") ||
-        String(prevEntry.visualUrl ?? "") !== String(nextEntry.visualUrl ?? "") ||
-        String(prevEntry.audioUrl ?? "") !== String(nextEntry.audioUrl ?? "");
+        this.buildBillboardMediaEntrySignature(prevEntry) !== this.buildBillboardMediaEntrySignature(nextEntry);
       if (changed) {
         this.setupBillboardMediaChannel(boardKey, nextEntry);
       }
     }
     this.applyCenterBillboardMode();
     this.applyOppositeBillboardMode();
+    this.refreshBillboardPlaylistUi();
   }
 
   buildBillboardMediaPayloadFromUi(clearOnly = false) {
@@ -3532,7 +3859,13 @@ export class GameRuntime {
     if (clearOnly) {
       return {
         target: board,
-        media: { visualType: "none", visualUrl: "", audioUrl: "" }
+        media: {
+          visualType: "none",
+          visualUrl: "",
+          audioUrl: "",
+          playlistEnabled: false,
+          playlistPlaying: false
+        }
       };
     }
 
@@ -3543,7 +3876,13 @@ export class GameRuntime {
       if (/\.(mp3|wav|ogg|m4a)(\?.*)?$/.test(lower)) {
         return {
           target: board,
-          media: { visualType: "none", visualUrl: "", audioUrl: customUrl }
+          media: {
+            visualType: "none",
+            visualUrl: "",
+            audioUrl: customUrl,
+            playlistEnabled: false,
+            playlistPlaying: false
+          }
         };
       }
       const visualType = inferBillboardVisualTypeFromUrl(customUrl);
@@ -3552,25 +3891,49 @@ export class GameRuntime {
       }
       return {
         target: board,
-        media: { visualType, visualUrl: customUrl, audioUrl: "" }
+        media: {
+          visualType,
+          visualUrl: customUrl,
+          audioUrl: "",
+          playlistEnabled: false,
+          playlistPlaying: false
+        }
       };
     }
 
     if (preset === "gemini-image") {
       return {
         target: board,
-        media: { visualType: "image", visualUrl: BILLBOARD_PRESET_IMAGE_URL, audioUrl: "" }
+        media: {
+          visualType: "image",
+          visualUrl: BILLBOARD_PRESET_IMAGE_URL,
+          audioUrl: "",
+          playlistEnabled: false,
+          playlistPlaying: false
+        }
       };
     }
     if (preset === "sample-mp3") {
       return {
         target: board,
-        media: { visualType: "none", visualUrl: "", audioUrl: BILLBOARD_PRESET_AUDIO_URL }
+        media: {
+          visualType: "none",
+          visualUrl: "",
+          audioUrl: BILLBOARD_PRESET_AUDIO_URL,
+          playlistEnabled: false,
+          playlistPlaying: false
+        }
       };
     }
     return {
       target: board,
-      media: { visualType: "none", visualUrl: "", audioUrl: "" }
+      media: {
+        visualType: "none",
+        visualUrl: "",
+        audioUrl: "",
+        playlistEnabled: false,
+        playlistPlaying: false
+      }
     };
   }
 
@@ -3603,6 +3966,233 @@ export class GameRuntime {
       }
       this.appendChatLine("시스템", "전광판 미디어를 반영했습니다.", "system");
     });
+  }
+
+  canControlBillboardMedia({ silent = false } = {}) {
+    if (!this.ownerAccessEnabled) {
+      if (!silent) {
+        this.appendChatLine("System", "Owner key is required for billboard controls.", "system");
+      }
+      return false;
+    }
+    if (!this.socket || !this.networkConnected) {
+      if (!silent) {
+        this.appendChatLine("System", "You must be connected to control billboard media.", "system");
+      }
+      return false;
+    }
+    if (!this.isLocalHost()) {
+      if (!silent) {
+        this.appendChatLine("System", "Only the current host can control billboard media.", "system");
+      }
+      return false;
+    }
+    return true;
+  }
+
+  sendBillboardMediaPayload(payload, options = {}) {
+    const { successMessage = "Billboard media updated.", silentSuccess = false, silentFailure = false } =
+      options ?? {};
+    if (!payload || typeof payload !== "object") {
+      return;
+    }
+    if (!this.canControlBillboardMedia({ silent: silentFailure })) {
+      return;
+    }
+    this.socket.emit("billboard:media:set", payload, (response = {}) => {
+      if (!response?.ok) {
+        if (!silentFailure) {
+          this.appendChatLine("System", `Billboard update failed: ${this.translateQuizError(response?.error)}`, "system");
+        }
+        return;
+      }
+      if (response?.media) {
+        this.applyBillboardMediaState(response.media);
+      }
+      if (!silentSuccess && successMessage) {
+        this.appendChatLine("System", successMessage, "system");
+      }
+    });
+  }
+
+  parseBillboardPlaylistFromInput(rawText = "") {
+    const text = String(rawText ?? "");
+    const lines = text
+      .split(/\r?\n/g)
+      .map((line) => sanitizeBillboardMediaUrl(line))
+      .filter(Boolean);
+    const playlist = [];
+    for (const url of lines) {
+      if (playlist.length >= BILLBOARD_PLAYLIST_MAX_ITEMS) {
+        break;
+      }
+      const visualType = inferBillboardVisualTypeFromUrl(url);
+      if (visualType !== "video") {
+        continue;
+      }
+      playlist.push({ visualType: "video", visualUrl: url, audioUrl: "" });
+    }
+    return playlist;
+  }
+
+  buildBoard2PlaylistMediaOverride(overrides = {}) {
+    const current = this.normalizeBillboardMediaEntry(this.billboardMediaState?.board2 ?? {}, null, "board2");
+    return this.normalizeBillboardMediaEntry(
+      {
+        ...current,
+        ...overrides
+      },
+      current,
+      "board2"
+    );
+  }
+
+  requestBillboardPlaylistLoad() {
+    const playlist = this.parseBillboardPlaylistFromInput(this.billboardPlaylistInputEl?.value ?? "");
+    if (playlist.length <= 0) {
+      this.appendChatLine("System", "Enter at least one MP4 URL (one per line).", "system");
+      return;
+    }
+    const autoAdvance = this.billboardPlaylistAutoInputEl?.checked !== false;
+    const payload = {
+      target: "board2",
+      media: this.buildBoard2PlaylistMediaOverride({
+        playlist,
+        playlistIndex: 0,
+        playlistEnabled: true,
+        playlistAutoAdvance: autoAdvance,
+        playlistPlaying: true
+      })
+    };
+    this.sendBillboardMediaPayload(payload, {
+      successMessage: `Rear billboard playlist loaded (${playlist.length} videos).`
+    });
+  }
+
+  requestBillboardPlaylistControl(action, options = {}) {
+    const command = String(action ?? "").trim().toLowerCase();
+    const { silentSuccess = false, silentFailure = false } = options ?? {};
+    const current = this.normalizeBillboardMediaEntry(this.billboardMediaState?.board2 ?? {}, null, "board2");
+    const playlist = Array.isArray(current?.playlist) ? current.playlist : [];
+    if (playlist.length <= 0) {
+      if (!silentFailure) {
+        this.appendChatLine("System", "Rear billboard playlist is empty.", "system");
+      }
+      return;
+    }
+
+    let nextIndex = Math.max(0, Math.trunc(Number(current?.playlistIndex) || 0));
+    let nextPlaying = current?.playlistPlaying !== false;
+    let nextEnabled = current?.playlistEnabled === true;
+    const autoAdvance = this.billboardPlaylistAutoInputEl?.checked !== false;
+
+    if (command === "play") {
+      nextEnabled = true;
+      nextPlaying = true;
+    } else if (command === "pause") {
+      nextEnabled = true;
+      nextPlaying = false;
+    } else if (command === "next") {
+      nextIndex = (nextIndex + 1) % playlist.length;
+      nextEnabled = true;
+      nextPlaying = true;
+    } else if (command === "prev") {
+      nextIndex = (nextIndex - 1 + playlist.length) % playlist.length;
+      nextEnabled = true;
+      nextPlaying = true;
+    } else if (command === "select") {
+      const requestedIndex = Math.trunc(Number(this.billboardPlaylistIndexSelectEl?.value));
+      if (!Number.isFinite(requestedIndex) || requestedIndex < 0 || requestedIndex >= playlist.length) {
+        if (!silentFailure) {
+          this.appendChatLine("System", "Selected playlist index is invalid.", "system");
+        }
+        return;
+      }
+      nextIndex = requestedIndex;
+      nextEnabled = true;
+      nextPlaying = true;
+    } else {
+      if (!silentFailure) {
+        this.appendChatLine("System", "Unknown playlist command.", "system");
+      }
+      return;
+    }
+
+    const payload = {
+      target: "board2",
+      media: this.buildBoard2PlaylistMediaOverride({
+        playlist,
+        playlistIndex: nextIndex,
+        playlistEnabled: nextEnabled,
+        playlistAutoAdvance: autoAdvance,
+        playlistPlaying: nextPlaying
+      })
+    };
+    const successMessageMap = {
+      play: "Rear billboard playback started.",
+      pause: "Rear billboard playback paused.",
+      next: "Moved to next rear billboard video.",
+      prev: "Moved to previous rear billboard video.",
+      select: "Selected rear billboard video has started."
+    };
+    this.sendBillboardMediaPayload(payload, {
+      successMessage: successMessageMap[command] ?? "Rear billboard playback updated.",
+      silentSuccess,
+      silentFailure
+    });
+  }
+
+  refreshBillboardPlaylistUi() {
+    this.resolveUiElements();
+    const select = this.billboardPlaylistIndexSelectEl;
+    if (!select) {
+      return;
+    }
+    const board2 = this.normalizeBillboardMediaEntry(this.billboardMediaState?.board2 ?? {}, null, "board2");
+    const playlist = Array.isArray(board2?.playlist) ? board2.playlist : [];
+    const playlistIndex = Math.max(0, Math.trunc(Number(board2?.playlistIndex) || 0));
+    const signature = `${playlistIndex}|${board2?.playlistPlaying === false ? 0 : 1}|${
+      board2?.playlistAutoAdvance === false ? 0 : 1
+    }|${playlist
+      .map((item) => String(item?.visualUrl ?? ""))
+      .join("|")}`;
+    if (signature === this.billboardPlaylistOptionsSignature) {
+      return;
+    }
+    this.billboardPlaylistOptionsSignature = signature;
+    select.replaceChildren();
+    if (playlist.length <= 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "목록 비어 있음";
+      select.appendChild(option);
+      select.value = "";
+    } else {
+      for (let index = 0; index < playlist.length; index += 1) {
+        const item = playlist[index];
+        const option = document.createElement("option");
+        option.value = String(index);
+        const rawUrl = String(item?.visualUrl ?? "");
+        let shortLabel = rawUrl;
+        try {
+          const parsed = new URL(rawUrl, window.location.href);
+          const pathPart = parsed.pathname
+            .split("/")
+            .filter(Boolean)
+            .pop();
+          shortLabel = pathPart || parsed.host || rawUrl;
+        } catch {}
+        if (shortLabel.length > 38) {
+          shortLabel = `${shortLabel.slice(0, 35)}...`;
+        }
+        option.textContent = `${index + 1}. ${shortLabel}`;
+        select.appendChild(option);
+      }
+      select.value = String(Math.min(playlistIndex, playlist.length - 1));
+    }
+    if (this.billboardPlaylistAutoInputEl) {
+      this.billboardPlaylistAutoInputEl.checked = board2?.playlistAutoAdvance !== false;
+    }
   }
 
   clearMegaAdScreen() {
@@ -5405,6 +5995,27 @@ export class GameRuntime {
         return;
       }
 
+      if (event.code === "KeyC" && this.localSpectatorMode) {
+        event.preventDefault();
+        this.toggleSpectatorViewMode();
+        return;
+      }
+
+      if (event.code === "KeyX" && this.localSpectatorMode) {
+        event.preventDefault();
+        const released = this.clearSpectatorFollowTarget(true);
+        if (!released) {
+          this.appendChatLine("시스템", "이미 자유 관전 모드입니다.", "system");
+        }
+        return;
+      }
+
+      if (event.code === "KeyZ" && this.isLocalHost()) {
+        event.preventDefault();
+        this.toggleHostSpectatorModeOverride();
+        return;
+      }
+
       if (MOVEMENT_KEY_CODES.has(event.code)) {
         event.preventDefault();
       }
@@ -5716,6 +6327,24 @@ export class GameRuntime {
     this.billboardMediaClearBtnEl?.addEventListener("click", () => {
       this.requestBillboardMediaApply(true);
     });
+    this.billboardPlaylistLoadBtnEl?.addEventListener("click", () => {
+      this.requestBillboardPlaylistLoad();
+    });
+    this.billboardPlaylistPlayBtnEl?.addEventListener("click", () => {
+      this.requestBillboardPlaylistControl("play");
+    });
+    this.billboardPlaylistPauseBtnEl?.addEventListener("click", () => {
+      this.requestBillboardPlaylistControl("pause");
+    });
+    this.billboardPlaylistPrevBtnEl?.addEventListener("click", () => {
+      this.requestBillboardPlaylistControl("prev");
+    });
+    this.billboardPlaylistNextBtnEl?.addEventListener("click", () => {
+      this.requestBillboardPlaylistControl("next");
+    });
+    this.billboardPlaylistSelectBtnEl?.addEventListener("click", () => {
+      this.requestBillboardPlaylistControl("select");
+    });
     this.quizSlotCountInputEl?.addEventListener("change", () => {
       this.applyQuizSlotCountChange();
     });
@@ -5931,6 +6560,33 @@ export class GameRuntime {
     }
     if (!this.billboardMediaClearBtnEl) {
       this.billboardMediaClearBtnEl = document.getElementById("billboard-media-clear-btn");
+    }
+    if (!this.billboardPlaylistInputEl) {
+      this.billboardPlaylistInputEl = document.getElementById("billboard-playlist-input");
+    }
+    if (!this.billboardPlaylistLoadBtnEl) {
+      this.billboardPlaylistLoadBtnEl = document.getElementById("billboard-playlist-load-btn");
+    }
+    if (!this.billboardPlaylistPlayBtnEl) {
+      this.billboardPlaylistPlayBtnEl = document.getElementById("billboard-playlist-play-btn");
+    }
+    if (!this.billboardPlaylistPauseBtnEl) {
+      this.billboardPlaylistPauseBtnEl = document.getElementById("billboard-playlist-pause-btn");
+    }
+    if (!this.billboardPlaylistPrevBtnEl) {
+      this.billboardPlaylistPrevBtnEl = document.getElementById("billboard-playlist-prev-btn");
+    }
+    if (!this.billboardPlaylistNextBtnEl) {
+      this.billboardPlaylistNextBtnEl = document.getElementById("billboard-playlist-next-btn");
+    }
+    if (!this.billboardPlaylistAutoInputEl) {
+      this.billboardPlaylistAutoInputEl = document.getElementById("billboard-playlist-auto-input");
+    }
+    if (!this.billboardPlaylistIndexSelectEl) {
+      this.billboardPlaylistIndexSelectEl = document.getElementById("billboard-playlist-index-select");
+    }
+    if (!this.billboardPlaylistSelectBtnEl) {
+      this.billboardPlaylistSelectBtnEl = document.getElementById("billboard-playlist-select-btn");
     }
     if (!this.quizReviewModalEl) {
       this.quizReviewModalEl = document.getElementById("quiz-review-modal");
@@ -7682,12 +8338,14 @@ export class GameRuntime {
         const hasQueueFlag = Object.prototype.hasOwnProperty.call(player ?? {}, "queuedForAdmission");
         const queuedForAdmission = hasQueueFlag ? player?.queuedForAdmission === true : !admitted;
         localHostSpectator = isHostSpectator;
+        this.serverHostSpectator = isHostSpectator;
+        this.hostSpectatorOverride = this.isLocalHost() && !isHostSpectator;
         localQueuedForAdmission = queuedForAdmission;
         localAdmitted = admitted;
         this.localAdmissionWaiting = !isHostSpectator && !admitted && queuedForAdmission;
         if (isHostSpectator) {
           this.localQuizAlive = true;
-          if (this.quizState.active) {
+          if (this.quizState.active && !this.hostSpectatorOverride) {
             this.enterHostSpectatorMode();
           }
           continue;
@@ -8352,6 +9010,8 @@ export class GameRuntime {
     this.quizState.questionText = "";
     this.quizState.survivors = 0;
     this.quizState.myScore = 0;
+    this.serverHostSpectator = false;
+    this.hostSpectatorOverride = false;
     this.localQuizAlive = true;
     this.localSpectatorMode = false;
     this.localEliminationDrop.active = false;
@@ -8657,9 +9317,11 @@ export class GameRuntime {
     if (me) {
       this.quizState.myScore = Math.max(0, Math.trunc(Number(me.score) || 0));
       const isHostSpectator = me?.spectator === true;
+      this.serverHostSpectator = isHostSpectator;
+      this.hostSpectatorOverride = this.isLocalHost() && !isHostSpectator;
       if (isHostSpectator) {
         this.localQuizAlive = true;
-        if (this.quizState.active) {
+        if (this.quizState.active && !this.hostSpectatorOverride) {
           this.enterHostSpectatorMode();
         }
       } else {
@@ -10083,6 +10745,16 @@ export class GameRuntime {
     this.billboardMediaUrlInputEl && (this.billboardMediaUrlInputEl.disabled = !canControl);
     this.billboardMediaApplyBtnEl && (this.billboardMediaApplyBtnEl.disabled = !canControl);
     this.billboardMediaClearBtnEl && (this.billboardMediaClearBtnEl.disabled = !canControl);
+    this.billboardPlaylistInputEl && (this.billboardPlaylistInputEl.disabled = !canControl);
+    this.billboardPlaylistLoadBtnEl && (this.billboardPlaylistLoadBtnEl.disabled = !canControl);
+    this.billboardPlaylistPlayBtnEl && (this.billboardPlaylistPlayBtnEl.disabled = !canControl);
+    this.billboardPlaylistPauseBtnEl && (this.billboardPlaylistPauseBtnEl.disabled = !canControl);
+    this.billboardPlaylistPrevBtnEl && (this.billboardPlaylistPrevBtnEl.disabled = !canControl);
+    this.billboardPlaylistNextBtnEl && (this.billboardPlaylistNextBtnEl.disabled = !canControl);
+    this.billboardPlaylistAutoInputEl && (this.billboardPlaylistAutoInputEl.disabled = !canControl);
+    this.billboardPlaylistIndexSelectEl && (this.billboardPlaylistIndexSelectEl.disabled = !canControl);
+    this.billboardPlaylistSelectBtnEl && (this.billboardPlaylistSelectBtnEl.disabled = !canControl);
+    this.refreshBillboardPlaylistUi();
 
     if (this.quizControlsNoteEl) {
       if (!isHost) {

@@ -615,6 +615,64 @@ body.mobile-roster-focus #mobile-look-pad {
   gap: 5px;
 }
 
+#billboard-playlist-input {
+  width: 100%;
+  min-height: 84px;
+  padding: 8px 9px;
+  border: 1px solid rgba(171, 208, 238, 0.66);
+  border-radius: 8px;
+  background: rgba(10, 26, 42, 0.92);
+  color: #edf6ff;
+  font: 700 0.61rem/1.38 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+  outline: none;
+  resize: vertical;
+}
+
+#billboard-playlist-input:focus {
+  border-color: rgba(203, 233, 255, 0.95);
+  box-shadow: 0 0 0 2px rgba(134, 179, 218, 0.22);
+}
+
+.billboard-playlist-row {
+  grid-template-columns: 1fr;
+  gap: 5px;
+}
+
+.billboard-playlist-row label {
+  color: rgba(198, 225, 246, 0.9);
+  font: 700 0.56rem/1.25 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+.billboard-playlist-actions-row {
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 5px;
+}
+
+.billboard-playlist-row .billboard-playlist-actions-row:last-of-type {
+  grid-template-columns: 1fr 1fr;
+}
+
+.billboard-playlist-auto-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid rgba(170, 211, 243, 0.6);
+  border-radius: 8px;
+  background: rgba(10, 24, 38, 0.72);
+  color: rgba(223, 241, 255, 0.94);
+  font: 700 0.55rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+.billboard-playlist-auto-label input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+}
+
 #billboard-media-apply-btn,
 #billboard-media-clear-btn {
   height: 32px;
@@ -1740,6 +1798,15 @@ body.mobile-chat-focus #chat-header {
   #billboard-media-url-input {
     height: 31px;
     font-size: 0.61rem;
+  }
+
+  #billboard-playlist-input {
+    min-height: 74px;
+    font-size: 0.58rem;
+  }
+
+  .billboard-playlist-auto-label {
+    font-size: 0.52rem;
   }
 
   #hub-billboard {

@@ -103,6 +103,7 @@ const QUIZ_AUTO_START_DELAY_MS = 12000;
 const QUIZ_AUTO_RESTART_DELAY_MS = 9000;
 const QUIZ_AUTO_START_MIN_PLAYERS = 1;
 const QUIZ_END_ON_SINGLE_SURVIVOR = process.env.QUIZ_END_ON_SINGLE_SURVIVOR === "1";
+const QUIZ_AUTO_OPEN_LOBBY_ON_END = process.env.QUIZ_AUTO_OPEN_LOBBY_ON_END !== "0";
 const QUIZ_ZONE_EDGE_MARGIN = 0.5;
 const QUIZ_ZONE_CENTER_MARGIN = 0.8;
 const DEFAULT_PORTAL_TARGET_URL = sanitizePortalTargetUrl(process.env.PORTAL_TARGET_URL ?? "");
@@ -112,6 +113,7 @@ const CHAT_HISTORY_MAX_ENTRIES = Math.max(
 );
 const BILLBOARD_MEDIA_URL_MAX_LENGTH = 420;
 const BILLBOARD_MEDIA_VISUAL_TYPES = new Set(["none", "video", "image"]);
+const BILLBOARD_PLAYLIST_MAX_ITEMS = 40;
 const ROOM_QUIZ_CONFIG_CACHE_LIMIT = Math.max(24, MAX_ACTIVE_ROOMS * 6);
 
 const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
@@ -202,6 +204,21 @@ const ADMISSION_SPAWN_CENTER_Z = 14;
 const ADMISSION_SPAWN_RING_START = 2.4;
 const ADMISSION_SPAWN_RING_STEP = 2.35;
 const ADMISSION_SPAWN_PER_RING = 10;
+const WORLD_PORTAL_CONFIG = BASE_VOID_PACK?.world?.hubFlow?.portal ?? {};
+const WORLD_PORTAL_POSITION = Array.isArray(WORLD_PORTAL_CONFIG?.position)
+  ? WORLD_PORTAL_CONFIG.position
+  : [44, 0.08, 14];
+const WORLD_PORTAL_CENTER_X = Number.isFinite(Number(WORLD_PORTAL_POSITION?.[0]))
+  ? Number(WORLD_PORTAL_POSITION[0])
+  : 44;
+const WORLD_PORTAL_CENTER_Z = Number.isFinite(Number(WORLD_PORTAL_POSITION?.[2]))
+  ? Number(WORLD_PORTAL_POSITION[2])
+  : 14;
+const WORLD_PORTAL_RADIUS = Math.max(2.2, Number(WORLD_PORTAL_CONFIG?.radius) || 4.4);
+const WORLD_PORTAL_EXIT_OFFSET_X = Math.max(
+  2.4,
+  Math.min(8.6, WORLD_PORTAL_RADIUS * 0.78 + 1.25)
+);
 const QUIZ_SPECTATOR_ARENA_MARGIN = 1.1;
 const QUIZ_SPECTATOR_ARENA_EXIT_PADDING = 1.4;
 const QUIZ_ARENA_MIN_X =
@@ -593,7 +610,7 @@ function normalizeEntryGateQueueIds(room, rawIds) {
       continue;
     }
     const player = room.players.get(id);
-    if (!player || isPlayerHostModerator(room, player)) {
+    if (!player || isPlayerHostController(room, player)) {
       continue;
     }
     seen.add(id);
@@ -609,7 +626,7 @@ function addNextPriorityPlayer(room, socketId) {
   const gate = ensureRoomEntryGate(room);
   const id = String(socketId ?? "");
   const player = room.players.get(id);
-  if (!player || isPlayerHostModerator(room, player)) {
+  if (!player || isPlayerHostController(room, player)) {
     return;
   }
   if (!Array.isArray(gate.nextPriorityIds)) {
@@ -687,18 +704,92 @@ function sanitizeBillboardMediaUrl(raw) {
   }
 }
 
-function createDefaultBillboardMediaState() {
+function inferBillboardVisualTypeFromUrl(rawUrl) {
+  const url = String(rawUrl ?? "").trim().toLowerCase();
+  if (!url) {
+    return "none";
+  }
+  if (/\.(mp4|webm|mov|m4v)(\?.*)?$/.test(url)) {
+    return "video";
+  }
+  if (/\.(png|jpe?g|webp|gif|bmp|svg)(\?.*)?$/.test(url)) {
+    return "image";
+  }
+  return "none";
+}
+
+function createDefaultBillboardMediaEntry() {
   return {
-    board1: { visualType: "none", visualUrl: "", audioUrl: "" },
-    board2: { visualType: "none", visualUrl: "", audioUrl: "" }
+    visualType: "none",
+    visualUrl: "",
+    audioUrl: "",
+    playlist: [],
+    playlistIndex: 0,
+    playlistEnabled: false,
+    playlistAutoAdvance: true,
+    playlistPlaying: true
   };
 }
 
-function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null) {
+function createDefaultBillboardMediaState() {
+  return {
+    board1: createDefaultBillboardMediaEntry(),
+    board2: createDefaultBillboardMediaEntry()
+  };
+}
+
+function sanitizeBillboardPlaylistItem(rawItem = {}, fallbackItem = null) {
+  const fallback =
+    fallbackItem && typeof fallbackItem === "object"
+      ? fallbackItem
+      : { visualType: "video", visualUrl: "", audioUrl: "" };
+  const entry =
+    typeof rawItem === "string"
+      ? { visualType: "video", visualUrl: rawItem, audioUrl: "" }
+      : rawItem && typeof rawItem === "object"
+        ? rawItem
+        : {};
+  const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
+  if (!visualUrl) {
+    return { visualType: "none", visualUrl: "", audioUrl: "" };
+  }
+  const requestedType = String(entry.visualType ?? entry.type ?? fallback.visualType ?? "video")
+    .trim()
+    .toLowerCase();
+  const inferredType = inferBillboardVisualTypeFromUrl(visualUrl);
+  const visualType =
+    requestedType === "video" || requestedType === "image"
+      ? requestedType
+      : inferredType === "video" || inferredType === "image"
+        ? inferredType
+        : "video";
+  const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+  return { visualType, visualUrl, audioUrl };
+}
+
+function sanitizeBillboardPlaylist(rawPlaylist = [], fallbackPlaylist = []) {
+  const source = Array.isArray(rawPlaylist) ? rawPlaylist : [];
+  const fallback = Array.isArray(fallbackPlaylist) ? fallbackPlaylist : [];
+  const next = [];
+  for (let index = 0; index < source.length; index += 1) {
+    if (next.length >= BILLBOARD_PLAYLIST_MAX_ITEMS) {
+      break;
+    }
+    const item = sanitizeBillboardPlaylistItem(source[index], fallback[index]);
+    if (!item.visualUrl || item.visualType === "none") {
+      continue;
+    }
+    next.push(item);
+  }
+  return next;
+}
+
+function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null, options = {}) {
+  const allowPlaylist = options?.allowPlaylist === true;
   const fallback =
     fallbackEntry && typeof fallbackEntry === "object"
       ? fallbackEntry
-      : { visualType: "none", visualUrl: "", audioUrl: "" };
+      : createDefaultBillboardMediaEntry();
   const entry = rawEntry && typeof rawEntry === "object" ? rawEntry : {};
   const requestedType = String(entry.visualType ?? entry.type ?? fallback.visualType ?? "none")
     .trim()
@@ -708,13 +799,80 @@ function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null) {
     : String(fallback.visualType ?? "none");
   const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
   const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+  const fallbackPlaylist = allowPlaylist ? sanitizeBillboardPlaylist(fallback.playlist ?? []) : [];
+  const playlist = allowPlaylist
+    ? sanitizeBillboardPlaylist(entry.playlist ?? fallbackPlaylist, fallbackPlaylist)
+    : [];
+  const rawPlaylistIndex = Number(entry.playlistIndex ?? entry.index ?? fallback.playlistIndex ?? 0);
+  let playlistIndex = Number.isFinite(rawPlaylistIndex) ? Math.trunc(rawPlaylistIndex) : 0;
+  if (playlist.length > 0) {
+    playlistIndex = ((playlistIndex % playlist.length) + playlist.length) % playlist.length;
+  } else {
+    playlistIndex = 0;
+  }
+  const playlistEnabled =
+    allowPlaylist &&
+    (entry.playlistEnabled ?? fallback.playlistEnabled ?? false) === true &&
+    playlist.length > 0;
+  const playlistAutoAdvance = allowPlaylist
+    ? (entry.playlistAutoAdvance ?? fallback.playlistAutoAdvance ?? true) !== false
+    : true;
+  const playlistPlaying = allowPlaylist
+    ? (entry.playlistPlaying ?? fallback.playlistPlaying ?? true) !== false
+    : true;
+  if (playlistEnabled && playlist.length > 0) {
+    const active = playlist[playlistIndex] ?? { visualType: "none", visualUrl: "", audioUrl: "" };
+    return {
+      visualType: active.visualType,
+      visualUrl: active.visualUrl,
+      audioUrl: active.audioUrl,
+      playlist,
+      playlistIndex,
+      playlistEnabled: true,
+      playlistAutoAdvance,
+      playlistPlaying
+    };
+  }
   if (visualType === "none") {
-    return { visualType: "none", visualUrl: "", audioUrl };
+    return {
+      visualType: "none",
+      visualUrl: "",
+      audioUrl,
+      playlist,
+      playlistIndex,
+      playlistEnabled: false,
+      playlistAutoAdvance,
+      playlistPlaying
+    };
   }
   if (!visualUrl) {
-    return { visualType: "none", visualUrl: "", audioUrl };
+    return {
+      visualType: "none",
+      visualUrl: "",
+      audioUrl,
+      playlist,
+      playlistIndex,
+      playlistEnabled: false,
+      playlistAutoAdvance,
+      playlistPlaying
+    };
   }
-  return { visualType, visualUrl, audioUrl };
+  return {
+    visualType,
+    visualUrl,
+    audioUrl,
+    playlist,
+    playlistIndex,
+    playlistEnabled: false,
+    playlistAutoAdvance,
+    playlistPlaying
+  };
+}
+
+function sanitizeBillboardMediaEntryForBoard(boardKey, rawEntry = {}, fallbackEntry = null) {
+  return sanitizeBillboardMediaEntry(rawEntry, fallbackEntry, {
+    allowPlaylist: String(boardKey ?? "").trim().toLowerCase() === "board2"
+  });
 }
 
 function ensureRoomBillboardMedia(room) {
@@ -724,8 +882,8 @@ function ensureRoomBillboardMedia(room) {
   if (!room.billboardMedia || typeof room.billboardMedia !== "object") {
     room.billboardMedia = createDefaultBillboardMediaState();
   }
-  room.billboardMedia.board1 = sanitizeBillboardMediaEntry(room.billboardMedia.board1);
-  room.billboardMedia.board2 = sanitizeBillboardMediaEntry(room.billboardMedia.board2);
+  room.billboardMedia.board1 = sanitizeBillboardMediaEntryForBoard("board1", room.billboardMedia.board1);
+  room.billboardMedia.board2 = sanitizeBillboardMediaEntryForBoard("board2", room.billboardMedia.board2);
   return room.billboardMedia;
 }
 
@@ -733,8 +891,8 @@ function sanitizeRoomBillboardMediaPayload(payload = {}, current = null) {
   const baseState =
     current && typeof current === "object"
       ? {
-          board1: sanitizeBillboardMediaEntry(current.board1),
-          board2: sanitizeBillboardMediaEntry(current.board2)
+          board1: sanitizeBillboardMediaEntryForBoard("board1", current.board1),
+          board2: sanitizeBillboardMediaEntryForBoard("board2", current.board2)
         }
       : createDefaultBillboardMediaState();
   const source = payload && typeof payload === "object" ? payload : {};
@@ -744,15 +902,19 @@ function sanitizeRoomBillboardMediaPayload(payload = {}, current = null) {
       return { ok: false, error: "invalid billboard target", media: baseState };
     }
     const next = {
-      board1: sanitizeBillboardMediaEntry(baseState.board1),
-      board2: sanitizeBillboardMediaEntry(baseState.board2)
+      board1: sanitizeBillboardMediaEntryForBoard("board1", baseState.board1),
+      board2: sanitizeBillboardMediaEntryForBoard("board2", baseState.board2)
     };
-    next[target] = sanitizeBillboardMediaEntry(source.media ?? source.value ?? source, baseState[target]);
+    next[target] = sanitizeBillboardMediaEntryForBoard(
+      target,
+      source.media ?? source.value ?? source,
+      baseState[target]
+    );
     return { ok: true, media: next };
   }
   const next = {
-    board1: sanitizeBillboardMediaEntry(source.board1 ?? baseState.board1, baseState.board1),
-    board2: sanitizeBillboardMediaEntry(source.board2 ?? baseState.board2, baseState.board2)
+    board1: sanitizeBillboardMediaEntryForBoard("board1", source.board1 ?? baseState.board1, baseState.board1),
+    board2: sanitizeBillboardMediaEntryForBoard("board2", source.board2 ?? baseState.board2, baseState.board2)
   };
   return { ok: true, media: next };
 }
@@ -861,6 +1023,19 @@ function buildAdmissionSpawnPoint(index, total) {
     y: ADMISSION_SPAWN_Y,
     z: Number((ADMISSION_SPAWN_CENTER_Z + Math.sin(angle) * radius).toFixed(3))
   };
+}
+
+function buildPortalArrivalSpawnPoint() {
+  const x = Number((WORLD_PORTAL_CENTER_X - WORLD_PORTAL_EXIT_OFFSET_X).toFixed(3));
+  const z = Number(WORLD_PORTAL_CENTER_Z.toFixed(3));
+  const yawToArenaCenter = Math.atan2(0 - x, 0 - z);
+  return sanitizePlayerState({
+    x,
+    y: ADMISSION_SPAWN_Y,
+    z,
+    yaw: yawToArenaCenter,
+    pitch: -0.03
+  });
 }
 
 function hashStringToUnit(rawValue = "") {
@@ -1416,7 +1591,7 @@ function initializePlayerForQuiz(player, resetScore = true) {
   player.lastChoiceReason = null;
 }
 
-function isPlayerHostModerator(room, player) {
+function isPlayerHostController(room, player) {
   if (!room || !player) {
     return false;
   }
@@ -1427,6 +1602,29 @@ function isPlayerHostModerator(room, player) {
     return true;
   }
   return player.isOwner === true;
+}
+
+function isPlayerHostModerator(room, player) {
+  if (!isPlayerHostController(room, player)) {
+    return false;
+  }
+  return player?.hostParticipating !== true;
+}
+
+function normalizeHostParticipationState(room) {
+  if (!room?.players || room.players.size <= 0) {
+    return;
+  }
+  for (const player of room.players.values()) {
+    if (!player) {
+      continue;
+    }
+    if (isPlayerHostController(room, player)) {
+      player.hostParticipating = player.hostParticipating === true;
+    } else {
+      player.hostParticipating = false;
+    }
+  }
 }
 
 function countPlayablePlayers(room) {
@@ -1452,7 +1650,7 @@ function countWaitingPlayers(room) {
     if (!player) {
       continue;
     }
-    if (isPlayerHostModerator(room, player)) {
+    if (isPlayerHostController(room, player)) {
       continue;
     }
     if (player.admitted === true) {
@@ -1472,7 +1670,7 @@ function collectWaitingPlayers(room) {
     if (!player) {
       continue;
     }
-    if (isPlayerHostModerator(room, player)) {
+    if (isPlayerHostController(room, player)) {
       continue;
     }
     if (player.admitted === true) {
@@ -1492,7 +1690,7 @@ function countSpectatorPlayers(room) {
     if (!player) {
       continue;
     }
-    if (isPlayerHostModerator(room, player)) {
+    if (isPlayerHostController(room, player)) {
       continue;
     }
     if (player.admitted === true) {
@@ -1530,7 +1728,7 @@ function openEntryGate(room) {
     if (!player) {
       continue;
     }
-    if (isPlayerHostModerator(room, player)) {
+    if (isPlayerHostController(room, player)) {
       player.admitted = true;
       player.awaitingAdmission = false;
       removeNextPriorityPlayer(room, player.id);
@@ -1636,7 +1834,7 @@ function startEntryAdmission(room) {
     const targets = ids
       .map((id) => currentRoom.players.get(String(id)))
       .filter(Boolean)
-      .filter((player) => !isPlayerHostModerator(currentRoom, player));
+      .filter((player) => !isPlayerHostController(currentRoom, player));
 
     for (let index = 0; index < targets.length; index += 1) {
       const player = targets[index];
@@ -1753,8 +1951,8 @@ function serializeRoom(room) {
     hostId: room.hostId,
     portalTargetUrl: sanitizePortalTargetUrl(room?.portalTargetUrl ?? ""),
     billboardMedia: {
-      board1: sanitizeBillboardMediaEntry(billboardMedia.board1),
-      board2: sanitizeBillboardMediaEntry(billboardMedia.board2)
+      board1: sanitizeBillboardMediaEntryForBoard("board1", billboardMedia.board1),
+      board2: sanitizeBillboardMediaEntryForBoard("board2", billboardMedia.board2)
     },
     entryGate: {
       portalOpen: gate.portalOpen === true,
@@ -1778,6 +1976,7 @@ function serializeRoom(room) {
       admitted: player.admitted !== false,
       queuedForAdmission: player.awaitingAdmission === true,
       spectator: isPlayerHostModerator(room, player),
+      hostParticipating: player.hostParticipating === true,
       chatMuted: player.chatMuted === true,
       lastChoice: player.lastChoice ?? null,
       lastChoiceReason: player.lastChoiceReason ?? null
@@ -1900,10 +2099,12 @@ function pickNextHostId(room) {
 
 function updateHost(room) {
   if (room.hostId && room.players.has(room.hostId)) {
+    normalizeHostParticipationState(room);
     return false;
   }
   const previousHostId = room.hostId;
   room.hostId = pickNextHostId(room);
+  normalizeHostParticipationState(room);
   return previousHostId !== room.hostId;
 }
 
@@ -2261,6 +2462,16 @@ function finishQuiz(room, reason = "finished") {
   const payload = buildQuizEndPayload(room, reason);
   io.to(room.code).emit("quiz:end", payload);
   emitQuizScore(room, "end");
+
+  // Keep post-round flow explicit: everyone returns to lobby waiting state after quiz end.
+  if (QUIZ_AUTO_OPEN_LOBBY_ON_END) {
+    const opened = openEntryGate(room);
+    if (opened?.ok) {
+      emitRoomUpdate(room);
+      emitQuizScore(room, "lobby-open-auto");
+    }
+  }
+
   if (quiz.autoMode !== false) {
     scheduleAutoQuizStart(room, {
       delayMs: QUIZ_AUTO_RESTART_DELAY_MS,
@@ -2871,20 +3082,23 @@ function joinRoom(socket, room, nameOverride = null) {
     existing.name = name;
     existing.isOwner = existing.isOwner === true || socket.data.ownerClaim === true;
     existing.chatMuted = existing.chatMuted === true;
+    existing.hostParticipating = existing.hostParticipating === true;
     existing.joinedAt = Math.max(0, Math.trunc(Number(existing.joinedAt) || Date.now()));
     ensurePlayerNetState(existing);
     if (socket.data.ownerClaim === true && room.hostId !== socket.id) {
       room.hostId = socket.id;
       const quizState = getRoomQuiz(room);
       quizState.hostId = socket.id;
+      normalizeHostParticipationState(room);
       emitRoomUpdate(room);
       emitQuizScore(room, "owner-claim");
     }
     const quiz = getRoomQuiz(room);
     const gate = ensureRoomEntryGate(room);
-    if (isPlayerHostModerator(room, existing)) {
+    if (isPlayerHostController(room, existing)) {
       existing.admitted = true;
       existing.awaitingAdmission = false;
+      existing.alive = true;
       removeNextPriorityPlayer(room, existing.id);
     } else if (quiz.active) {
       existing.admitted = false;
@@ -2921,6 +3135,10 @@ function joinRoom(socket, room, nameOverride = null) {
     emitRoomUpdate(room);
     emitQuizSnapshot(socket, room);
     emitChatHistorySnapshot(socket, room);
+    socket.emit("player:correct", {
+      state: existing?.state ?? sanitizePlayerState(),
+      reason: "join-refresh"
+    });
     socket.emit("quiz:config:update", buildQuizConfigPayload(room));
     return { ok: true, room: serializeRoom(room) };
   }
@@ -2937,7 +3155,7 @@ function joinRoom(socket, room, nameOverride = null) {
   const quiz = getRoomQuiz(room);
   const gate = ensureRoomEntryGate(room);
   const joinAsAlive = !quiz.active;
-  const initialState = sanitizePlayerState();
+  const initialState = buildPortalArrivalSpawnPoint();
 
   room.players.set(socket.id, {
     id: socket.id,
@@ -2947,6 +3165,7 @@ function joinRoom(socket, room, nameOverride = null) {
     alive: joinAsAlive,
     admitted: true,
     awaitingAdmission: false,
+    hostParticipating: false,
     isOwner: socket.data.ownerClaim === true,
     chatMuted: false,
     joinedAt: Date.now(),
@@ -2963,12 +3182,14 @@ function joinRoom(socket, room, nameOverride = null) {
   if (!quiz.hostId || socket.data.ownerClaim === true) {
     quiz.hostId = room.hostId ?? socket.id;
   }
+  normalizeHostParticipationState(room);
 
   const joined = room.players.get(socket.id);
   if (joined) {
-    if (isPlayerHostModerator(room, joined)) {
+    if (isPlayerHostController(room, joined)) {
       joined.admitted = true;
       joined.awaitingAdmission = false;
+      joined.alive = true;
       removeNextPriorityPlayer(room, joined.id);
     } else if (quiz.active) {
       joined.admitted = false;
@@ -2996,6 +3217,13 @@ function joinRoom(socket, room, nameOverride = null) {
 
   socket.join(room.code);
   socket.data.roomCode = room.code;
+
+  if (joined?.state) {
+    socket.emit("player:correct", {
+      state: joined.state,
+      reason: "join-spawn"
+    });
+  }
 
   emitRoomUpdate(room);
   emitRoomList();
@@ -3387,6 +3615,7 @@ io.on("connection", (socket) => {
     room.hostId = socket.id;
     const quiz = getRoomQuiz(room);
     quiz.hostId = socket.id;
+    normalizeHostParticipationState(room);
 
     emitRoomUpdate(room);
     emitQuizScore(room, "host-claim");
@@ -3394,6 +3623,49 @@ io.on("connection", (socket) => {
       ok: true,
       hostId: socket.id,
       changed: String(previousHostId ?? "") !== String(socket.id)
+    });
+  });
+
+  socket.on("host:set-participating", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+
+    const player = room.players.get(socket.id);
+    if (!isPlayerHostController(room, player)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+
+    const participating = payload?.participating === true;
+    player.hostParticipating = participating;
+    player.admitted = true;
+    player.awaitingAdmission = false;
+    player.lastChoice = null;
+    if (participating) {
+      player.alive = true;
+      player.lastChoiceReason = null;
+    } else {
+      player.alive = true;
+      player.lastChoiceReason = "spectator";
+      if (isRestrictedFromQuizArena(room, player)) {
+        relocatePlayerToSpectatorZone(room, player, "host-spectator-toggle");
+      }
+    }
+    normalizeHostParticipationState(room);
+
+    emitRoomUpdate(room);
+    emitQuizScore(room, participating ? "host-participating-on" : "host-participating-off");
+    ack(ackFn, {
+      ok: true,
+      participating,
+      spectator: isPlayerHostModerator(room, player),
+      alive: Boolean(player.alive),
+      admitted: player.admitted !== false,
+      state: player.state ?? null
     });
   });
 
