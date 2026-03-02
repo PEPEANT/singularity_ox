@@ -3689,6 +3689,56 @@ export class GameRuntime {
     ].join("~");
   }
 
+  buildBillboardMediaChannelSignature(entry = {}) {
+    return [
+      String(entry?.visualType ?? "none"),
+      String(entry?.visualUrl ?? ""),
+      String(entry?.audioUrl ?? "")
+    ].join("~");
+  }
+
+  updateBillboardMediaPlaybackState(boardKey, entry = {}) {
+    const runtime = this.billboardMediaRuntime?.[boardKey];
+    if (!runtime) {
+      return;
+    }
+    const playlist = Array.isArray(entry?.playlist) ? entry.playlist : [];
+    const playlistEnabled = boardKey === "board2" && entry?.playlistEnabled === true && playlist.length > 0;
+    const playlistAutoAdvance = playlistEnabled && entry?.playlistAutoAdvance === true;
+    const playlistPlaying = !playlistEnabled || entry?.playlistPlaying !== false;
+    const useEndedAdvance = playlistAutoAdvance && playlist.length > 1;
+
+    if (runtime.videoEl) {
+      runtime.videoEl.loop = !useEndedAdvance;
+      if (useEndedAdvance) {
+        if (!runtime.videoEndedHandler) {
+          runtime.videoEndedHandler = () => {
+            this.requestBillboardPlaylistAdvanceFromEnded();
+          };
+          runtime.videoEl.addEventListener("ended", runtime.videoEndedHandler);
+        }
+      } else if (runtime.videoEndedHandler) {
+        runtime.videoEl.removeEventListener("ended", runtime.videoEndedHandler);
+        runtime.videoEndedHandler = null;
+      }
+      if (playlistPlaying) {
+        runtime.videoEl.play().catch(() => {});
+      } else {
+        runtime.videoEl.pause();
+      }
+    } else {
+      runtime.videoEndedHandler = null;
+    }
+
+    if (runtime.audioEl) {
+      if (playlistPlaying) {
+        runtime.audioEl.play().catch(() => {});
+      } else {
+        runtime.audioEl.pause();
+      }
+    }
+  }
+
   releaseBillboardMediaChannel(boardKey) {
     const runtime = this.billboardMediaRuntime?.[boardKey];
     if (!runtime) {
@@ -3768,30 +3818,18 @@ export class GameRuntime {
     const visualType = String(entry?.visualType ?? "none");
     const visualUrl = sanitizeBillboardMediaUrl(entry?.visualUrl ?? "");
     const audioUrl = sanitizeBillboardMediaUrl(entry?.audioUrl ?? "");
-    const playlist = Array.isArray(entry?.playlist) ? entry.playlist : [];
-    const playlistEnabled = boardKey === "board2" && entry?.playlistEnabled === true && playlist.length > 0;
-    const playlistAutoAdvance = playlistEnabled && entry?.playlistAutoAdvance === true;
-    const playlistPlaying = !playlistEnabled || entry?.playlistPlaying !== false;
 
     if (visualType === "video" && visualUrl) {
       const video = document.createElement("video");
       video.src = visualUrl;
       video.preload = this.mobileEnabled ? "metadata" : "auto";
-      video.loop = !(playlistAutoAdvance && playlist.length > 1);
+      video.loop = true;
       video.muted = Boolean(audioUrl);
       video.playsInline = true;
-      video.autoplay = playlistPlaying;
+      video.autoplay = false;
       video.crossOrigin = "anonymous";
       video.setAttribute("playsinline", "");
       video.setAttribute("webkit-playsinline", "");
-
-      if (playlistAutoAdvance && playlist.length > 1) {
-        const endedHandler = () => {
-          this.requestBillboardPlaylistAdvanceFromEnded();
-        };
-        runtime.videoEndedHandler = endedHandler;
-        video.addEventListener("ended", endedHandler);
-      }
 
       const videoTexture = new THREE.VideoTexture(video);
       videoTexture.colorSpace = THREE.SRGBColorSpace;
@@ -3801,9 +3839,6 @@ export class GameRuntime {
       runtime.videoEl = video;
       runtime.texture = videoTexture;
       runtime.sourceTag = `video:${visualUrl}`;
-      if (playlistPlaying) {
-        video.play().catch(() => {});
-      }
     } else if (visualType === "image" && visualUrl) {
       const texture = this.textureLoader.load(
         visualUrl,
@@ -3827,11 +3862,10 @@ export class GameRuntime {
       audio.src = audioUrl;
       audio.loop = true;
       audio.preload = "auto";
-      if (playlistPlaying) {
-        audio.play().catch(() => {});
-      }
       runtime.audioEl = audio;
     }
+
+    this.updateBillboardMediaPlaybackState(boardKey, entry);
   }
 
   applyBillboardMediaState(rawState = {}) {
@@ -3842,10 +3876,15 @@ export class GameRuntime {
     for (const boardKey of ["board1", "board2"]) {
       const prevEntry = previous?.[boardKey] ?? {};
       const nextEntry = next?.[boardKey] ?? {};
+      const sourceChanged =
+        this.buildBillboardMediaChannelSignature(prevEntry) !==
+        this.buildBillboardMediaChannelSignature(nextEntry);
       const changed =
         this.buildBillboardMediaEntrySignature(prevEntry) !== this.buildBillboardMediaEntrySignature(nextEntry);
-      if (changed) {
+      if (sourceChanged) {
         this.setupBillboardMediaChannel(boardKey, nextEntry);
+      } else if (changed) {
+        this.updateBillboardMediaPlaybackState(boardKey, nextEntry);
       }
     }
     this.applyCenterBillboardMode();
@@ -3938,6 +3977,16 @@ export class GameRuntime {
   }
 
   requestBillboardMediaApply(clearOnly = false) {
+    const nextPayload = this.buildBillboardMediaPayloadFromUi(clearOnly);
+    if (!nextPayload) {
+      this.appendChatLine("System", "Only supported media URLs can be applied (mp4/webm/png/jpg/mp3).", "system");
+      return;
+    }
+    this.sendBillboardMediaPayload(nextPayload, {
+      successMessage: clearOnly ? "Billboard media cleared." : "Billboard media applied."
+    });
+    return;
+
     if (!this.ownerAccessEnabled) {
       this.appendChatLine("시스템", "오너 토큰이 없어 전광판 제어 권한이 없습니다.", "system");
       return;
@@ -4066,6 +4115,31 @@ export class GameRuntime {
     };
     this.sendBillboardMediaPayload(payload, {
       successMessage: `Rear billboard playlist loaded (${playlist.length} videos).`
+    });
+  }
+
+  requestBillboardPlaylistAutoAdvanceUpdate() {
+    const current = this.normalizeBillboardMediaEntry(this.billboardMediaState?.board2 ?? {}, null, "board2");
+    const playlist = Array.isArray(current?.playlist) ? current.playlist : [];
+    if (playlist.length <= 0) {
+      this.refreshBillboardPlaylistUi();
+      return;
+    }
+    if (!this.canControlBillboardMedia({ silent: true })) {
+      this.refreshBillboardPlaylistUi();
+      return;
+    }
+    const autoAdvance = this.billboardPlaylistAutoInputEl?.checked !== false;
+    const payload = {
+      target: "board2",
+      media: this.buildBoard2PlaylistMediaOverride({
+        playlist,
+        playlistAutoAdvance: autoAdvance
+      })
+    };
+    this.sendBillboardMediaPayload(payload, {
+      silentSuccess: true,
+      silentFailure: true
     });
   }
 
@@ -6344,6 +6418,9 @@ export class GameRuntime {
     });
     this.billboardPlaylistSelectBtnEl?.addEventListener("click", () => {
       this.requestBillboardPlaylistControl("select");
+    });
+    this.billboardPlaylistAutoInputEl?.addEventListener("change", () => {
+      this.requestBillboardPlaylistAutoAdvanceUpdate();
     });
     this.quizSlotCountInputEl?.addEventListener("change", () => {
       this.applyQuizSlotCountChange();
