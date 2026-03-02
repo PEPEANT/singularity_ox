@@ -421,7 +421,8 @@ body.mobile-orientation-lock #hub-flow-ui {
   pointer-events: auto;
 }
 
-#mobile-action-pad button {
+#mobile-action-pad button,
+#mobile-chat-toggle-btn {
   width: 56px;
   height: 56px;
   border: 1px solid rgba(169, 208, 238, 0.66);

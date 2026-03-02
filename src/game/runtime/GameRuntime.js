@@ -2489,6 +2489,16 @@ export class GameRuntime {
     }
   }
 
+  updateLobbyPortal(delta) {
+    if (this.hubFlowEnabled) {
+      return;
+    }
+    this.portalPulseClock += delta;
+    const portalLinked = this.entryGateState?.portalOpen === true && Boolean(this.portalTargetUrl);
+    this.portalPhase = portalLinked ? "open" : "idle";
+    this.updatePortalVisual();
+  }
+
   updatePortalVisual() {
     if (!this.portalRing || !this.portalCore || !this.portalGroup) {
       return;
@@ -2517,10 +2527,10 @@ export class GameRuntime {
       return;
     }
 
-    ringMaterial.emissiveIntensity = 0.14;
-    ringMaterial.opacity = 0.62;
-    coreMaterial.opacity = 0.05;
-    this.portalGroup.scale.set(1, 1, 1);
+    ringMaterial.emissiveIntensity = 0.02;
+    ringMaterial.opacity = 0.24;
+    coreMaterial.opacity = 0.01;
+    this.portalGroup.scale.set(0.96, 0.96, 0.96);
   }
 
   isPlayerInPortalZone() {
@@ -6307,8 +6317,11 @@ export class GameRuntime {
     const orientationLocked = this.syncOrientationLockUi();
     const showMobileUi =
       this.mobileEnabled && !orientationLocked && !this.isLobbyBlockingGameplay() && !this.localAdmissionWaiting;
-    const canUseMobileChat = this.mobileEnabled && this.canUseGameplayControls();
+    // Chat button is shown independently — visible even in lobby/admission
+    const showChatButton = this.mobileEnabled && !orientationLocked;
+    const canUseMobileChat = this.mobileEnabled && !this.isMobilePortraitLocked();
     this.mobileControlsEl?.classList.toggle("hidden", !showMobileUi);
+    this.mobileChatToggleBtnEl?.classList.toggle("hidden", !showChatButton);
     this.mobileLookPadEl?.classList.toggle("hidden", !showMobileUi);
     if (!this.mobileEnabled) {
       this.mobileChatPanelVisible = true;
@@ -6363,7 +6376,7 @@ export class GameRuntime {
   }
 
   syncMobileKeyboardInset() {
-    if (!this.mobileEnabled || !this.chatOpen || !this.canUseGameplayControls()) {
+    if (!this.mobileEnabled || !this.chatOpen || this.isMobilePortraitLocked()) {
       this.setMobileKeyboardInset(0);
       return;
     }
@@ -6394,7 +6407,7 @@ export class GameRuntime {
 
   applyMobileChatUi() {
     this.resolveUiElements();
-    const canUseMobileChat = this.mobileEnabled && this.canUseGameplayControls();
+    const canUseMobileChat = this.mobileEnabled && !this.isMobilePortraitLocked();
     const showChatPanel = !this.mobileEnabled || (canUseMobileChat && this.mobileChatPanelVisible);
     if (this.mobileEnabled && showChatPanel) {
       this.mobileChatUnreadCount = 0;
@@ -6449,7 +6462,7 @@ export class GameRuntime {
   }
 
   toggleMobileChatPanel() {
-    if (!this.mobileEnabled || !this.canUseGameplayControls()) {
+    if (!this.mobileEnabled || this.isMobilePortraitLocked()) {
       return;
     }
     if (this.mobileChatPanelVisible) {
@@ -7167,7 +7180,7 @@ export class GameRuntime {
   }
 
   setChatOpen(open) {
-    if (open && !this.canUseGameplayControls()) {
+    if (open && this.isMobilePortraitLocked()) {
       return;
     }
 
@@ -7585,6 +7598,7 @@ export class GameRuntime {
       this.persistPreferredRoomCode(this.currentRoomCode);
     }
     const previousHostId = String(this.quizState.hostId ?? "");
+    const wasPortalOpen = this.entryGateState?.portalOpen === true;
     const wasAdmissionInProgress =
       this.entryGateState?.admissionInProgress === true || this.getAdmissionCountdownSeconds() > 0;
     if (room && Object.prototype.hasOwnProperty.call(room, "hostId")) {
@@ -7610,6 +7624,7 @@ export class GameRuntime {
       admissionStartsAt,
       admissionInProgress: gate?.admissionInProgress === true || admissionStartsAt > Date.now()
     };
+    const nowPortalOpen = this.entryGateState?.portalOpen === true;
     if (typeof room?.portalTargetUrl === "string") {
       this.applyPortalTarget(room.portalTargetUrl, { announce: false });
     }
@@ -7747,6 +7762,15 @@ export class GameRuntime {
     }
     if (!wasAdmissionWaiting && this.localAdmissionWaiting) {
       this.appendChatLine("시스템", "현재 포탈 대기실 상태입니다. 진행자를 기다려주세요.", "system");
+    }
+    if (localSeen && wasPortalOpen !== nowPortalOpen) {
+      this.appendChatLine(
+        "SYSTEM",
+        nowPortalOpen
+          ? "Portal link is OPEN. You can move through the gate."
+          : "Portal link is CLOSED. Lobby connection is disconnected.",
+        "system"
+      );
     }
     this.syncGameplayUiForFlow();
     this.refreshRosterPanel(players);
@@ -8017,6 +8041,7 @@ export class GameRuntime {
     this.measurePerformanceSection("movement", () => this.updateMovement(delta));
     this.measurePerformanceSection("trapdoor", () => this.updateTrapdoorAnimation(delta));
     this.measurePerformanceSection("hubFlow", () => this.updateHubFlow(delta));
+    this.measurePerformanceSection("lobbyPortal", () => this.updateLobbyPortal(delta));
     this.measurePerformanceSection("chalk", () => this.updateChalkDrawing());
     this.measurePerformanceSection("clouds", () => this.updateCloudLayer(delta));
     this.measurePerformanceSection("ocean", () => this.updateOcean(delta));
@@ -10535,8 +10560,11 @@ export class GameRuntime {
           return;
         }
         if (this.mobileEnabled) {
-          this.hideMobileChatPanel();
           this.appendChatLine(senderName, text, "self");
+          // Keep panel open for continued chatting — refocus input
+          if (this.mobileChatPanelVisible && this.chatInputEl) {
+            this.chatInputEl.focus();
+          }
         } else {
           this.appendChatLine(senderName, text, "self");
           this.setChatOpen(false);
@@ -10551,7 +10579,7 @@ export class GameRuntime {
     if (!this.chatInputEl) {
       return;
     }
-    if (!this.canUseGameplayControls()) {
+    if (this.isMobilePortraitLocked()) {
       return;
     }
     this.setChatOpen(true);
