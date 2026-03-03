@@ -127,7 +127,6 @@ const QUIZ_CONFIG_DRAFT_STORAGE_PREFIX = "singularity_ox.quiz_config_draft.v1";
 const QUIZ_CATEGORY_STORAGE_PREFIX = "singularity_ox.quiz_category.v1";
 const QUIZ_CONFIG_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 21;
 const LAST_ROOM_CODE_STORAGE_KEY = "singularity_ox.last_room_code.v1";
-const OWNER_ACCESS_KEY_STORAGE_KEY = "singularity_ox.owner_access_key.v1";
 const QUIZ_MIN_TIME_LIMIT_SECONDS = 15;
 const QUIZ_MAX_TIME_LIMIT_SECONDS = 3600;
 const QUIZ_DEFAULT_TIME_LIMIT_SECONDS = 30;
@@ -349,21 +348,14 @@ export class GameRuntime {
       lastLogAt: 0
     };
     this.lastLookInputAt = 0;
-    const ownerQueryKey = String(
+    this.ownerAccessKey = String(
       this.queryParams.get("owner") ??
         this.queryParams.get("owner_key") ??
         this.queryParams.get("hostKey") ??
         this.queryParams.get("host_key") ??
         ""
     ).trim();
-    const persistedOwnerKey = this.loadOwnerAccessKeyFromStorage();
-    this.ownerAccessKey = ownerQueryKey || persistedOwnerKey;
-    if (ownerQueryKey) {
-      this.persistOwnerAccessKey(ownerQueryKey);
-    }
-    const hostModeParam = String(this.queryParams.get("host") ?? "").trim().toLowerCase();
-    this.ownerAccessEnabled =
-      this.ownerAccessKey.length > 0 || hostModeParam === "1" || hostModeParam === "true";
+    this.ownerAccessEnabled = this.ownerAccessKey.length > 0;
     this.localPlayerName = this.formatPlayerName(this.queryParams.get("name") ?? "플레이어");
     this.pendingPlayerNameSync = false;
     this.remotePlayers = new Map();
@@ -3073,29 +3065,6 @@ export class GameRuntime {
     }
     try {
       window.localStorage.setItem(LAST_ROOM_CODE_STORAGE_KEY, roomCode);
-    } catch {
-      // ignore storage write failures
-    }
-  }
-
-  loadOwnerAccessKeyFromStorage() {
-    if (typeof window === "undefined" || !window.localStorage) {
-      return "";
-    }
-    try {
-      return String(window.localStorage.getItem(OWNER_ACCESS_KEY_STORAGE_KEY) ?? "").trim();
-    } catch {
-      return "";
-    }
-  }
-
-  persistOwnerAccessKey(rawKey) {
-    const key = String(rawKey ?? "").trim();
-    if (!key || typeof window === "undefined" || !window.localStorage) {
-      return;
-    }
-    try {
-      window.localStorage.setItem(OWNER_ACCESS_KEY_STORAGE_KEY, key);
     } catch {
       // ignore storage write failures
     }
@@ -11606,7 +11575,7 @@ export class GameRuntime {
     this.resolveUiElements();
     const isHost = this.isLocalHost();
     const connected = Boolean(this.networkConnected && this.socket);
-    const show = this.ownerAccessEnabled;
+    const show = !this.isLobbyBlockingGameplay() && this.ownerAccessEnabled;
     this.quizControlsEl?.classList.toggle("hidden", !show);
     if (!show) {
       this.setModerationPanelOpen(false);
