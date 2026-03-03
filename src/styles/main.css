@@ -952,6 +952,18 @@ body.mobile-roster-focus #mobile-look-pad {
   color: #ffe4c2;
 }
 
+#quiz-category-history-easy-load-btn,
+#quiz-category-history-easy-save-btn {
+  border-color: rgba(200, 220, 255, 0.68);
+  color: #ddeeff;
+}
+
+#quiz-category-chokaguya-load-btn,
+#quiz-category-chokaguya-save-btn {
+  border-color: rgba(246, 172, 217, 0.68);
+  color: #ffdff2;
+}
+
 .quiz-config-toolbar label {
   color: #cde8fb;
   font: 700 0.62rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;

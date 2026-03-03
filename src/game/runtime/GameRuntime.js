@@ -512,6 +512,10 @@ export class GameRuntime {
     this.quizCategoryTukgalSaveBtnEl = document.getElementById("quiz-category-tukgal-save-btn");
     this.quizCategoryHistoryLoadBtnEl = document.getElementById("quiz-category-history-load-btn");
     this.quizCategoryHistorySaveBtnEl = document.getElementById("quiz-category-history-save-btn");
+    this.quizCategoryHistoryEasyLoadBtnEl = document.getElementById("quiz-category-history-easy-load-btn");
+    this.quizCategoryHistoryEasySaveBtnEl = document.getElementById("quiz-category-history-easy-save-btn");
+    this.quizCategoryChokaguyaLoadBtnEl = document.getElementById("quiz-category-chokaguya-load-btn");
+    this.quizCategoryChokaguyaSaveBtnEl = document.getElementById("quiz-category-chokaguya-save-btn");
     this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
     this.quizTimeUnifyInputEl = document.getElementById("quiz-time-unify-input");
     this.quizTimeUnifyApplyBtnEl = document.getElementById("quiz-time-unify-apply-btn");
@@ -6522,6 +6526,18 @@ export class GameRuntime {
     this.quizCategoryHistorySaveBtnEl?.addEventListener("click", () => {
       this.saveQuizCategory("역사상식");
     });
+    this.quizCategoryHistoryEasyLoadBtnEl?.addEventListener("click", () => {
+      this.loadQuizCategory("역사기초");
+    });
+    this.quizCategoryHistoryEasySaveBtnEl?.addEventListener("click", () => {
+      this.saveQuizCategory("역사기초");
+    });
+    this.quizCategoryChokaguyaLoadBtnEl?.addEventListener("click", () => {
+      this.loadQuizCategory("초카구야");
+    });
+    this.quizCategoryChokaguyaSaveBtnEl?.addEventListener("click", () => {
+      this.saveQuizCategory("초카구야");
+    });
     this.billboardMediaApplyBtnEl?.addEventListener("click", () => {
       this.requestBillboardMediaApply(false);
     });
@@ -6756,6 +6772,18 @@ export class GameRuntime {
     }
     if (!this.quizCategoryHistorySaveBtnEl) {
       this.quizCategoryHistorySaveBtnEl = document.getElementById("quiz-category-history-save-btn");
+    }
+    if (!this.quizCategoryHistoryEasyLoadBtnEl) {
+      this.quizCategoryHistoryEasyLoadBtnEl = document.getElementById("quiz-category-history-easy-load-btn");
+    }
+    if (!this.quizCategoryHistoryEasySaveBtnEl) {
+      this.quizCategoryHistoryEasySaveBtnEl = document.getElementById("quiz-category-history-easy-save-btn");
+    }
+    if (!this.quizCategoryChokaguyaLoadBtnEl) {
+      this.quizCategoryChokaguyaLoadBtnEl = document.getElementById("quiz-category-chokaguya-load-btn");
+    }
+    if (!this.quizCategoryChokaguyaSaveBtnEl) {
+      this.quizCategoryChokaguyaSaveBtnEl = document.getElementById("quiz-category-chokaguya-save-btn");
     }
     if (!this.quizSlotCountInputEl) {
       this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
@@ -10684,10 +10712,12 @@ export class GameRuntime {
         return;
       }
     }
+    const builtinEndPolicy = this.getQuizCategoryBuiltinEndPolicy(name);
     const normalized = this.normalizeQuizConfigPayload({
       maxQuestions: 50,
       questions,
-      endPolicy: this.quizConfig?.endPolicy ?? { autoFinish: true, showOppositeBillboard: true }
+      endPolicy:
+        builtinEndPolicy ?? this.quizConfig?.endPolicy ?? { autoFinish: true, showOppositeBillboard: true }
     });
     this.quizConfig = normalized;
     this.renderQuizConfigEditor();
@@ -10695,7 +10725,290 @@ export class GameRuntime {
     this.setQuizConfigStatus(`'${name}' 카테고리 ${questions.length}개 문항을 불러왔습니다. 저장 버튼으로 서버에 반영하세요.`);
   }
 
+  getQuizCategoryBuiltinEndPolicy(name) {
+    if (name !== "초카구야") {
+      return null;
+    }
+    return {
+      autoFinish: true,
+      showOppositeBillboard: true
+    };
+  }
+
   getQuizCategoryBuiltinPreset(name) {
+    if (name === "역사기초") {
+      return [
+        {
+          text: "한글을 만든 사람은 세종대왕이다.",
+          answer: "O",
+          explanation: "세종대왕이 1443년 훈민정음을 창제했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "고구려·백제·신라 세 나라를 합쳐 삼국이라고 한다.",
+          answer: "O",
+          explanation: "삼국시대는 한반도와 만주 일대를 배경으로 전개됐다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "삼국 통일을 이룬 나라는 고구려이다.",
+          answer: "X",
+          explanation: "676년 신라가 당나라를 몰아내고 삼국통일을 완성했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "조선을 건국한 사람은 이성계이다.",
+          answer: "O",
+          explanation: "1392년 이성계(태조)가 고려를 무너뜨리고 조선을 세웠다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "임진왜란을 일으킨 나라는 일본이다.",
+          answer: "O",
+          explanation: "1592년 도요토미 히데요시의 명령으로 일본이 조선을 침략했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이순신 장군은 임진왜란 때 거북선으로 왜군을 무찔렀다.",
+          answer: "O",
+          explanation: "거북선은 세계 최초의 철갑 전선 중 하나로 왜군을 공포에 떨게 했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "고려의 수도는 한양(서울)이었다.",
+          answer: "X",
+          explanation: "고려의 수도는 개성(개경)이다. 한양은 조선의 수도다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "신라의 수도는 경주이다.",
+          answer: "O",
+          explanation: "경주는 약 1000년간 신라의 수도였다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "단군왕검은 고조선을 세웠다.",
+          answer: "O",
+          explanation: "기원전 2333년 단군왕검이 아사달에 도읍을 정하고 고조선을 세웠다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "3·1 운동은 1919년에 일어났다.",
+          answer: "O",
+          explanation: "1919년 3월 1일 독립선언서 낭독과 함께 전국적 만세 운동이 펼쳐졌다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "광복절은 매년 8월 15일이다.",
+          answer: "O",
+          explanation: "1945년 8월 15일 일본의 항복으로 한국이 독립을 되찾은 날이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "훈민정음을 만든 왕은 태종이다.",
+          answer: "X",
+          explanation: "훈민정음은 조선 4대 왕 세종대왕이 창제했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "독립운동가 안중근은 이토 히로부미를 저격했다.",
+          answer: "O",
+          explanation: "1909년 안중근 의사가 하얼빈 역에서 이토 히로부미를 사살했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "대한민국은 1948년에 건국되었다.",
+          answer: "O",
+          explanation: "1948년 8월 15일 대한민국 정부가 수립되었다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "고려는 불교를 국교로 삼았다.",
+          answer: "O",
+          explanation: "고려는 불교를 장려해 팔만대장경을 제작하는 등 불교 문화가 꽃을 피웠다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "한국전쟁(6·25)은 1950년에 시작되었다.",
+          answer: "O",
+          explanation: "1950년 6월 25일 북한이 남침하면서 한국전쟁이 시작됐다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "조선 시대 최고 교육기관은 성균관이다.",
+          answer: "O",
+          explanation: "성균관은 고려~조선 시대 최고 국립 교육기관으로 유교 경전을 가르쳤다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "백제의 마지막 수도는 사비(현재의 부여)이다.",
+          answer: "O",
+          explanation: "538년 성왕이 웅진에서 사비로 수도를 옮겼고, 660년 멸망했다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "고조선의 건국 이념은 홍익인간이다.",
+          answer: "O",
+          explanation: "'널리 인간을 이롭게 한다'는 홍익인간 정신이 고조선의 건국 이념이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "임시정부를 이끈 독립운동가는 김구이다.",
+          answer: "O",
+          explanation: "김구는 대한민국 임시정부 주석으로 독립운동을 이끌었다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "조선 시대 전통 화폐 이름은 엽전이다.",
+          answer: "O",
+          explanation: "엽전(葉錢)은 조선 시대부터 근대까지 사용된 구리·청동 주화이다.",
+          timeLimitSeconds: 30
+        }
+      ];
+    }
+    if (name === "초카구야") {
+      return [
+        {
+          text: "이 작품은 '스튜디오 지브리'가 만든 신작이다.",
+          answer: "X",
+          explanation:
+            "제작/애니메이션 제작은 스튜디오 콜로리도 + 스튜디오 크로마토로 소개됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "감독은 야마시타 신고(山下清悟)이며, 장편 감독 데뷔작이다.",
+          answer: "O",
+          explanation: "넷플릭스 공식 발표에서 '첫 장편 감독 작품'으로 소개됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이 작품 공식 사이트 주소는 'cho-kaguyahime.com'이다.",
+          answer: "O",
+          explanation: "넷플릭스 애니 영화 공식 사이트로 운영 중.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "그 아기를 보고 그냥 지나치고 집에 안 데려간다.",
+          answer: "X",
+          explanation: "'버릴 수 없어 집으로 데려간다'로 명시됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "그 아기는 며칠 만에 이로하 또래로 급성장한다.",
+          answer: "O",
+          explanation: "'급속 성장해 또래가 된다'가 공식 줄거리 핵심.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이로하는 도쿄의 17세 여고생이며, 알바와 학업을 동시에 돌린다.",
+          answer: "O",
+          explanation: "17세 고교생 + 파트타임/학업 병행으로 소개됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이로하가 숨 돌릴 때 보는 건, 인기 스트리머 '야치요' 방송이다.",
+          answer: "O",
+          explanation: "'인기 스트리머 야치요를 보며 평온을 찾는다'로 소개됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "야치요는 온라인 가상공간 '츠쿠요미(ツクヨミ)'의 관리자다.",
+          answer: "O",
+          explanation: "야치요가 Tsukuyomi의 administrator(관리자)로 설명됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이로하는 츠쿠요미에 직접 접속은 안 하고, 야치요 방송만 시청한다.",
+          answer: "X",
+          explanation: "이로하가 츠쿠요미에 '자주 가는(frequents)' 것으로 서술됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이로하는 츠쿠요미에서 배틀 게임을 하며 약간의 돈도 번다.",
+          answer: "O",
+          explanation: "'배틀 게임으로 소소하게 돈을 번다'가 공식 시놉시스에 있음.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이로하는 츠쿠요미에서 라이버로 방송해 후원금으로 학비를 번다.",
+          answer: "X",
+          explanation: "이로하는 시청/배틀 게임 중심으로 묘사되며 방송 수익 설정은 없음.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "카구야는 '달에서 온' 소녀로 소개된다.",
+          answer: "O",
+          explanation: "캐릭터 소개에 '달에서 온 소녀'로 명시됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "카구야는 재미를 찾아 츠쿠요미에서 라이버 활동을 시작한다.",
+          answer: "O",
+          explanation: "공식 캐릭터 프로필에 그대로 적혀 있음.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "카구야는 얌전하고 말 잘 들어서, 이로하가 전혀 고생하지 않는다.",
+          answer: "X",
+          explanation: "자기중심적 성격으로 이로하를 끌고 가는 구도로 소개됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "카구야의 강한 부탁 때문에, 이로하는 카구야의 방송을 돕게 된다.",
+          answer: "O",
+          explanation: "'카구야의 요청으로 이로하가 스트리밍을 도와준다'고 설명됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "둘의 역할은 대체로 이로하=프로듀서·작곡, 카구야=라이버·가수 구도다.",
+          answer: "O",
+          explanation: "공식 요약에 producer/songwriter 와 streamer/singer 구도로 정리됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "둘이 노리는 큰 목표는 야치요와 함께 무대(콜라보)를 할 기회다.",
+          answer: "O",
+          explanation: "야치요와 공연/콜라보가 목표로 소개됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "그 기회는 현실 오프라인 체육관 토너먼트에서만 얻을 수 있다.",
+          answer: "X",
+          explanation: "핵심 무대는 가상공간 츠쿠요미로 설명됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이야기에는 카구야를 다시 달로 데려가려는 불길한 힘/존재가 다가온다.",
+          answer: "O",
+          explanation: "'카구야를 달로 데려가려는 세력'이 주요 위협으로 제시됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이로하는 학교에선 모범생처럼 보이지만, 생활비·학비를 스스로 번다.",
+          answer: "O",
+          explanation: "공식 캐릭터 소개에 그대로 반영된 설정임.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이로하는 작곡이 가능한 음악 경험자지만, 어떤 이유로 한동안 그만뒀다.",
+          answer: "O",
+          explanation: "공식 프로필에 작곡 가능 + 중단 배경이 명시됨.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "팬들/등장인물은 이로하를 '이로P(いろP)'라고 부르기도 한다.",
+          answer: "O",
+          explanation: "공식 MV 관련 기사에서 이로P(彩葉의 애칭) 언급이 있음.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "이로하(酒寄彩葉)의 일본어 성우는 나가세 안나(永瀬アンナ)다.",
+          answer: "O",
+          explanation: "공식 캐스팅 표기에 해당 성우로 소개됨.",
+          timeLimitSeconds: 30
+        }
+      ];
+    }
     if (name === "역사상식") {
       return [
         {
