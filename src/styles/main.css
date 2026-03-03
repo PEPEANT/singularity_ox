@@ -509,16 +509,16 @@ body.mobile-orientation-lock #hub-flow-ui {
   max-height: min(34vh, 138px);
   display: grid;
   gap: 3px;
-  padding: 7px 10px;
-  border: 1px solid rgba(182, 214, 240, 0.68);
-  border-radius: 10px;
-  background: rgba(9, 23, 39, 0.9);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: #e8f5ff;
   font: 700 0.62rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
   letter-spacing: 0.02em;
   overflow: hidden auto;
   pointer-events: none;
-  box-shadow: 0 8px 20px rgba(3, 10, 17, 0.4);
+  box-shadow: none;
 }
 
 .mobile-chat-preview-line {
@@ -526,6 +526,7 @@ body.mobile-orientation-lock #hub-flow-ui {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.72);
 }
 
 #mobile-action-pad {
@@ -1866,6 +1867,7 @@ body.mobile-chat-focus #chat-header {
 #chat-log,
 #chat-live-feed,
 #chat-live-log,
+#mobile-chat-preview,
 #chat-ui.mobile-fullscreen,
 body.mobile-chat-focus #chat-ui,
 body.mobile-chat-focus #chat-log {
