@@ -1841,6 +1841,25 @@ body.mobile-chat-focus #chat-header {
   margin-bottom: 0;
 }
 
+/* Keep realtime chat text visible without panel backgrounds. */
+#chat-ui,
+#chat-log,
+#chat-live-feed,
+#chat-live-log,
+#chat-ui.mobile-fullscreen,
+body.mobile-chat-focus #chat-ui,
+body.mobile-chat-focus #chat-log {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+#chat-live-feed,
+#chat-live-log {
+  padding: 0;
+}
+
 .chat-line {
   margin: 0 0 6px;
   color: #ddeeff;
