@@ -2950,11 +2950,18 @@ export class GameRuntime {
     this.flowStage = "portal_transfer";
     this.hud.setStatus(this.getStatusText());
     this.syncGameplayUiForFlow();
-    this.setPortalTransition(true, "포탈 동기화 중...");
+    this.setPortalTransition(true, "포탈 연결 중...");
 
-    window.setTimeout(() => {
+    const redirectToPortal = () => {
       window.location.assign(destination);
-    }, 780);
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(redirectToPortal);
+      });
+    } else {
+      window.setTimeout(redirectToPortal, 0);
+    }
   }
 
   syncPlayerNameIfConnected() {

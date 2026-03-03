@@ -1464,6 +1464,13 @@ body.mobile-roster-focus #mobile-look-pad {
   text-transform: uppercase;
 }
 
+#portal-transition-note {
+  margin: -4px 0 0;
+  color: rgba(232, 247, 255, 0.74);
+  font: 500 0.74rem/1.35 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+}
+
 #boundary-warning {
   position: fixed;
   left: 50%;
