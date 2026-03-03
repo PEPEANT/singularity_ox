@@ -958,7 +958,8 @@ body.mobile-roster-focus #mobile-look-pad {
   letter-spacing: 0.06em;
 }
 
-#quiz-slot-count-input {
+#quiz-slot-count-input,
+#quiz-time-unify-input {
   height: 30px;
   border: 1px solid rgba(163, 207, 238, 0.68);
   border-radius: 7px;
@@ -2187,11 +2188,13 @@ body.mobile-chat-focus #chat-log {
     gap: 6px;
   }
 
-  .quiz-config-toolbar label[for="quiz-slot-count-input"] {
+  .quiz-config-toolbar label[for="quiz-slot-count-input"],
+  .quiz-config-toolbar label[for="quiz-time-unify-input"] {
     grid-column: unset;
   }
 
-  #quiz-slot-count-input {
+  #quiz-slot-count-input,
+  #quiz-time-unify-input {
     grid-column: unset;
   }
 

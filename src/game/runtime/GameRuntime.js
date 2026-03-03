@@ -127,7 +127,7 @@ const QUIZ_CONFIG_DRAFT_STORAGE_PREFIX = "singularity_ox.quiz_config_draft.v1";
 const QUIZ_CATEGORY_STORAGE_PREFIX = "singularity_ox.quiz_category.v1";
 const QUIZ_CONFIG_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 21;
 const LAST_ROOM_CODE_STORAGE_KEY = "singularity_ox.last_room_code.v1";
-const QUIZ_MIN_TIME_LIMIT_SECONDS = 30;
+const QUIZ_MIN_TIME_LIMIT_SECONDS = 15;
 const QUIZ_MAX_TIME_LIMIT_SECONDS = 3600;
 const QUIZ_DEFAULT_TIME_LIMIT_SECONDS = 30;
 const CHAT_BUBBLE_MIN_LIFETIME_MS = 9000;
@@ -513,6 +513,8 @@ export class GameRuntime {
     this.quizCategoryHistoryLoadBtnEl = document.getElementById("quiz-category-history-load-btn");
     this.quizCategoryHistorySaveBtnEl = document.getElementById("quiz-category-history-save-btn");
     this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
+    this.quizTimeUnifyInputEl = document.getElementById("quiz-time-unify-input");
+    this.quizTimeUnifyApplyBtnEl = document.getElementById("quiz-time-unify-apply-btn");
     this.quizAutoFinishInputEl = document.getElementById("quiz-auto-finish-input");
     this.quizOppositeBillboardInputEl = document.getElementById("quiz-opposite-billboard-input");
     this.quizQuestionListEl = document.getElementById("quiz-question-list");
@@ -6553,6 +6555,16 @@ export class GameRuntime {
     this.quizSlotCountInputEl?.addEventListener("input", () => {
       this.applyQuizSlotCountChange();
     });
+    this.quizTimeUnifyInputEl?.addEventListener("change", () => {
+      const normalized = this.normalizeQuizTimeLimitSeconds(
+        this.quizTimeUnifyInputEl?.value,
+        QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+      );
+      this.quizTimeUnifyInputEl.value = String(normalized);
+    });
+    this.quizTimeUnifyApplyBtnEl?.addEventListener("click", () => {
+      this.applyQuizTimeLimitToAllQuestions();
+    });
     this.quizQuestionListEl?.addEventListener("input", () => {
       this.persistQuizConfigDraft({ immediate: false, updateState: true });
     });
@@ -6747,6 +6759,12 @@ export class GameRuntime {
     }
     if (!this.quizSlotCountInputEl) {
       this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
+    }
+    if (!this.quizTimeUnifyInputEl) {
+      this.quizTimeUnifyInputEl = document.getElementById("quiz-time-unify-input");
+    }
+    if (!this.quizTimeUnifyApplyBtnEl) {
+      this.quizTimeUnifyApplyBtnEl = document.getElementById("quiz-time-unify-apply-btn");
     }
     if (!this.quizAutoFinishInputEl) {
       this.quizAutoFinishInputEl = document.getElementById("quiz-auto-finish-input");
@@ -10465,6 +10483,16 @@ export class GameRuntime {
       this.quizSlotCountInputEl.max = String(maxQuestions);
       this.quizSlotCountInputEl.value = String(safeQuestions.length);
     }
+    if (this.quizTimeUnifyInputEl) {
+      const unifiedSeconds = this.normalizeQuizTimeLimitSeconds(
+        safeQuestions[0]?.timeLimitSeconds,
+        QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+      );
+      this.quizTimeUnifyInputEl.min = String(QUIZ_MIN_TIME_LIMIT_SECONDS);
+      this.quizTimeUnifyInputEl.max = String(QUIZ_MAX_TIME_LIMIT_SECONDS);
+      this.quizTimeUnifyInputEl.step = "1";
+      this.quizTimeUnifyInputEl.value = String(unifiedSeconds);
+    }
     if (this.quizAutoFinishInputEl) {
       this.quizAutoFinishInputEl.checked = this.quizConfig?.endPolicy?.autoFinish !== false;
     }
@@ -10548,6 +10576,37 @@ export class GameRuntime {
     this.renderQuizConfigEditor();
     this.persistQuizConfigDraft({ immediate: false, updateState: true });
     this.setQuizConfigStatus(`문항 슬롯을 ${targetCount}개로 맞췄습니다.`);
+  }
+
+  applyQuizTimeLimitToAllQuestions() {
+    this.resolveUiElements();
+    if (!this.quizQuestionListEl) {
+      return;
+    }
+    const rows = Array.from(this.quizQuestionListEl.querySelectorAll(".quiz-question-row"));
+    if (rows.length <= 0) {
+      this.setQuizConfigStatus("통일할 문항이 없습니다.", true);
+      return;
+    }
+    const fallbackSeconds = this.normalizeQuizTimeLimitSeconds(
+      this.quizConfig?.questions?.[0]?.timeLimitSeconds,
+      QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+    );
+    const targetSeconds = this.normalizeQuizTimeLimitSeconds(
+      this.quizTimeUnifyInputEl?.value,
+      fallbackSeconds
+    );
+    if (this.quizTimeUnifyInputEl) {
+      this.quizTimeUnifyInputEl.value = String(targetSeconds);
+    }
+    rows.forEach((row) => {
+      const timeLimitInput = row.querySelector(".quiz-question-time");
+      if (timeLimitInput) {
+        timeLimitInput.value = String(targetSeconds);
+      }
+    });
+    this.persistQuizConfigDraft({ immediate: false, updateState: true });
+    this.setQuizConfigStatus(`모든 문항 시간을 ${targetSeconds}초로 통일했습니다.`);
   }
 
   resetQuizConfigEditor() {
