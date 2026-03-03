@@ -1704,7 +1704,7 @@ export class GameRuntime {
   syncGameplayUiForFlow() {
     const gameplayEnabled = !this.hubFlowEnabled || this.flowStage === "city_live";
     const lobbyBlocked = this.isLobbyBlockingGameplay();
-    const admissionBlocked = this.localAdmissionWaiting;
+    const admissionBlocked = this.isAdmissionMovementBlocked();
     const chalkEnabled = Boolean(this.worldContent?.chalk?.enabled);
     this.toolUiEl?.classList.toggle(
       "hidden",
@@ -2009,7 +2009,7 @@ export class GameRuntime {
     if (this.isLobbyBlockingGameplay()) {
       return false;
     }
-    if (this.localAdmissionWaiting) {
+    if (this.isAdmissionMovementBlocked()) {
       return false;
     }
     const quizPhase = String(this.quizState.phase ?? "");
@@ -2040,9 +2040,20 @@ export class GameRuntime {
     }
     return (
       !this.isLobbyBlockingGameplay() &&
-      !this.localAdmissionWaiting &&
+      !this.isAdmissionMovementBlocked() &&
       (!this.hubFlowEnabled || this.flowStage === "city_live")
     );
+  }
+
+  isAdmissionMovementBlocked() {
+    if (!this.localAdmissionWaiting) {
+      return false;
+    }
+    if (this.hubFlowEnabled) {
+      return true;
+    }
+    // In lobby mode, keep movement available while the gate is open so players can enter it.
+    return this.entryGateState?.portalOpen !== true;
   }
 
   canUsePointerLock() {
@@ -7276,8 +7287,9 @@ export class GameRuntime {
   updateMobileControlUi() {
     this.resolveUiElements();
     const orientationLocked = this.syncOrientationLockUi();
+    const admissionBlocked = this.isAdmissionMovementBlocked();
     const showMobileUi =
-      this.mobileEnabled && !orientationLocked && !this.isLobbyBlockingGameplay() && !this.localAdmissionWaiting;
+      this.mobileEnabled && !orientationLocked && !this.isLobbyBlockingGameplay() && !admissionBlocked;
     // Keep chat access visible on mobile, even when gameplay controls are hidden.
     const showChatButton = this.mobileEnabled && !orientationLocked;
     const showMobileContainer = showMobileUi || showChatButton;
@@ -11563,7 +11575,7 @@ export class GameRuntime {
     this.resolveUiElements();
     const isHost = this.isLocalHost();
     const connected = Boolean(this.networkConnected && this.socket);
-    const show = connected && !this.isLobbyBlockingGameplay() && this.ownerAccessEnabled;
+    const show = !this.isLobbyBlockingGameplay() && this.ownerAccessEnabled;
     this.quizControlsEl?.classList.toggle("hidden", !show);
     if (!show) {
       this.setModerationPanelOpen(false);
@@ -11677,6 +11689,11 @@ export class GameRuntime {
     this.refreshBillboardPlaylistUi();
 
     if (this.quizControlsNoteEl) {
+      if (!connected) {
+        this.quizControlsNoteEl.textContent =
+          "서버 재연결 중입니다. 연결이 복구되면 패널 제어가 다시 활성화됩니다.";
+        return;
+      }
       if (!isHost) {
         this.quizControlsNoteEl.textContent = this.ownerAccessEnabled
           ? "오너 토큰 보유 시 호스팅 권한을 요청할 수 있습니다."
