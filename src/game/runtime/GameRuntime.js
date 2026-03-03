@@ -132,6 +132,9 @@ const QUIZ_MAX_TIME_LIMIT_SECONDS = 3600;
 const QUIZ_DEFAULT_TIME_LIMIT_SECONDS = 30;
 const CHAT_BUBBLE_MIN_LIFETIME_MS = 9000;
 const MOBILE_CHAT_PREVIEW_MIN_LIFETIME_MS = 7000;
+const GRAPHICS_QUALITY_STORAGE_KEY = "singularity_ox.graphics_quality.v1";
+const UI_VOLUME_STORAGE_KEY = "singularity_ox.ui_volume.v1";
+const CHAT_LIVE_MAX_ENTRIES = 24;
 
 export class GameRuntime {
   constructor(mount, options = {}) {
@@ -161,6 +164,10 @@ export class GameRuntime {
     const initialPixelRatio = Math.min(window.devicePixelRatio || 1, initialPixelRatioCap);
     this.maxPixelRatio = initialPixelRatio;
     this.currentPixelRatio = initialPixelRatio;
+    this.graphicsQualityStorageKey = GRAPHICS_QUALITY_STORAGE_KEY;
+    this.graphicsQuality = this.loadGraphicsQualityPreference();
+    this.uiVolumeStorageKey = UI_VOLUME_STORAGE_KEY;
+    this.uiVolume = this.loadUiVolumePreference();
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(this.worldContent.skyColor);
@@ -437,6 +444,8 @@ export class GameRuntime {
     this.chatSendBtnEl = document.getElementById("chat-send-btn");
     this.chatHideBtnEl = document.getElementById("chat-hide-btn");
     this.chatCloseBtnEl = document.getElementById("chat-close-btn");
+    this.chatLiveFeedEl = document.getElementById("chat-live-feed");
+    this.chatLiveLogEl = document.getElementById("chat-live-log");
     this.toolHotbarEl = document.getElementById("tool-hotbar");
     this.chalkColorsEl = document.getElementById("chalk-colors");
     this.chalkColorButtons = [];
@@ -446,8 +455,15 @@ export class GameRuntime {
     this.lastLocalChatEchoAt = 0;
     this.chatSendInFlight = false;
     this.recentChatEventSignatures = new Map();
+    this.chatLiveMaxEntries = CHAT_LIVE_MAX_ENTRIES;
+    this.settingsPanelOpen = false;
     this.toolUiEl = document.getElementById("tool-ui");
     this.chatUiEl = document.getElementById("chat-ui");
+    this.settingsBtnEl = document.getElementById("settings-btn");
+    this.settingsPanelEl = document.getElementById("settings-panel");
+    this.settingsVolumeSliderEl = document.getElementById("sp-volume");
+    this.settingsFullscreenBtnEl = document.getElementById("sp-fullscreen-btn");
+    this.settingsQualityBtnEls = Array.from(document.querySelectorAll(".sp-quality-btn[data-quality]"));
     this.orientationLockOverlayEl = document.getElementById("orientation-lock-overlay");
     this.quizControlsEl = document.getElementById("quiz-controls");
     this.quizHostBtnEl = document.getElementById("quiz-host-btn");
@@ -704,16 +720,20 @@ export class GameRuntime {
     this.scene.add(this.camera);
     this.resolveUiElements();
     this.setupToolState();
+    this.setGraphicsQuality(this.graphicsQuality, { persist: false });
+    this.setUiVolume(this.uiVolume, { persist: false });
     this.setChatOpen(false);
     this.applyPortalTarget(this.portalTargetUrl, { announce: false });
     this.refreshRosterPanel();
     this.syncRosterVisibility();
     this.updateMobileControlUi();
+    this.syncSettingsPanelUi();
     if (this.mobileEnabled) {
       this.requestAppFullscreen();
     }
 
     this.setupWorld();
+    this.applyGraphicsQualityOverrides();
     this.setupHubFlowWorld();
     this.setupPostProcessing();
     this.bindEvents();
@@ -922,13 +942,71 @@ export class GameRuntime {
     this.bridgeBoundaryBeam = null;
   }
 
+  createPortalVisualGroup() {
+    const portalGroup = new THREE.Group();
+    portalGroup.position.copy(this.portalFloorPosition);
+    portalGroup.position.y = 0;
+
+    const portalBase = new THREE.Mesh(
+      new THREE.TorusGeometry(this.portalRadius * 0.92, 0.24, 18, this.mobileEnabled ? 28 : 56),
+      new THREE.MeshStandardMaterial({
+        color: 0x406484,
+        roughness: 0.24,
+        metalness: 0.44,
+        emissive: 0x1e3d5a,
+        emissiveIntensity: 0.2
+      })
+    );
+    portalBase.rotation.x = Math.PI / 2;
+    portalBase.position.y = 0.2;
+    portalGroup.add(portalBase);
+
+    const portalRing = new THREE.Mesh(
+      new THREE.TorusGeometry(this.portalRadius, 0.34, 26, this.mobileEnabled ? 44 : 72),
+      new THREE.MeshStandardMaterial({
+        color: 0x77dcff,
+        roughness: 0.14,
+        metalness: 0.4,
+        emissive: 0x4ac8ff,
+        emissiveIntensity: 0.18,
+        transparent: true,
+        opacity: 0.64
+      })
+    );
+    portalRing.position.y = 2.45;
+    portalGroup.add(portalRing);
+
+    const portalCore = new THREE.Mesh(
+      new THREE.CircleGeometry(this.portalRadius * 0.84, this.mobileEnabled ? 28 : 50),
+      new THREE.MeshBasicMaterial({
+        color: 0x9cf4ff,
+        transparent: true,
+        opacity: 0.12,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    );
+    portalCore.position.y = 2.45;
+    portalGroup.add(portalCore);
+
+    return { portalGroup, portalRing, portalCore };
+  }
+
   setupHubFlowWorld() {
     this.clearHubFlowWorld();
+    const group = new THREE.Group();
+    const { portalGroup, portalRing, portalCore } = this.createPortalVisualGroup();
+    this.hubFlowGroup = group;
+    this.portalGroup = portalGroup;
+    this.portalRing = portalRing;
+    this.portalCore = portalCore;
+    group.add(portalGroup);
+
     if (!this.hubFlowEnabled) {
+      this.scene.add(group);
+      this.updatePortalVisual();
       return;
     }
-
-    const group = new THREE.Group();
 
     const bridgeDirection = new THREE.Vector3(
       this.bridgeCityEntry.x - this.bridgeSpawn.x,
@@ -1375,56 +1453,6 @@ export class GameRuntime {
     );
     boundaryBeam.position.y = 0.62;
 
-    const portalGroup = new THREE.Group();
-    portalGroup.position.copy(this.portalFloorPosition);
-    portalGroup.position.y = 0;
-
-    const portalBase = new THREE.Mesh(
-      new THREE.TorusGeometry(this.portalRadius * 0.92, 0.24, 18, this.mobileEnabled ? 28 : 56),
-      new THREE.MeshStandardMaterial({
-        color: 0x406484,
-        roughness: 0.24,
-        metalness: 0.44,
-        emissive: 0x1e3d5a,
-        emissiveIntensity: 0.2
-      })
-    );
-    portalBase.rotation.x = Math.PI / 2;
-    portalBase.position.y = 0.2;
-    portalGroup.add(portalBase);
-
-    const portalRing = new THREE.Mesh(
-      new THREE.TorusGeometry(this.portalRadius, 0.34, 26, this.mobileEnabled ? 44 : 72),
-      new THREE.MeshStandardMaterial({
-        color: 0x77dcff,
-        roughness: 0.14,
-        metalness: 0.4,
-        emissive: 0x4ac8ff,
-        emissiveIntensity: 0.18,
-        transparent: true,
-        opacity: 0.64
-      })
-    );
-    portalRing.position.y = 2.45;
-    portalGroup.add(portalRing);
-
-    const portalCore = new THREE.Mesh(
-      new THREE.CircleGeometry(this.portalRadius * 0.84, this.mobileEnabled ? 28 : 50),
-      new THREE.MeshBasicMaterial({
-        color: 0x9cf4ff,
-        transparent: true,
-        opacity: 0.12,
-        side: THREE.DoubleSide,
-        depthWrite: false
-      })
-    );
-    portalCore.position.y = 2.45;
-    portalGroup.add(portalCore);
-
-    this.hubFlowGroup = group;
-    this.portalGroup = portalGroup;
-    this.portalRing = portalRing;
-    this.portalCore = portalCore;
     this.npcGuideGroup = npcGuide;
     this.mirrorGateGroup = mirrorGate;
     this.mirrorGatePanel = null;
@@ -1434,7 +1462,7 @@ export class GameRuntime {
     this.bridgeBoundaryBeam = boundaryBeam;
 
     boundaryMarker.add(boundaryRing, boundaryHalo, boundaryBeam);
-    group.add(bridgeGroup, cityGroup, npcGuide, mirrorGate, boundaryMarker, portalGroup);
+    group.add(bridgeGroup, cityGroup, npcGuide, mirrorGate, boundaryMarker);
     this.scene.add(group);
     this.setMirrorGateVisible(this.flowStage === "bridge_mirror");
     this.updateBridgeBoundaryMarker(0);
@@ -1808,6 +1836,7 @@ export class GameRuntime {
     this.npcGreetingVideoTexture = videoTexture;
     this.npcGreetingScreen = screen;
     this.npcGreetingPlayed = false;
+    this.applyUiVolumeToMedia();
     return screen;
   }
 
@@ -2031,6 +2060,44 @@ export class GameRuntime {
     }
     const root = document.documentElement;
     return Boolean(root?.requestFullscreen || root?.webkitRequestFullscreen);
+  }
+
+  toggleFullscreenFromInteraction() {
+    if (!this.isFullscreenSupported() || typeof document === "undefined") {
+      return;
+    }
+    if (this.isFullscreenActive()) {
+      const exitFn = document.exitFullscreen ?? document.webkitExitFullscreen;
+      if (typeof exitFn !== "function") {
+        return;
+      }
+      try {
+        const maybePromise = exitFn.call(document);
+        if (maybePromise && typeof maybePromise.catch === "function") {
+          maybePromise.catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const root = document.documentElement;
+    if (!root) {
+      return;
+    }
+    const requestFn = root.requestFullscreen ?? root.webkitRequestFullscreen;
+    if (typeof requestFn !== "function") {
+      return;
+    }
+    try {
+      const maybePromise = requestFn.call(root, { navigationUI: "hide" });
+      if (maybePromise && typeof maybePromise.catch === "function") {
+        maybePromise.catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
   }
 
   requestAppFullscreen({ fromGesture = false } = {}) {
@@ -2682,10 +2749,10 @@ export class GameRuntime {
       return;
     }
 
-    ringMaterial.emissiveIntensity = 0.02;
-    ringMaterial.opacity = 0.24;
-    coreMaterial.opacity = 0.01;
-    this.portalGroup.scale.set(0.96, 0.96, 0.96);
+    ringMaterial.emissiveIntensity = 0.14;
+    ringMaterial.opacity = 0.46;
+    coreMaterial.opacity = 0.08;
+    this.portalGroup.scale.set(0.98, 0.98, 0.98);
   }
 
   isPlayerInPortalZone() {
@@ -3865,6 +3932,7 @@ export class GameRuntime {
       runtime.audioEl = audio;
     }
 
+    this.applyUiVolumeToMedia();
     this.updateBillboardMediaPlaybackState(boardKey, entry);
   }
 
@@ -4472,6 +4540,7 @@ export class GameRuntime {
     this.megaAdScreenMaterial = screenMaterial;
     this.megaAdScreenGroup = group;
     this.scene.add(this.megaAdScreenGroup);
+    this.applyUiVolumeToMedia();
 
     this.applyOppositeBillboardMode();
 
@@ -5881,9 +5950,13 @@ export class GameRuntime {
       this.composer.dispose();
     }
 
+    const quality = this.normalizeGraphicsQuality(this.graphicsQuality);
     const bloomConfig = this.worldContent?.postProcessing?.bloom;
+    const bloomAllowedByQuality = quality !== "low";
     const bloomEnabled =
-      Boolean(bloomConfig?.enabled) && (!this.mobileEnabled || Boolean(bloomConfig?.mobileEnabled));
+      bloomAllowedByQuality &&
+      Boolean(bloomConfig?.enabled) &&
+      (!this.mobileEnabled || Boolean(bloomConfig?.mobileEnabled));
     if (!bloomEnabled) {
       this.composer = null;
       this.bloomPass = null;
@@ -5906,6 +5979,7 @@ export class GameRuntime {
 
     this.composer = composer;
     this.bloomPass = bloom;
+    this.applyGraphicsPostProcessingProfile();
   }
 
   setupHands() {
@@ -6043,6 +6117,11 @@ export class GameRuntime {
           this.setChatOpen(false);
           event.target.blur?.();
         }
+        return;
+      }
+      if (event.code === "Escape" && this.settingsPanelOpen) {
+        event.preventDefault();
+        this.setSettingsPanelOpen(false);
         return;
       }
 
@@ -6195,6 +6274,7 @@ export class GameRuntime {
       if (this.fullscreenPending) {
         window.setTimeout(() => this.requestAppFullscreen(), 120);
       }
+      this.syncSettingsPanelUi();
     };
     document.addEventListener("fullscreenchange", handleFullscreenChange);
     document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
@@ -6271,6 +6351,16 @@ export class GameRuntime {
         this.focusChatInput();
       }
     });
+    this.chatUiEl?.addEventListener("click", (event) => {
+      if (this.chatOpen || !this.canUseGameplayControls()) {
+        return;
+      }
+      const clickedControl = event?.target?.closest?.("#chat-close-btn, #chat-hide-btn, #chat-send-btn");
+      if (clickedControl) {
+        return;
+      }
+      this.focusChatInput();
+    });
     const closeChatUi = () => {
       if (this.mobileEnabled) {
         this.hideMobileChatPanel();
@@ -6304,6 +6394,41 @@ export class GameRuntime {
     this.chatCloseBtnEl?.addEventListener("click", (event) => {
       event.preventDefault();
       closeChatUi();
+    });
+    this.settingsBtnEl?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.setSettingsPanelOpen(!this.settingsPanelOpen);
+    });
+    this.settingsFullscreenBtnEl?.addEventListener("click", (event) => {
+      event.preventDefault();
+      this.toggleFullscreenFromInteraction();
+      this.setSettingsPanelOpen(false);
+    });
+    this.settingsVolumeSliderEl?.addEventListener("input", () => {
+      this.setUiVolume(this.settingsVolumeSliderEl.value, { persist: true });
+    });
+    for (const qualityBtn of this.settingsQualityBtnEls) {
+      qualityBtn?.addEventListener("click", (event) => {
+        event.preventDefault();
+        const quality = String(qualityBtn?.dataset?.quality ?? "");
+        this.setGraphicsQuality(quality, { persist: true });
+      });
+    }
+    document.addEventListener("pointerdown", (event) => {
+      if (!this.settingsPanelOpen) {
+        return;
+      }
+      const target = event?.target instanceof Node ? event.target : null;
+      if (!target) {
+        this.setSettingsPanelOpen(false);
+        return;
+      }
+      const clickedButton = this.settingsBtnEl?.contains?.(target);
+      const clickedPanel = this.settingsPanelEl?.contains?.(target);
+      if (!clickedButton && !clickedPanel) {
+        this.setSettingsPanelOpen(false);
+      }
     });
 
     if (this.toolHotbarEl) {
@@ -6463,6 +6588,18 @@ export class GameRuntime {
     }
     if (!this.chatUiEl) {
       this.chatUiEl = document.getElementById("chat-ui");
+    }
+    if (!this.settingsBtnEl) {
+      this.settingsBtnEl = document.getElementById("settings-btn");
+    }
+    if (!this.settingsPanelEl) {
+      this.settingsPanelEl = document.getElementById("settings-panel");
+    }
+    if (!this.settingsVolumeSliderEl) {
+      this.settingsVolumeSliderEl = document.getElementById("sp-volume");
+    }
+    if (!this.settingsFullscreenBtnEl) {
+      this.settingsFullscreenBtnEl = document.getElementById("sp-fullscreen-btn");
     }
     if (!this.orientationLockOverlayEl) {
       this.orientationLockOverlayEl = document.getElementById("orientation-lock-overlay");
@@ -6768,12 +6905,19 @@ export class GameRuntime {
     if (!this.chatCloseBtnEl) {
       this.chatCloseBtnEl = document.getElementById("chat-close-btn");
     }
+    if (!this.chatLiveFeedEl) {
+      this.chatLiveFeedEl = document.getElementById("chat-live-feed");
+    }
+    if (!this.chatLiveLogEl) {
+      this.chatLiveLogEl = document.getElementById("chat-live-log");
+    }
     if (!this.toolHotbarEl) {
       this.toolHotbarEl = document.getElementById("tool-hotbar");
     }
     if (!this.chalkColorsEl) {
       this.chalkColorsEl = document.getElementById("chalk-colors");
     }
+    this.settingsQualityBtnEls = Array.from(document.querySelectorAll(".sp-quality-btn[data-quality]"));
     this.chalkColorButtons = Array.from(document.querySelectorAll(".chalk-color[data-color]"));
     this.toolButtons = Array.from(document.querySelectorAll(".tool-slot[data-tool]"));
   }
@@ -7081,10 +7225,14 @@ export class GameRuntime {
     const orientationLocked = this.syncOrientationLockUi();
     const showMobileUi =
       this.mobileEnabled && !orientationLocked && !this.isLobbyBlockingGameplay() && !this.localAdmissionWaiting;
-    // Chat button is shown independently — visible even in lobby/admission
+    // Keep chat access visible on mobile, even when gameplay controls are hidden.
     const showChatButton = this.mobileEnabled && !orientationLocked;
+    const showMobileContainer = showMobileUi || showChatButton;
     const canUseMobileChat = this.mobileEnabled && !this.isMobilePortraitLocked();
-    this.mobileControlsEl?.classList.toggle("hidden", !showMobileUi);
+    const mobileActionPadEl = this.mobileControlsEl?.querySelector?.("#mobile-action-pad") ?? null;
+    this.mobileControlsEl?.classList.toggle("hidden", !showMobileContainer);
+    this.mobileMovePadEl?.classList.toggle("hidden", !showMobileUi);
+    mobileActionPadEl?.classList.toggle("hidden", !showMobileUi);
     this.mobileChatToggleBtnEl?.classList.toggle("hidden", !showChatButton);
     this.mobileLookPadEl?.classList.toggle("hidden", !showMobileUi);
     if (!this.mobileEnabled) {
@@ -7094,6 +7242,7 @@ export class GameRuntime {
       this.mobileChatPanelVisible = false;
       this.setChatOpen(false);
       this.hideMobileChatPreview();
+      this.setSettingsPanelOpen(false);
     }
     if (typeof document !== "undefined" && document.body) {
       document.body.classList.toggle("mobile-mode", showMobileUi);
@@ -7113,6 +7262,8 @@ export class GameRuntime {
       }
     }
     this.applyMobileChatUi();
+    this.syncSettingsPanelUi();
+    this.syncChatLiveUi();
   }
 
   setMobileKeyboardInset(insetPx) {
@@ -7196,6 +7347,7 @@ export class GameRuntime {
       this.setMobileKeyboardInset(0);
     }
     this.updateMobileChatToggleButton(canUseMobileChat, showChatPanel);
+    this.syncChatLiveUi();
   }
 
   updateMobileChatToggleButton(canUseMobileChat, showChatPanel) {
@@ -7952,14 +8104,22 @@ export class GameRuntime {
     if (this.mobileEnabled && this.chatOpen) {
       this.mobileChatPanelVisible = true;
     }
+    if (this.chatUiEl) {
+      this.chatUiEl.classList.toggle("collapsed", !this.chatOpen);
+      this.chatUiEl.classList.toggle("mobile-fullscreen", this.mobileEnabled && this.chatOpen);
+    }
     if (this.chatControlsEl) {
       this.chatControlsEl.classList.toggle("hidden", !this.chatOpen);
     }
     if (this.chatOpen) {
       this.chalkDrawingActive = false;
       this.chalkLastStamp = null;
+      if (this.chatLogEl) {
+        this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+      }
     }
     this.applyMobileChatUi();
+    this.syncSettingsPanelUi();
     if (this.mobileEnabled) {
       if (this.chatOpen) {
         this.scheduleMobileKeyboardInsetSync(0);
@@ -7967,6 +8127,307 @@ export class GameRuntime {
       } else {
         this.setMobileKeyboardInset(0);
       }
+    }
+  }
+
+  setSettingsPanelOpen(open) {
+    this.settingsPanelOpen = Boolean(open);
+    this.syncSettingsPanelUi();
+  }
+
+  syncSettingsPanelUi() {
+    this.resolveUiElements();
+    const visible = this.mobileEnabled && !this.isMobilePortraitLocked() && !this.chatOpen;
+    if (!visible) {
+      this.settingsPanelOpen = false;
+    }
+    if (this.settingsBtnEl) {
+      this.settingsBtnEl.classList.toggle("hidden", !visible);
+      this.settingsBtnEl.setAttribute("aria-expanded", this.settingsPanelOpen ? "true" : "false");
+    }
+    if (this.settingsPanelEl) {
+      this.settingsPanelEl.classList.toggle("hidden", !visible || !this.settingsPanelOpen);
+    }
+    if (this.settingsFullscreenBtnEl) {
+      const fullscreenSupported = this.isFullscreenSupported();
+      this.settingsFullscreenBtnEl.disabled = !fullscreenSupported;
+      this.settingsFullscreenBtnEl.classList.toggle("hidden", !fullscreenSupported);
+      if (fullscreenSupported) {
+        this.settingsFullscreenBtnEl.textContent = this.isFullscreenActive()
+          ? "전체 화면 해제"
+          : "전체 화면 전환";
+      }
+    }
+    if (this.settingsVolumeSliderEl) {
+      const nextValue = this.normalizeUiVolume(this.uiVolume).toFixed(2);
+      if (String(this.settingsVolumeSliderEl.value) !== nextValue) {
+        this.settingsVolumeSliderEl.value = nextValue;
+      }
+    }
+    const quality = this.normalizeGraphicsQuality(this.graphicsQuality);
+    for (const button of this.settingsQualityBtnEls) {
+      const buttonQuality = String(button?.dataset?.quality ?? "").trim().toLowerCase();
+      button.classList.toggle("active", buttonQuality === quality);
+    }
+  }
+
+  normalizeGraphicsQuality(rawQuality) {
+    const quality = String(rawQuality ?? "").trim().toLowerCase();
+    if (quality === "low" || quality === "high") {
+      return quality;
+    }
+    return "medium";
+  }
+
+  loadGraphicsQualityPreference() {
+    try {
+      return this.normalizeGraphicsQuality(localStorage.getItem(this.graphicsQualityStorageKey));
+    } catch {
+      return "medium";
+    }
+  }
+
+  saveGraphicsQualityPreference() {
+    try {
+      localStorage.setItem(this.graphicsQualityStorageKey, this.graphicsQuality);
+    } catch {
+      // ignore
+    }
+  }
+
+  setGraphicsQuality(rawQuality, { persist = true } = {}) {
+    const nextQuality = this.normalizeGraphicsQuality(rawQuality);
+    const changed = nextQuality !== this.graphicsQuality;
+    this.graphicsQuality = nextQuality;
+    if (persist) {
+      this.saveGraphicsQualityPreference();
+    }
+    this.applyGraphicsQualityOverrides();
+    if (changed) {
+      this.setupPostProcessing();
+    }
+    this.applyGraphicsPostProcessingProfile();
+    this.syncSettingsPanelUi();
+    if (changed && this._initialized) {
+      this.appendChatLine("SYSTEM", this.buildGraphicsQualityStatusLabel(), "system", {
+        mobilePreview: false
+      });
+    }
+  }
+
+  buildGraphicsQualityStatusLabel() {
+    const quality = this.normalizeGraphicsQuality(this.graphicsQuality).toUpperCase();
+    const pixelRatio = Number(this.currentPixelRatio || 0).toFixed(2);
+    const dynamic = this.dynamicResolution?.enabled ? "ON" : "OFF";
+    const shadow = this.renderer?.shadowMap?.enabled ? "ON" : "OFF";
+    const shadowSize = Number(this.sunLight?.shadow?.mapSize?.x || 0);
+    const bloom = this.bloomPass ? "ON" : "OFF";
+    const bloomStrength = this.bloomPass ? Number(this.bloomPass.strength || 0).toFixed(2) : "0.00";
+    return `Graphics ${quality} | PR ${pixelRatio} | DR ${dynamic} | Shadow ${shadow} ${shadowSize} | Bloom ${bloom} ${bloomStrength}`;
+  }
+
+  applyGraphicsQualityOverrides() {
+    const quality = this.normalizeGraphicsQuality(this.graphicsQuality);
+    this.graphicsQuality = quality;
+
+    const devicePixelRatio = window.devicePixelRatio || 1;
+    let maxRatioCap = this.mobileEnabled
+      ? MOBILE_RUNTIME_SETTINGS.maxPixelRatio
+      : DESKTOP_RUNTIME_SETTINGS.maxPixelRatio;
+    let dynamicEnabled = this.mobileEnabled;
+    let minRatio = this.mobileEnabled
+      ? GAME_CONSTANTS.DYNAMIC_RESOLUTION.mobileMinRatio
+      : GAME_CONSTANTS.DYNAMIC_RESOLUTION.desktopMinRatio;
+
+    if (quality === "low") {
+      dynamicEnabled = true;
+      minRatio = this.mobileEnabled ? 0.5 : 0.62;
+      maxRatioCap = this.mobileEnabled ? 0.95 : 1.0;
+    } else if (quality === "high") {
+      dynamicEnabled = false;
+      minRatio = this.mobileEnabled ? 0.82 : GAME_CONSTANTS.DYNAMIC_RESOLUTION.desktopMinRatio;
+      maxRatioCap = this.mobileEnabled ? 1.8 : 1.9;
+    }
+
+    this.dynamicResolution.enabled = dynamicEnabled;
+    this.dynamicResolution.minRatio = THREE.MathUtils.clamp(minRatio, 0.45, 1);
+    this.dynamicResolution.sampleTime = 0;
+    this.dynamicResolution.frameCount = 0;
+    this.dynamicResolution.downshiftSamples = 0;
+    this.dynamicResolution.upshiftSamples = 0;
+    this.dynamicResolution.cooldown = 0;
+    this.dynamicResolution.pendingRatio = null;
+    this.dynamicResolution.pendingApplyAt = 0;
+
+    this.maxPixelRatio = Math.min(devicePixelRatio, Math.max(0.7, maxRatioCap));
+    const minPixelRatio = Math.max(0.45, Math.min(this.dynamicResolution.minRatio, this.maxPixelRatio));
+
+    let nextPixelRatio = this.currentPixelRatio;
+    if (quality === "high") {
+      nextPixelRatio = this.maxPixelRatio;
+    } else if (quality === "low") {
+      nextPixelRatio = minPixelRatio;
+    } else {
+      const mediumRatioFactor = this.mobileEnabled ? 0.86 : 0.92;
+      nextPixelRatio = Math.max(minPixelRatio, this.maxPixelRatio * mediumRatioFactor);
+    }
+    nextPixelRatio = THREE.MathUtils.clamp(nextPixelRatio, minPixelRatio, this.maxPixelRatio);
+    const roundedRatio = Number(nextPixelRatio.toFixed(2));
+    if (Math.abs(roundedRatio - this.currentPixelRatio) > 0.01) {
+      this.currentPixelRatio = roundedRatio;
+      this.applyPixelRatio(this.currentPixelRatio);
+      this.renderer.setSize(window.innerWidth, window.innerHeight, false);
+      if (this.composer) {
+        this.composer.setSize(window.innerWidth, window.innerHeight);
+      }
+    }
+
+    const shadowEnabled = !this.mobileEnabled && quality !== "low";
+    this.renderer.shadowMap.enabled = shadowEnabled;
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = shadowEnabled;
+    if (this.sunLight) {
+      this.sunLight.castShadow = shadowEnabled;
+      const sunConfig = this.worldContent?.lights?.sun ?? {};
+      const baseDesktopSize = Number(sunConfig.shadowDesktopSize) || 2048;
+      const baseMobileSize = Number(sunConfig.shadowMobileSize) || 1024;
+      let shadowMapSize = this.mobileEnabled ? baseMobileSize : baseDesktopSize;
+      if (quality === "low") {
+        shadowMapSize = Math.max(512, Math.round(shadowMapSize * 0.5));
+      } else if (quality === "high" && !this.mobileEnabled) {
+        shadowMapSize = Math.min(4096, Math.round(shadowMapSize * 1.2));
+      }
+      if (
+        this.sunLight.shadow.mapSize.x !== shadowMapSize ||
+        this.sunLight.shadow.mapSize.y !== shadowMapSize
+      ) {
+        this.sunLight.shadow.mapSize.set(shadowMapSize, shadowMapSize);
+        this.sunLight.shadow.needsUpdate = true;
+      }
+    }
+  }
+
+  applyGraphicsPostProcessingProfile() {
+    if (!this.bloomPass) {
+      return;
+    }
+    const bloomConfig = this.worldContent?.postProcessing?.bloom ?? {};
+    const quality = this.normalizeGraphicsQuality(this.graphicsQuality);
+    const baseStrength = Number(bloomConfig.strength) || 0.22;
+    const baseRadius = Number(bloomConfig.radius) || 0.62;
+    const baseThreshold = Number(bloomConfig.threshold) || 0.86;
+
+    let strength = baseStrength;
+    let radius = baseRadius;
+    let threshold = baseThreshold;
+
+    if (quality === "medium") {
+      strength = baseStrength * 0.92;
+      radius = baseRadius * 0.96;
+      threshold = Math.min(0.95, baseThreshold + 0.02);
+    } else if (quality === "high") {
+      strength = baseStrength * 1.24;
+      radius = baseRadius * 1.08;
+      threshold = Math.max(0.72, baseThreshold - 0.06);
+    }
+
+    this.bloomPass.strength = strength;
+    this.bloomPass.radius = radius;
+    this.bloomPass.threshold = threshold;
+  }
+
+  normalizeUiVolume(rawValue) {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) {
+      return 0.7;
+    }
+    return THREE.MathUtils.clamp(value, 0, 1);
+  }
+
+  loadUiVolumePreference() {
+    try {
+      return this.normalizeUiVolume(localStorage.getItem(this.uiVolumeStorageKey));
+    } catch {
+      return 0.7;
+    }
+  }
+
+  saveUiVolumePreference() {
+    try {
+      localStorage.setItem(this.uiVolumeStorageKey, String(this.uiVolume));
+    } catch {
+      // ignore
+    }
+  }
+
+  setUiVolume(rawValue, { persist = true } = {}) {
+    this.uiVolume = this.normalizeUiVolume(rawValue);
+    if (persist) {
+      this.saveUiVolumePreference();
+    }
+    this.applyUiVolumeToMedia();
+    this.syncSettingsPanelUi();
+  }
+
+  applyUiVolumeToMedia() {
+    const volume = this.normalizeUiVolume(this.uiVolume);
+    if (this.npcGreetingVideoEl) {
+      this.npcGreetingVideoEl.volume = volume;
+    }
+    if (this.megaAdVideoEl) {
+      this.megaAdVideoEl.volume = volume;
+    }
+    for (const boardKey of ["board1", "board2"]) {
+      const runtime = this.billboardMediaRuntime?.[boardKey];
+      if (!runtime) {
+        continue;
+      }
+      if (runtime.videoEl) {
+        runtime.videoEl.volume = volume;
+      }
+      if (runtime.audioEl) {
+        runtime.audioEl.volume = volume;
+      }
+    }
+  }
+
+  updateChatLiveAnchorPosition() {
+    if (!this.chatLiveFeedEl || typeof window === "undefined") {
+      return;
+    }
+    const viewportHeight = Math.max(1, Number(window.innerHeight) || 1);
+    const isVisibleRect = (element) => {
+      if (!element || element.classList?.contains?.("hidden")) {
+        return null;
+      }
+      const rect = element.getBoundingClientRect?.();
+      if (!rect || !Number.isFinite(rect.top) || rect.height <= 0) {
+        return null;
+      }
+      return rect;
+    };
+
+    const anchorRect = this.mobileEnabled
+      ? isVisibleRect(this.mobileControlsEl)
+      : isVisibleRect(this.chatUiEl);
+    if (anchorRect) {
+      const anchoredBottom = Math.max(18, Math.round(viewportHeight - anchorRect.top + 8));
+      this.chatLiveFeedEl.style.bottom = `${anchoredBottom}px`;
+      return;
+    }
+    this.chatLiveFeedEl.style.bottom = this.mobileEnabled ? "174px" : "148px";
+  }
+
+  syncChatLiveUi() {
+    this.resolveUiElements();
+    if (!this.chatLiveFeedEl) {
+      return;
+    }
+    const portraitBlocked = this.isMobilePortraitLocked();
+    const visible = !portraitBlocked && !(this.mobileEnabled && this.chatOpen);
+    this.chatLiveFeedEl.classList.toggle("hidden", !visible);
+    if (visible) {
+      this.updateChatLiveAnchorPosition();
     }
   }
 
@@ -9001,6 +9462,7 @@ export class GameRuntime {
     const replace = payload?.replace !== false;
     if (replace) {
       this.chatLogEl?.replaceChildren?.();
+      this.chatLiveLogEl?.replaceChildren?.();
       this.recentChatEventSignatures.clear();
       this.lastLocalChatEcho = "";
       this.lastLocalChatEchoAt = 0;
@@ -9019,7 +9481,8 @@ export class GameRuntime {
       if (typeRaw === "system") {
         this.appendChatLine("시스템", text, "system", {
           mobilePreview: false,
-          scroll: false
+          scroll: false,
+          liveFeed: false
         });
         continue;
       }
@@ -9028,7 +9491,8 @@ export class GameRuntime {
       const lineType = senderId && senderId === myId ? "self" : "remote";
       this.appendChatLine(senderName, text, lineType, {
         mobilePreview: false,
-        scroll: false
+        scroll: false,
+        liveFeed: false
       });
     }
     if (this.chatLogEl) {
@@ -11370,11 +11834,18 @@ export class GameRuntime {
 
   appendChatLine(name, text, type = "remote", options = {}) {
     this.resolveUiElements();
-    if (!this.chatLogEl) {
+    const hasMainLog = Boolean(this.chatLogEl);
+    const hasLiveLog = Boolean(this.chatLiveLogEl);
+    if (!hasMainLog && !hasLiveLog) {
       return false;
     }
     const allowMobilePreview = options?.mobilePreview !== false;
     const autoScroll = options?.scroll !== false;
+    const allowLiveFeed = options?.liveFeed !== false;
+
+    const nearBottom = hasMainLog
+      ? this.chatLogEl.scrollHeight - this.chatLogEl.scrollTop - this.chatLogEl.clientHeight < 20
+      : false;
 
     const line = document.createElement("p");
     line.className = `chat-line ${type}`;
@@ -11402,12 +11873,30 @@ export class GameRuntime {
       line.append(nameEl, textEl);
     }
 
-    this.chatLogEl.appendChild(line);
-    while (this.chatLogEl.childElementCount > this.chatLogMaxEntries) {
-      this.chatLogEl.firstElementChild?.remove();
+    let appended = false;
+    if (hasMainLog) {
+      this.chatLogEl.appendChild(line);
+      while (this.chatLogEl.childElementCount > this.chatLogMaxEntries) {
+        this.chatLogEl.firstElementChild?.remove();
+      }
+      if (autoScroll || nearBottom || type === "self" || !this.chatOpen) {
+        this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+      }
+      appended = true;
     }
-    if (autoScroll) {
-      this.chatLogEl.scrollTop = this.chatLogEl.scrollHeight;
+    if (allowLiveFeed && hasLiveLog) {
+      const liveLine = line.cloneNode(true);
+      this.chatLiveLogEl.appendChild(liveLine);
+      while (this.chatLiveLogEl.childElementCount > this.chatLiveMaxEntries) {
+        this.chatLiveLogEl.firstElementChild?.remove();
+      }
+      this.chatLiveLogEl.scrollTop = this.chatLiveLogEl.scrollHeight;
+      appended = true;
+      window.setTimeout(() => {
+        liveLine.style.transition = "opacity 0.55s ease";
+        liveLine.style.opacity = "0";
+        window.setTimeout(() => liveLine.remove(), 560);
+      }, 7000);
     }
     if (allowMobilePreview && this.mobileEnabled && mobilePreviewText) {
       if (isRemoteChatLine) {
@@ -11416,7 +11905,8 @@ export class GameRuntime {
         this.showMobileChatPreview(mobilePreviewText);
       }
     }
-    return true;
+    this.syncChatLiveUi();
+    return appended;
   }
 
   sendChatMessage() {
@@ -11471,7 +11961,7 @@ export class GameRuntime {
         }
         if (this.mobileEnabled) {
           this.appendChatLine(senderName, text, "self");
-          // Keep panel open for continued chatting — refocus input
+          // Keep panel open for continued chatting; refocus input.
           if (this.mobileChatPanelVisible && this.chatInputEl) {
             this.chatInputEl.focus();
           }
@@ -11492,6 +11982,7 @@ export class GameRuntime {
     if (this.isMobilePortraitLocked()) {
       return;
     }
+    this.setSettingsPanelOpen(false);
     this.setChatOpen(true);
     this.keys.clear();
     if (document.pointerLockElement === this.renderer.domElement) {
@@ -12118,7 +12609,8 @@ export class GameRuntime {
   }
 
   applyQualityProfile() {
-    const shadowEnabled = !this.mobileEnabled;
+    const quality = this.normalizeGraphicsQuality(this.graphicsQuality);
+    const shadowEnabled = !this.mobileEnabled && quality !== "low";
     this.renderer.shadowMap.enabled = shadowEnabled;
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = shadowEnabled;
@@ -12176,33 +12668,11 @@ export class GameRuntime {
       }
     }
 
-    this.dynamicResolution.minRatio = this.mobileEnabled
-      ? GAME_CONSTANTS.DYNAMIC_RESOLUTION.mobileMinRatio
-      : GAME_CONSTANTS.DYNAMIC_RESOLUTION.desktopMinRatio;
-    this.dynamicResolution.enabled = this.mobileEnabled;
-    this.dynamicResolution.sampleTime = 0;
-    this.dynamicResolution.frameCount = 0;
-    this.dynamicResolution.downshiftSamples = 0;
-    this.dynamicResolution.upshiftSamples = 0;
-    this.dynamicResolution.cooldown = 0;
-    this.dynamicResolution.pendingRatio = null;
-    this.dynamicResolution.pendingApplyAt = 0;
     this.networkSyncInterval = this.mobileEnabled
       ? Math.max(this.baseNetworkSyncInterval, MOBILE_RUNTIME_SETTINGS.minNetworkSyncInterval)
       : this.baseNetworkSyncInterval;
-
-    this.maxPixelRatio = Math.min(
-      window.devicePixelRatio || 1,
-      this.mobileEnabled
-        ? MOBILE_RUNTIME_SETTINGS.maxPixelRatio
-        : DESKTOP_RUNTIME_SETTINGS.maxPixelRatio
-    );
-    const minPixelRatio = Math.max(0.5, Math.min(this.dynamicResolution.minRatio, this.maxPixelRatio));
-    const clampedRatio = THREE.MathUtils.clamp(this.currentPixelRatio, minPixelRatio, this.maxPixelRatio);
-    if (Math.abs(clampedRatio - this.currentPixelRatio) > 0.01) {
-      this.currentPixelRatio = Number(clampedRatio.toFixed(2));
-      this.applyPixelRatio(this.currentPixelRatio);
-    }
+    this.applyGraphicsQualityOverrides();
+    this.applyGraphicsPostProcessingProfile();
 
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;

@@ -76,6 +76,16 @@ function emitAck(socket, event, payload = undefined) {
   });
 }
 
+async function pulsePlayersToZone(c1, c2, pulses = 8, delayMs = 45) {
+  const totalPulses = Math.max(1, Math.trunc(Number(pulses) || 1));
+  const safeDelayMs = Math.max(1, Math.trunc(Number(delayMs) || 1));
+  for (let index = 0; index < totalPulses; index += 1) {
+    c1.emit("player:sync", { x: -10, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+    c2.emit("player:sync", { x: -12, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+    await sleep(safeDelayMs);
+  }
+}
+
 async function checkSyntax() {
   const files = [
     "src/main.js",
@@ -218,9 +228,8 @@ async function checkSocketServer() {
       lastQuizScore = payload;
     });
 
-    // Keep both players on O-zone so they survive to the next question.
-    c1.emit("player:sync", { x: -10, y: 1.72, z: 0, yaw: 0, pitch: 0 });
-    c2.emit("player:sync", { x: -12, y: 1.72, z: 0, yaw: 0, pitch: 0 });
+    // OX server movement guard clamps sudden teleports, so pulse multiple syncs.
+    await pulsePlayersToZone(c1, c2, 10, 45);
 
     let hostClient = c1;
     let quizStartAck = await emitAck(c1, "quiz:start", {
@@ -241,16 +250,14 @@ async function checkSocketServer() {
     assert(quizStartAck?.ok === true, `quiz:start failed: ${JSON.stringify(quizStartAck)}`);
 
     await waitFor(() => quizQuestion >= 1, 8000);
-    c1.emit("player:sync", { x: -10, y: 1.72, z: 0, yaw: 0, pitch: 0 });
-    c2.emit("player:sync", { x: -12, y: 1.72, z: 0, yaw: 0, pitch: 0 });
-    await sleep(120);
+    await pulsePlayersToZone(c1, c2, 6, 35);
+    await sleep(80);
     const forceLockAck1 = await emitAck(hostClient, "quiz:force-lock");
     assert(forceLockAck1?.ok === true, `first quiz:force-lock failed: ${JSON.stringify(forceLockAck1)}`);
 
     await waitFor(() => quizResult >= 1 && quizQuestion >= 2, 12000);
-    c1.emit("player:sync", { x: -10, y: 1.72, z: 0, yaw: 0, pitch: 0 });
-    c2.emit("player:sync", { x: -12, y: 1.72, z: 0, yaw: 0, pitch: 0 });
-    await sleep(120);
+    await pulsePlayersToZone(c1, c2, 6, 35);
+    await sleep(80);
     const forceLockAck2 = await emitAck(hostClient, "quiz:force-lock");
     assert(forceLockAck2?.ok === true, `second quiz:force-lock failed: ${JSON.stringify(forceLockAck2)}`);
 

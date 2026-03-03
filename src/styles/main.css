@@ -80,8 +80,11 @@ canvas {
 body.mobile-orientation-lock #mobile-controls,
 body.mobile-orientation-lock #mobile-look-pad,
 body.mobile-orientation-lock #chat-ui,
+body.mobile-orientation-lock #chat-live-feed,
 body.mobile-orientation-lock #tool-ui,
 body.mobile-orientation-lock #quiz-controls,
+body.mobile-orientation-lock #settings-btn,
+body.mobile-orientation-lock #settings-panel,
 body.mobile-orientation-lock #player-roster-panel,
 body.mobile-orientation-lock #hub-flow-ui {
   opacity: 0;
@@ -328,6 +331,110 @@ body.mobile-orientation-lock #hub-flow-ui {
   color: #ffbcbc;
 }
 
+#settings-btn {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 74;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(180, 212, 239, 0.52);
+  border-radius: 50%;
+  background: rgba(10, 24, 39, 0.84);
+  color: #e6f4ff;
+  font: 800 1.05rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+
+#settings-btn:active {
+  background: rgba(20, 46, 70, 0.92);
+}
+
+#settings-panel {
+  position: fixed;
+  top: calc(max(12px, env(safe-area-inset-top)) + 44px);
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 74;
+  width: 196px;
+  padding: 10px;
+  border: 1px solid rgba(170, 206, 238, 0.52);
+  border-radius: 12px;
+  background: rgba(8, 20, 33, 0.92);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 22px rgba(2, 8, 14, 0.46);
+  display: grid;
+  gap: 9px;
+}
+
+#settings-panel.hidden {
+  display: none;
+}
+
+.sp-row {
+  display: grid;
+  gap: 5px;
+}
+
+.sp-label {
+  color: rgba(186, 220, 248, 0.85);
+  font: 700 0.58rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.sp-quality-btns {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.sp-quality-btn {
+  height: 26px;
+  border: 1px solid rgba(155, 198, 232, 0.44);
+  border-radius: 6px;
+  background: rgba(12, 28, 44, 0.82);
+  color: #c2dff4;
+  font: 700 0.6rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.sp-quality-btn.active {
+  border-color: rgba(120, 196, 255, 0.78);
+  background: rgba(18, 48, 74, 0.9);
+  color: #a6dcff;
+}
+
+#sp-fullscreen-btn {
+  width: 100%;
+  height: 28px;
+  border: 1px solid rgba(155, 198, 232, 0.44);
+  border-radius: 7px;
+  background: rgba(12, 28, 44, 0.82);
+  color: #c2dff4;
+  font: 700 0.62rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+#sp-fullscreen-btn:active {
+  background: rgba(20, 48, 74, 0.92);
+}
+
+.sp-volume-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+#sp-volume {
+  flex: 1;
+  accent-color: #5abeff;
+  height: 4px;
+  cursor: pointer;
+}
+
 #mobile-controls {
   position: fixed;
   left: max(14px, env(safe-area-inset-left));
@@ -351,6 +458,14 @@ body.mobile-orientation-lock #hub-flow-ui {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+
+#mobile-left-pad {
+  display: grid;
+  gap: 8px;
+  align-items: end;
+  justify-items: start;
+  pointer-events: auto;
 }
 
 #mobile-move-pad {
@@ -424,7 +539,7 @@ body.mobile-orientation-lock #hub-flow-ui {
 #mobile-action-pad button,
 #mobile-chat-toggle-btn {
   width: 56px;
-  height: 56px;
+  height: 54px;
   border: 1px solid rgba(169, 208, 238, 0.66);
   border-radius: 999px;
   background: rgba(9, 23, 38, 0.88);
@@ -434,21 +549,15 @@ body.mobile-orientation-lock #hub-flow-ui {
   text-transform: none;
   padding: 0 3px;
   text-align: center;
-}
-
-#mobile-roster-btn,
-#mobile-chat-toggle-btn {
-  position: fixed;
-  right: max(14px, env(safe-area-inset-right));
-  z-index: 46;
-}
-
-#mobile-roster-btn {
-  top: max(14px, env(safe-area-inset-top));
+  position: relative;
 }
 
 #mobile-chat-toggle-btn {
-  top: calc(max(14px, env(safe-area-inset-top)) + 64px);
+  width: 74px;
+  height: 34px;
+  border-radius: 999px;
+  font-size: 0.54rem;
+  justify-self: start;
 }
 
 #mobile-roster-btn.active,
@@ -510,8 +619,14 @@ body.mobile-chat-focus #mobile-move-pad,
 body.mobile-chat-focus #mobile-jump-btn,
 body.mobile-chat-focus #mobile-run-btn,
 body.mobile-chat-focus #mobile-roster-btn,
+body.mobile-chat-focus #mobile-chat-toggle-btn,
 body.mobile-chat-focus #mobile-chat-preview,
 body.mobile-chat-focus #mobile-look-pad {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.mobile-chat-focus #chat-live-feed {
   opacity: 0;
   pointer-events: none;
 }
@@ -519,6 +634,7 @@ body.mobile-chat-focus #mobile-look-pad {
 body.mobile-roster-focus #mobile-move-pad,
 body.mobile-roster-focus #mobile-jump-btn,
 body.mobile-roster-focus #mobile-run-btn,
+body.mobile-roster-focus #mobile-chat-toggle-btn,
 body.mobile-roster-focus #mobile-chat-preview,
 body.mobile-roster-focus #mobile-look-pad {
   opacity: 0;
@@ -1558,6 +1674,17 @@ body.mobile-roster-focus #mobile-look-pad {
   backdrop-filter: blur(5px);
 }
 
+#chat-ui.collapsed {
+  width: 148px;
+  padding: 7px 8px;
+  gap: 0;
+}
+
+#chat-ui.collapsed #chat-log,
+#chat-ui.collapsed #chat-controls {
+  display: none !important;
+}
+
 #chat-header {
   display: flex;
   align-items: center;
@@ -1623,6 +1750,34 @@ body.mobile-roster-focus #mobile-look-pad {
   display: none !important;
 }
 
+#chat-ui.mobile-fullscreen {
+  left: max(0px, env(safe-area-inset-left));
+  right: max(0px, env(safe-area-inset-right));
+  top: max(0px, env(safe-area-inset-top));
+  bottom: calc(max(0px, env(safe-area-inset-bottom)) + var(--mobile-keyboard-inset, 0px));
+  z-index: 64;
+  width: auto;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  padding: 10px;
+  background: rgba(7, 18, 30, 0.96);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 9px;
+}
+
+#chat-ui.mobile-fullscreen #chat-log {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+}
+
+#chat-ui.mobile-fullscreen #chat-header {
+  padding: 1px 1px 0;
+}
+
 body.mobile-chat-focus #chat-ui {
   left: max(0px, env(safe-area-inset-left));
   right: max(0px, env(safe-area-inset-right));
@@ -1649,6 +1804,41 @@ body.mobile-chat-focus #chat-log {
 
 body.mobile-chat-focus #chat-header {
   padding: 1px 1px 0;
+}
+
+#chat-live-feed {
+  position: fixed;
+  left: 14px;
+  bottom: 148px;
+  z-index: 32;
+  width: min(52vw, 360px);
+  max-height: min(24vh, 190px);
+  padding: 7px;
+  border: 1px solid rgba(170, 201, 231, 0.58);
+  border-radius: 10px;
+  background: rgba(7, 19, 31, 0.78);
+  backdrop-filter: blur(5px);
+  pointer-events: none;
+}
+
+#chat-live-log {
+  min-height: 74px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid rgba(167, 199, 229, 0.45);
+  border-radius: 8px;
+  background: rgba(9, 21, 35, 0.9);
+  scrollbar-width: thin;
+}
+
+#chat-live-log .chat-line {
+  margin: 0 0 4px;
+  font: 600 0.68rem/1.3 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+}
+
+#chat-live-log .chat-line:last-child {
+  margin-bottom: 0;
 }
 
 .chat-line {
@@ -1863,7 +2053,31 @@ body.mobile-chat-focus #chat-header {
     width: auto;
   }
 
+  #chat-live-feed {
+    left: 10px;
+    width: min(82vw, 320px);
+    max-height: min(28vh, 172px);
+    padding: 6px;
+  }
+
+  #chat-live-log {
+    min-height: 66px;
+    padding: 5px;
+  }
+
+  #chat-live-log .chat-line {
+    font-size: 0.66rem;
+  }
+
   body.mobile-chat-focus #chat-ui {
+    left: max(0px, env(safe-area-inset-left));
+    right: max(0px, env(safe-area-inset-right));
+    top: max(0px, env(safe-area-inset-top));
+    bottom: calc(max(0px, env(safe-area-inset-bottom)) + var(--mobile-keyboard-inset, 0px));
+    padding: 9px;
+  }
+
+  #chat-ui.mobile-fullscreen {
     left: max(0px, env(safe-area-inset-left));
     right: max(0px, env(safe-area-inset-right));
     top: max(0px, env(safe-area-inset-top));
@@ -1990,6 +2204,10 @@ body.mobile-chat-focus #chat-header {
     bottom: max(8px, env(safe-area-inset-bottom));
   }
 
+  #mobile-left-pad {
+    gap: 7px;
+  }
+
   #mobile-move-pad {
     width: 122px;
     height: 122px;
@@ -2019,22 +2237,26 @@ body.mobile-chat-focus #chat-header {
     font-size: 0.55rem;
   }
 
-  #mobile-roster-btn,
   #mobile-chat-toggle-btn {
-    right: max(8px, env(safe-area-inset-right));
-  }
-
-  #mobile-roster-btn {
-    top: max(8px, env(safe-area-inset-top));
-  }
-
-  #mobile-chat-toggle-btn {
-    top: calc(max(8px, env(safe-area-inset-top)) + 58px);
+    width: 68px;
+    height: 32px;
+    font-size: 0.52rem;
   }
 
   #mobile-look-pad {
     inset: 0;
     min-height: 0;
+  }
+
+  #settings-btn {
+    top: max(8px, env(safe-area-inset-top));
+    right: max(8px, env(safe-area-inset-right));
+  }
+
+  #settings-panel {
+    top: calc(max(8px, env(safe-area-inset-top)) + 42px);
+    right: max(8px, env(safe-area-inset-right));
+    width: 178px;
   }
 }
 
