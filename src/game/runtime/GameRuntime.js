@@ -2719,7 +2719,9 @@ export class GameRuntime {
       return;
     }
     this.portalPulseClock += delta;
-    const portalLinked = this.entryGateState?.portalOpen === true && Boolean(this.portalTargetUrl);
+    const portalLinked =
+      Boolean(this.portalTargetUrl) &&
+      (this.entryGateState?.portalOpen === true || this.isLobbyReturnPortalTarget());
     this.portalPhase = portalLinked ? "open" : "idle";
     this.updatePortalVisual();
     if (portalLinked && !this.portalTransitioning && this.isPlayerInPortalZone()) {
@@ -2887,6 +2889,13 @@ export class GameRuntime {
       return queryTarget;
     }
 
+    const queryReturnTarget = this.normalizePortalTargetUrl(
+      this.queryParams.get("returnUrl") ?? this.queryParams.get("return") ?? ""
+    );
+    if (queryReturnTarget) {
+      return queryReturnTarget;
+    }
+
     const globalTarget = this.normalizePortalTargetUrl(window.__EMPTINES_PORTAL_TARGET ?? "");
     if (globalTarget) {
       return globalTarget;
@@ -2908,12 +2917,31 @@ export class GameRuntime {
     }
 
     const returnUrl = `${window.location.origin}${window.location.pathname}`;
+    target.searchParams.set("returnUrl", returnUrl);
     target.searchParams.set("return", returnUrl);
+    target.searchParams.set("returnPortal", "ox");
+    target.searchParams.set("from", "ox");
     target.searchParams.set("name", this.localPlayerName);
     if (this.socketEndpoint) {
       target.searchParams.set("server", this.socketEndpoint);
     }
     return target.toString();
+  }
+
+  isLobbyReturnPortalTarget(targetUrl = this.portalTargetUrl) {
+    const text = String(targetUrl ?? "").trim();
+    if (!text) {
+      return false;
+    }
+    try {
+      const parsed = new URL(text, window.location.href);
+      const zone = String(parsed.searchParams.get("zone") ?? parsed.searchParams.get("z") ?? "")
+        .trim()
+        .toLowerCase();
+      return zone === "lobby";
+    } catch {
+      return false;
+    }
   }
 
   isPortalTransferAllowed() {
@@ -2922,6 +2950,9 @@ export class GameRuntime {
     }
     if (this.hubFlowEnabled) {
       return this.portalPhase === "open";
+    }
+    if (this.isLobbyReturnPortalTarget()) {
+      return true;
     }
     return this.entryGateState?.portalOpen === true;
   }
