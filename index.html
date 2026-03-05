@@ -271,6 +271,43 @@
       </div>
     </div>
 
+    <div id="offline-start-hint" class="hidden" aria-live="polite">
+      <p id="offline-start-hint-text">중앙 시작 버튼 근처입니다.</p>
+      <button id="offline-start-trigger-btn" type="button">오프라인 OX 시작</button>
+    </div>
+
+    <div
+      id="offline-start-modal"
+      class="hidden"
+      aria-modal="true"
+      role="dialog"
+      aria-labelledby="offline-start-title"
+    >
+      <div id="offline-start-panel">
+        <div class="quiz-modal-head">
+          <h2 id="offline-start-title">오프라인 OX 시작</h2>
+          <button id="offline-start-close-btn" type="button">닫기</button>
+        </div>
+        <p id="offline-start-note">
+          현재 OX 대회장 인원만으로 즉시 시작합니다. 시작 후 중도 입장은 불가합니다.
+        </p>
+        <div class="offline-start-category-grid">
+          <button class="offline-start-category-btn" data-category="tukgal" type="button">특갤</button>
+          <button class="offline-start-category-btn" data-category="history" type="button">역사상식</button>
+          <button class="offline-start-category-btn" data-category="history-easy" type="button">역사기초</button>
+          <button class="offline-start-category-btn" data-category="chokaguya" type="button">초카구야</button>
+        </div>
+        <p id="offline-start-selected-category">선택 카테고리: -</p>
+        <div class="offline-start-question-row">
+          <select id="offline-start-question-select" disabled>
+            <option value="">문제를 먼저 선택하세요</option>
+          </select>
+          <button id="offline-start-question-start-btn" type="button" disabled>선택 문제 시작</button>
+        </div>
+        <p id="offline-start-status">카테고리를 선택하세요.</p>
+      </div>
+    </div>
+
     <div id="quiz-config-modal" class="hidden" aria-modal="true" role="dialog" aria-labelledby="quiz-config-title">
       <div id="quiz-config-panel">
         <div class="quiz-modal-head">

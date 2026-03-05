@@ -86,7 +86,9 @@ body.mobile-orientation-lock #quiz-controls,
 body.mobile-orientation-lock #settings-btn,
 body.mobile-orientation-lock #settings-panel,
 body.mobile-orientation-lock #player-roster-panel,
-body.mobile-orientation-lock #hub-flow-ui {
+body.mobile-orientation-lock #hub-flow-ui,
+body.mobile-orientation-lock #offline-start-hint,
+body.mobile-orientation-lock #offline-start-modal {
   opacity: 0;
   pointer-events: none;
 }
@@ -867,6 +869,152 @@ body.mobile-roster-focus #mobile-look-pad {
 
 #moderation-unmute-btn {
   background: linear-gradient(140deg, rgba(29, 63, 44, 0.95), rgba(14, 33, 22, 0.98));
+}
+
+#offline-start-hint {
+  position: fixed;
+  left: 50%;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 74;
+  display: grid;
+  gap: 6px;
+  min-width: min(92vw, 320px);
+  padding: 10px 12px;
+  border: 1px solid rgba(168, 208, 240, 0.62);
+  border-radius: 11px;
+  background: rgba(8, 20, 32, 0.88);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 14px 30px rgba(2, 8, 14, 0.42);
+}
+
+#offline-start-hint-text {
+  margin: 0;
+  color: rgba(214, 236, 253, 0.92);
+  font: 700 0.64rem/1.3 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+  text-align: center;
+}
+
+#offline-start-trigger-btn {
+  height: 34px;
+  border: 1px solid rgba(179, 223, 250, 0.72);
+  border-radius: 8px;
+  background: linear-gradient(150deg, rgba(27, 69, 98, 0.96), rgba(12, 33, 50, 0.98));
+  color: #edf8ff;
+  font: 800 0.69rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+#offline-start-trigger-btn:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+#offline-start-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 87;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(120, 201, 255, 0.2), transparent 44%),
+    linear-gradient(180deg, rgba(4, 11, 18, 0.74), rgba(4, 10, 16, 0.9));
+}
+
+#offline-start-panel {
+  width: min(94vw, 520px);
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(163, 208, 240, 0.7);
+  border-radius: 12px;
+  background: linear-gradient(150deg, rgba(13, 32, 49, 0.94), rgba(8, 20, 31, 0.97));
+  box-shadow: 0 18px 40px rgba(2, 8, 14, 0.5);
+}
+
+#offline-start-note {
+  margin: 0;
+  color: rgba(198, 225, 246, 0.9);
+  font: 700 0.63rem/1.35 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.offline-start-category-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+#offline-start-selected-category {
+  margin: 0;
+  color: rgba(196, 230, 250, 0.92);
+  font: 700 0.62rem/1.3 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.offline-start-category-btn {
+  height: 38px;
+  border: 1px solid rgba(178, 216, 245, 0.68);
+  border-radius: 9px;
+  background: rgba(13, 31, 47, 0.92);
+  color: #e5f7ff;
+  font: 800 0.68rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.offline-start-category-btn:disabled {
+  opacity: 0.56;
+  cursor: wait;
+}
+
+.offline-start-question-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+#offline-start-question-select {
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid rgba(171, 208, 238, 0.66);
+  border-radius: 8px;
+  background: rgba(10, 26, 42, 0.92);
+  color: #edf6ff;
+  font: 700 0.62rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+}
+
+#offline-start-question-start-btn {
+  height: 36px;
+  border: 1px solid rgba(179, 223, 250, 0.72);
+  border-radius: 8px;
+  background: linear-gradient(150deg, rgba(27, 69, 98, 0.96), rgba(12, 33, 50, 0.98));
+  color: #edf8ff;
+  font: 800 0.68rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+#offline-start-question-start-btn:disabled,
+#offline-start-question-select:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+#offline-start-status {
+  margin: 0;
+  color: rgba(191, 225, 250, 0.94);
+  font: 700 0.6rem/1.3 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+#offline-start-status.error {
+  color: #ffc8c8;
 }
 
 #quiz-config-modal,
@@ -2013,6 +2161,23 @@ body.mobile-chat-focus #chat-log {
   #quiz-controls button {
     height: 32px;
     font-size: 0.63rem;
+  }
+
+  #offline-start-hint {
+    left: 8px;
+    right: 8px;
+    bottom: calc(max(8px, env(safe-area-inset-bottom)) + 108px);
+    transform: none;
+    min-width: 0;
+  }
+
+  #offline-start-panel {
+    width: min(96vw, 420px);
+    padding: 12px;
+  }
+
+  .offline-start-category-grid {
+    grid-template-columns: 1fr;
   }
 
   #moderation-player-select {

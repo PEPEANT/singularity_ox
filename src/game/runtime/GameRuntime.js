@@ -130,6 +130,7 @@ const LAST_ROOM_CODE_STORAGE_KEY = "singularity_ox.last_room_code.v1";
 const QUIZ_MIN_TIME_LIMIT_SECONDS = 15;
 const QUIZ_MAX_TIME_LIMIT_SECONDS = 3600;
 const QUIZ_DEFAULT_TIME_LIMIT_SECONDS = 30;
+const OFFLINE_START_INTERACT_DISTANCE = 4.2;
 const CHAT_BUBBLE_MIN_LIFETIME_MS = 9000;
 const MOBILE_CHAT_PREVIEW_MIN_LIFETIME_MS = 7000;
 const GRAPHICS_QUALITY_STORAGE_KEY = "singularity_ox.graphics_quality.v1";
@@ -239,6 +240,17 @@ export class GameRuntime {
     this.centerBillboardGroup = null;
     this.megaAdScreenGroup = null;
     this.oxArenaGroup = null;
+    this.offlineStartMarkerMesh = null;
+    this.offlineStartMarkerMaterial = null;
+    this.offlineStartMarkerPosition = new THREE.Vector3(0, 0, 0);
+    this.offlineStartInteractDistance = OFFLINE_START_INTERACT_DISTANCE;
+    this.offlineStartAvailable = false;
+    this.offlineStartNearby = false;
+    this.offlineStartRequestInFlight = false;
+    this.offlineStartHintMessage = "";
+    this.offlineStartSelectedCategoryId = "";
+    this.offlineStartPreparedQuestions = [];
+    this.offlineStartPreparedConfig = null;
     this.oxArenaTextures = [];
     this.worldDecorTextures = [];
     this.centerBillboardCanvas = null;
@@ -553,6 +565,18 @@ export class GameRuntime {
     this.roundOverlaySubtitleEl = document.getElementById("round-overlay-subtitle");
     this.entryWaitOverlayEl = document.getElementById("entry-wait-overlay");
     this.entryWaitTextEl = document.getElementById("entry-wait-text");
+    this.offlineStartHintEl = document.getElementById("offline-start-hint");
+    this.offlineStartHintTextEl = document.getElementById("offline-start-hint-text");
+    this.offlineStartTriggerBtnEl = document.getElementById("offline-start-trigger-btn");
+    this.offlineStartModalEl = document.getElementById("offline-start-modal");
+    this.offlineStartCloseBtnEl = document.getElementById("offline-start-close-btn");
+    this.offlineStartSelectedCategoryEl = document.getElementById("offline-start-selected-category");
+    this.offlineStartQuestionSelectEl = document.getElementById("offline-start-question-select");
+    this.offlineStartQuestionStartBtnEl = document.getElementById("offline-start-question-start-btn");
+    this.offlineStartStatusEl = document.getElementById("offline-start-status");
+    this.offlineStartCategoryBtnEls = Array.from(
+      document.querySelectorAll(".offline-start-category-btn")
+    );
     this.playerRosterPanelEl = document.getElementById("player-roster-panel");
     this.rosterCountEl = document.getElementById("roster-count");
     this.rosterSubtitleEl = document.getElementById("roster-subtitle");
@@ -892,25 +916,400 @@ export class GameRuntime {
     this.setupBeachLayer(world.beach, world.ocean);
     this.setupOceanLayer(world.ocean);
 
-    const marker = world.originMarker;
-    const originMarker = new THREE.Mesh(
-      new THREE.CylinderGeometry(
-        marker.radiusTop,
-        marker.radiusBottom,
-        marker.height,
-        marker.radialSegments
-      ),
-      new THREE.MeshStandardMaterial({
-        color: marker.material.color,
-        roughness: marker.material.roughness,
-        metalness: marker.material.metalness,
-        emissive: marker.material.emissive,
-        emissiveIntensity: marker.material.emissiveIntensity
-      })
+    this.setupOfflineStartPillar(world.originMarker);
+  }
+
+  setupOfflineStartPillar(marker = {}) {
+    const radiusTop = Math.max(0.15, Number(marker?.radiusTop) || 0.4);
+    const radiusBottom = Math.max(0.15, Number(marker?.radiusBottom) || radiusTop);
+    const height = Math.max(0.6, Number(marker?.height) || 1.6);
+    const radialSegments = Math.max(8, Math.trunc(Number(marker?.radialSegments) || 14));
+    const position = Array.isArray(marker?.position) ? marker.position : [0, height * 0.5, -5];
+    const baseMaterial = marker?.material ?? {};
+
+    const material = new THREE.MeshStandardMaterial({
+      color: baseMaterial.color ?? 0x5e6f83,
+      roughness: Number(baseMaterial.roughness) || 0.32,
+      metalness: Number(baseMaterial.metalness) || 0.1,
+      emissive: baseMaterial.emissive ?? 0x2a3a52,
+      emissiveIntensity: Math.max(0.05, Number(baseMaterial.emissiveIntensity) || 0.2)
+    });
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(radiusTop, radiusBottom, height, radialSegments),
+      material
     );
-    originMarker.position.fromArray(marker.position);
-    originMarker.castShadow = true;
-    this.scene.add(originMarker);
+    mesh.position.set(
+      Number(position[0]) || 0,
+      Number(position[1]) || height * 0.5,
+      Number(position[2]) || 0
+    );
+    mesh.castShadow = !this.mobileEnabled;
+    mesh.receiveShadow = true;
+    this.scene.add(mesh);
+
+    this.offlineStartMarkerMesh = mesh;
+    this.offlineStartMarkerMaterial = material;
+    this.offlineStartMarkerPosition.copy(mesh.position);
+  }
+
+  hasHostControllerPresent() {
+    return Boolean(String(this.quizState.hostId ?? "").trim());
+  }
+
+  canUseOfflineStartTrigger() {
+    if (!this.networkConnected || !this.socket) {
+      return false;
+    }
+    if (this.isLobbyBlockingGameplay() || this.localAdmissionWaiting) {
+      return false;
+    }
+    if (this.quizState.active) {
+      return false;
+    }
+    if (this.entryGateState?.portalOpen === true || this.entryGateState?.admissionInProgress === true) {
+      return false;
+    }
+    if (this.hasHostControllerPresent()) {
+      return false;
+    }
+    return true;
+  }
+
+  getOfflineStartUnavailableReason() {
+    if (!this.networkConnected || !this.socket) {
+      return "서버 연결 중입니다.";
+    }
+    if (this.hasHostControllerPresent()) {
+      return "호스트 접속 중: 오프라인 버튼 비활성화";
+    }
+    if (this.quizState.active) {
+      return "퀴즈 진행 중에는 사용할 수 없습니다.";
+    }
+    if (this.entryGateState?.admissionInProgress === true) {
+      return "입장 처리 중에는 사용할 수 없습니다.";
+    }
+    if (this.entryGateState?.portalOpen === true) {
+      return "포탈 대기 상태에서는 사용할 수 없습니다.";
+    }
+    return "지금은 사용할 수 없습니다.";
+  }
+
+  updateOfflineStartHintUi() {
+    this.resolveUiElements();
+    if (!this.offlineStartHintEl || !this.offlineStartHintTextEl || !this.offlineStartTriggerBtnEl) {
+      return;
+    }
+
+    const canUse = this.offlineStartAvailable;
+    const nearby = this.offlineStartNearby;
+    const modalOpen = this.isOfflineStartModalOpen();
+    const shouldShow = !modalOpen && nearby && !this.isLobbyBlockingGameplay();
+    this.offlineStartHintEl.classList.toggle("hidden", !shouldShow);
+    if (!shouldShow) {
+      return;
+    }
+
+    const hintText = canUse
+      ? "중앙 버튼 사용 가능: E 키 또는 버튼을 눌러 카테고리를 선택하세요."
+      : this.getOfflineStartUnavailableReason();
+    if (this.offlineStartHintMessage !== hintText) {
+      this.offlineStartHintMessage = hintText;
+      this.offlineStartHintTextEl.textContent = hintText;
+    }
+    this.offlineStartTriggerBtnEl.disabled = !canUse || this.offlineStartRequestInFlight;
+  }
+
+  updateOfflineStartPillar(delta) {
+    if (!this.offlineStartMarkerMesh || !this.offlineStartMarkerMaterial) {
+      return;
+    }
+
+    const canUse = this.canUseOfflineStartTrigger();
+    const distanceXZ = Math.hypot(
+      this.playerPosition.x - this.offlineStartMarkerPosition.x,
+      this.playerPosition.z - this.offlineStartMarkerPosition.z
+    );
+    const nearby = distanceXZ <= this.offlineStartInteractDistance;
+
+    this.offlineStartAvailable = canUse;
+    this.offlineStartNearby = nearby;
+
+    const targetColor = canUse ? 0x5e6f83 : 0x4d535c;
+    const targetEmissive = canUse ? 0x2f5d7a : 0x23262b;
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.006);
+    const baseIntensity = canUse ? (nearby ? 0.26 + pulse * 0.16 : 0.18) : 0.08;
+    const alpha = THREE.MathUtils.clamp(1 - Math.exp(-Math.max(0.001, delta) * 8), 0, 1);
+
+    this.offlineStartMarkerMaterial.color.setHex(targetColor);
+    this.offlineStartMarkerMaterial.emissive.setHex(targetEmissive);
+    this.offlineStartMarkerMaterial.emissiveIntensity = THREE.MathUtils.lerp(
+      Number(this.offlineStartMarkerMaterial.emissiveIntensity) || 0,
+      baseIntensity,
+      alpha
+    );
+
+    this.updateOfflineStartHintUi();
+  }
+
+  isOfflineStartModalOpen() {
+    return Boolean(this.offlineStartModalEl && !this.offlineStartModalEl.classList.contains("hidden"));
+  }
+
+  setOfflineStartStatus(text, isError = false) {
+    if (!this.offlineStartStatusEl) {
+      return;
+    }
+    this.offlineStartStatusEl.textContent = String(text ?? "").trim();
+    this.offlineStartStatusEl.classList.toggle("error", Boolean(isError));
+  }
+
+  openOfflineStartModal() {
+    this.resolveUiElements();
+    if (!this.offlineStartModalEl) {
+      return;
+    }
+    this.keys.clear();
+    this.releaseMobileInputs();
+    if (document.pointerLockElement === this.renderer?.domElement) {
+      document.exitPointerLock?.();
+    }
+    this.offlineStartModalEl.classList.remove("hidden");
+    this.offlineStartSelectedCategoryId = "";
+    this.offlineStartPreparedQuestions = [];
+    this.offlineStartPreparedConfig = null;
+    this.renderOfflineStartQuestionOptions();
+    this.setOfflineStartStatus("카테고리를 선택하세요.");
+    this.updateOfflineStartHintUi();
+  }
+
+  closeOfflineStartModal() {
+    if (!this.offlineStartModalEl) {
+      return;
+    }
+    this.offlineStartModalEl.classList.add("hidden");
+    this.offlineStartRequestInFlight = false;
+    this.setOfflineStartCategoryButtonsDisabled(false);
+    this.setOfflineStartQuestionControlsDisabled(true);
+    this.offlineStartSelectedCategoryId = "";
+    this.offlineStartPreparedQuestions = [];
+    this.offlineStartPreparedConfig = null;
+    this.renderOfflineStartQuestionOptions();
+    this.updateOfflineStartHintUi();
+  }
+
+  setOfflineStartCategoryButtonsDisabled(disabled) {
+    for (const button of this.offlineStartCategoryBtnEls) {
+      if (button) {
+        button.disabled = Boolean(disabled);
+      }
+    }
+  }
+
+  setOfflineStartQuestionControlsDisabled(disabled) {
+    if (this.offlineStartQuestionSelectEl) {
+      this.offlineStartQuestionSelectEl.disabled = Boolean(disabled);
+    }
+    if (this.offlineStartQuestionStartBtnEl) {
+      this.offlineStartQuestionStartBtnEl.disabled = Boolean(disabled);
+    }
+  }
+
+  getOfflineStartCategoryLabel(categoryId) {
+    const id = String(categoryId ?? "").trim();
+    if (id === "tukgal") {
+      return "특갤";
+    }
+    if (id === "history") {
+      return "역사상식";
+    }
+    if (id === "history-easy") {
+      return "역사기초";
+    }
+    if (id === "chokaguya") {
+      return "초카구야";
+    }
+    return id || "-";
+  }
+
+  renderOfflineStartQuestionOptions() {
+    this.resolveUiElements();
+    if (this.offlineStartSelectedCategoryEl) {
+      const label = this.getOfflineStartCategoryLabel(this.offlineStartSelectedCategoryId);
+      this.offlineStartSelectedCategoryEl.textContent = `선택 카테고리: ${label}`;
+    }
+    if (!this.offlineStartQuestionSelectEl) {
+      return;
+    }
+
+    const questions = Array.isArray(this.offlineStartPreparedQuestions)
+      ? this.offlineStartPreparedQuestions
+      : [];
+    this.offlineStartQuestionSelectEl.replaceChildren();
+    if (questions.length <= 0) {
+      const emptyOption = document.createElement("option");
+      emptyOption.value = "";
+      emptyOption.textContent = "카테고리 선택 후 문항을 고르세요";
+      this.offlineStartQuestionSelectEl.appendChild(emptyOption);
+      this.offlineStartQuestionSelectEl.value = "";
+      this.setOfflineStartQuestionControlsDisabled(true);
+      return;
+    }
+
+    for (let index = 0; index < questions.length; index += 1) {
+      const question = questions[index];
+      const option = document.createElement("option");
+      option.value = String(index);
+      const text = String(question?.text ?? "").trim();
+      const preview = text.length > 60 ? `${text.slice(0, 60)}...` : text || `문항 ${index + 1}`;
+      option.textContent = `${index + 1}. ${preview}`;
+      this.offlineStartQuestionSelectEl.appendChild(option);
+    }
+    this.offlineStartQuestionSelectEl.value = "0";
+    this.setOfflineStartQuestionControlsDisabled(this.offlineStartRequestInFlight);
+  }
+
+  triggerOfflineCategoryLoad(categoryId) {
+    this.resolveUiElements();
+    const id = String(categoryId ?? "").trim();
+    let button = null;
+    if (id === "tukgal") {
+      button = this.quizCategoryTukgalLoadBtnEl ?? null;
+    } else if (id === "history") {
+      button = this.quizCategoryHistoryLoadBtnEl ?? null;
+    } else if (id === "history-easy") {
+      button = this.quizCategoryHistoryEasyLoadBtnEl ?? null;
+    } else if (id === "chokaguya") {
+      button = this.quizCategoryChokaguyaLoadBtnEl ?? null;
+    }
+    if (!button) {
+      return false;
+    }
+    const previousDisabled = button.disabled === true;
+    if (previousDisabled) {
+      button.disabled = false;
+    }
+    button.click();
+    if (previousDisabled) {
+      button.disabled = true;
+    }
+    return true;
+  }
+
+  prepareOfflineStartCategory(categoryId) {
+    if (!this.socket || !this.networkConnected) {
+      this.setOfflineStartStatus("오프라인 시작 실패: 서버 연결을 확인하세요.", true);
+      return;
+    }
+    if (!this.canUseOfflineStartTrigger()) {
+      this.setOfflineStartStatus(this.getOfflineStartUnavailableReason(), true);
+      return;
+    }
+    if (this.offlineStartRequestInFlight) {
+      return;
+    }
+    if (!this.triggerOfflineCategoryLoad(categoryId)) {
+      this.setOfflineStartStatus("카테고리 선택이 올바르지 않습니다.", true);
+      return;
+    }
+
+    const selectedConfig = this.normalizeQuizConfigPayload(this.quizConfig ?? {});
+    const questions = Array.isArray(selectedConfig?.questions) ? selectedConfig.questions : [];
+    if (questions.length <= 0) {
+      this.offlineStartSelectedCategoryId = String(categoryId ?? "").trim();
+      this.offlineStartPreparedQuestions = [];
+      this.offlineStartPreparedConfig = null;
+      this.renderOfflineStartQuestionOptions();
+      this.setOfflineStartStatus("선택한 카테고리에 문항이 없습니다.", true);
+      return;
+    }
+
+    this.offlineStartSelectedCategoryId = String(categoryId ?? "").trim();
+    this.offlineStartPreparedQuestions = questions;
+    this.offlineStartPreparedConfig = selectedConfig;
+    this.renderOfflineStartQuestionOptions();
+    this.setOfflineStartStatus("문항 1개를 선택한 뒤 시작 버튼을 누르세요.");
+  }
+
+  requestOfflineStartSelectedQuestion() {
+    if (!this.socket || !this.networkConnected) {
+      this.setOfflineStartStatus("오프라인 시작 실패: 서버 연결을 확인하세요.", true);
+      return;
+    }
+    if (!this.canUseOfflineStartTrigger()) {
+      this.setOfflineStartStatus(this.getOfflineStartUnavailableReason(), true);
+      return;
+    }
+    if (this.offlineStartRequestInFlight) {
+      return;
+    }
+    const questions = Array.isArray(this.offlineStartPreparedQuestions)
+      ? this.offlineStartPreparedQuestions
+      : [];
+    if (questions.length <= 0) {
+      this.setOfflineStartStatus("먼저 카테고리를 선택하고 문항을 고르세요.", true);
+      return;
+    }
+
+    const selectedIndex = Math.trunc(Number(this.offlineStartQuestionSelectEl?.value ?? 0));
+    if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= questions.length) {
+      this.setOfflineStartStatus("시작할 문항을 선택하세요.", true);
+      return;
+    }
+    const selectedQuestion = questions[selectedIndex];
+    if (!selectedQuestion || typeof selectedQuestion !== "object") {
+      this.setOfflineStartStatus("문항 데이터가 올바르지 않습니다.", true);
+      return;
+    }
+    const selectedConfig =
+      this.offlineStartPreparedConfig ?? this.normalizeQuizConfigPayload(this.quizConfig ?? {});
+
+    this.offlineStartRequestInFlight = true;
+    this.setOfflineStartCategoryButtonsDisabled(true);
+    this.setOfflineStartQuestionControlsDisabled(true);
+    this.offlineStartTriggerBtnEl && (this.offlineStartTriggerBtnEl.disabled = true);
+    this.setOfflineStartStatus("시작 요청 중...");
+
+    this.socket.emit(
+      "quiz:offline-start",
+      {
+        category: this.offlineStartSelectedCategoryId.slice(0, 24),
+        questions: [selectedQuestion],
+        autoFinish: selectedConfig?.endPolicy?.autoFinish !== false
+      },
+      (response = {}) => {
+        this.offlineStartRequestInFlight = false;
+        this.setOfflineStartCategoryButtonsDisabled(false);
+        this.setOfflineStartQuestionControlsDisabled(false);
+        if (!response?.ok) {
+          this.setOfflineStartStatus(
+            `시작 실패: ${this.translateQuizError(response?.error ?? "unknown")}`,
+            true
+          );
+          return;
+        }
+        this.quizConfig = selectedConfig;
+        this.persistQuizConfigDraft({ immediate: true, updateState: true });
+        this.appendChatLine("시스템", "선택한 1문항으로 오프라인 OX를 시작했습니다.", "system");
+        this.closeOfflineStartModal();
+      }
+    );
+  }
+
+  tryOpenOfflineStartFromWorld() {
+    const nearby = this.offlineStartNearby === true;
+    if (!nearby && !this.isOfflineStartModalOpen()) {
+      return false;
+    }
+    if (!this.canUseOfflineStartTrigger()) {
+      const reason = this.getOfflineStartUnavailableReason();
+      this.setOfflineStartStatus(reason, true);
+      if (nearby) {
+        this.appendChatLine("시스템", reason, "system");
+      }
+      return true;
+    }
+    this.openOfflineStartModal();
+    return true;
   }
 
   clearHubFlowWorld() {
@@ -2006,6 +2405,9 @@ export class GameRuntime {
     if (this.isMobilePortraitLocked()) {
       return false;
     }
+    if (this.isOfflineStartModalOpen()) {
+      return false;
+    }
     if (this.isLobbyBlockingGameplay()) {
       return false;
     }
@@ -2036,6 +2438,9 @@ export class GameRuntime {
 
   canUseGameplayControls() {
     if (this.isMobilePortraitLocked()) {
+      return false;
+    }
+    if (this.isOfflineStartModalOpen()) {
       return false;
     }
     return (
@@ -6168,6 +6573,18 @@ export class GameRuntime {
         this.setSettingsPanelOpen(false);
         return;
       }
+      if (event.code === "Escape" && this.isOfflineStartModalOpen()) {
+        event.preventDefault();
+        this.closeOfflineStartModal();
+        return;
+      }
+      if (event.code === "KeyE" && !event.repeat && !this.isOfflineStartModalOpen()) {
+        const handled = this.tryOpenOfflineStartFromWorld();
+        if (handled) {
+          event.preventDefault();
+          return;
+        }
+      }
 
       if (event.code === "Tab") {
         event.preventDefault();
@@ -6510,6 +6927,27 @@ export class GameRuntime {
     this.quizReviewBtnEl?.addEventListener("click", () => {
       this.openQuizReviewModal();
     });
+    this.offlineStartTriggerBtnEl?.addEventListener("click", (event) => {
+      event.preventDefault();
+      this.tryOpenOfflineStartFromWorld();
+    });
+    this.offlineStartCloseBtnEl?.addEventListener("click", () => {
+      this.closeOfflineStartModal();
+    });
+    this.offlineStartModalEl?.addEventListener("click", (event) => {
+      if (event.target === this.offlineStartModalEl) {
+        this.closeOfflineStartModal();
+      }
+    });
+    this.offlineStartQuestionStartBtnEl?.addEventListener("click", () => {
+      this.requestOfflineStartSelectedQuestion();
+    });
+    for (const categoryBtn of this.offlineStartCategoryBtnEls) {
+      categoryBtn?.addEventListener("click", () => {
+        const categoryId = String(categoryBtn?.dataset?.category ?? "").trim();
+        this.prepareOfflineStartCategory(categoryId);
+      });
+    }
     this.portalLobbyOpenBtnEl?.addEventListener("click", () => {
       this.requestPortalLobbyOpen();
     });
@@ -6931,6 +7369,38 @@ export class GameRuntime {
     }
     if (!this.entryWaitTextEl) {
       this.entryWaitTextEl = document.getElementById("entry-wait-text");
+    }
+    if (!this.offlineStartHintEl) {
+      this.offlineStartHintEl = document.getElementById("offline-start-hint");
+    }
+    if (!this.offlineStartHintTextEl) {
+      this.offlineStartHintTextEl = document.getElementById("offline-start-hint-text");
+    }
+    if (!this.offlineStartTriggerBtnEl) {
+      this.offlineStartTriggerBtnEl = document.getElementById("offline-start-trigger-btn");
+    }
+    if (!this.offlineStartModalEl) {
+      this.offlineStartModalEl = document.getElementById("offline-start-modal");
+    }
+    if (!this.offlineStartCloseBtnEl) {
+      this.offlineStartCloseBtnEl = document.getElementById("offline-start-close-btn");
+    }
+    if (!this.offlineStartSelectedCategoryEl) {
+      this.offlineStartSelectedCategoryEl = document.getElementById("offline-start-selected-category");
+    }
+    if (!this.offlineStartQuestionSelectEl) {
+      this.offlineStartQuestionSelectEl = document.getElementById("offline-start-question-select");
+    }
+    if (!this.offlineStartQuestionStartBtnEl) {
+      this.offlineStartQuestionStartBtnEl = document.getElementById("offline-start-question-start-btn");
+    }
+    if (!this.offlineStartStatusEl) {
+      this.offlineStartStatusEl = document.getElementById("offline-start-status");
+    }
+    if (!Array.isArray(this.offlineStartCategoryBtnEls) || this.offlineStartCategoryBtnEls.length <= 0) {
+      this.offlineStartCategoryBtnEls = Array.from(
+        document.querySelectorAll(".offline-start-category-btn")
+      );
     }
     if (!this.playerRosterPanelEl) {
       this.playerRosterPanelEl = document.getElementById("player-roster-panel");
@@ -8792,6 +9262,10 @@ export class GameRuntime {
     socket.on("quiz:end", (payload = {}) => {
       this.handleQuizEnd(payload);
     });
+
+    socket.on("quiz:reset", (payload = {}) => {
+      this.handleQuizReset(payload);
+    });
   }
 
   resolveSocketEndpoint() {
@@ -9353,6 +9827,7 @@ export class GameRuntime {
     this.measurePerformanceSection("trapdoor", () => this.updateTrapdoorAnimation(delta));
     this.measurePerformanceSection("hubFlow", () => this.updateHubFlow(delta));
     this.measurePerformanceSection("lobbyPortal", () => this.updateLobbyPortal(delta));
+    this.measurePerformanceSection("offlineStart", () => this.updateOfflineStartPillar(delta));
     this.measurePerformanceSection("chalk", () => this.updateChalkDrawing());
     this.measurePerformanceSection("clouds", () => this.updateCloudLayer(delta));
     this.measurePerformanceSection("ocean", () => this.updateOcean(delta));
@@ -9647,6 +10122,7 @@ export class GameRuntime {
     this.resetTrapdoors();
     this.centerBillboardLastCountdown = null;
     this.hideRoundOverlay();
+    this.closeOfflineStartModal();
     this.closeQuizReviewModal();
     this.setOppositeBillboardResultVisible(false);
     this.renderCenterBillboard({
@@ -9715,6 +10191,7 @@ export class GameRuntime {
     this.ensureLocalGameplayPosition();
     this.resetTrapdoors();
     this.centerBillboardLastCountdown = null;
+    this.closeOfflineStartModal();
     this.setOppositeBillboardResultVisible(false);
 
     const totalText =
@@ -9983,6 +10460,21 @@ export class GameRuntime {
     this.updateQuizControlUi();
   }
 
+  handleQuizReset(payload = {}) {
+    const hasHostId = Object.prototype.hasOwnProperty.call(payload ?? {}, "hostId");
+    const nextHostId = hasHostId ? payload.hostId ?? null : this.quizState.hostId ?? null;
+    this.resetQuizStateLocal();
+    this.quizState.hostId = nextHostId;
+    this.setOfflineStartStatus("");
+    this.appendChatLine(
+      "시스템",
+      "호스트가 접속하여 오프라인 진행이 초기화되었습니다. 대기 상태로 전환합니다.",
+      "system"
+    );
+    this.hud.setStatus(this.getStatusText());
+    this.updateQuizControlUi();
+  }
+
   handleQuizEnd(payload = {}) {
     if (Object.prototype.hasOwnProperty.call(payload ?? {}, "hostId")) {
       this.quizState.hostId = payload.hostId ?? this.quizState.hostId ?? null;
@@ -10207,6 +10699,7 @@ export class GameRuntime {
     const table = {
       "not in room": "방에 참여한 상태가 아닙니다.",
       "host only": "방장만 사용할 수 있습니다.",
+      "host present": "호스트가 접속 중이라 오프라인 시작을 사용할 수 없습니다.",
       "quiz is not active": "진행 중인 퀴즈가 없습니다.",
       "question is not open": "열린 문제가 없습니다.",
       "question is already open": "이미 문제가 열려 있습니다.",

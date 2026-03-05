@@ -106,7 +106,11 @@ const QUIZ_END_ON_SINGLE_SURVIVOR = process.env.QUIZ_END_ON_SINGLE_SURVIVOR === 
 const QUIZ_AUTO_OPEN_LOBBY_ON_END = process.env.QUIZ_AUTO_OPEN_LOBBY_ON_END !== "0";
 const QUIZ_ZONE_EDGE_MARGIN = 0.5;
 const QUIZ_ZONE_CENTER_MARGIN = 0.8;
-const DEFAULT_PORTAL_TARGET_URL = sanitizePortalTargetUrl(process.env.PORTAL_TARGET_URL ?? "");
+const PACK_DEFAULT_PORTAL_TARGET_URL = sanitizePortalTargetUrl(
+  BASE_VOID_PACK?.world?.hubFlow?.portal?.targetUrl ?? ""
+);
+const DEFAULT_PORTAL_TARGET_URL =
+  sanitizePortalTargetUrl(process.env.PORTAL_TARGET_URL ?? "") || PACK_DEFAULT_PORTAL_TARGET_URL;
 const CHAT_HISTORY_MAX_ENTRIES = Math.max(
   20,
   Math.min(200, Math.trunc(Number(process.env.CHAT_HISTORY_MAX_ENTRIES ?? 80) || 80))
@@ -242,6 +246,7 @@ function createQuizState() {
     active: false,
     phase: "idle",
     autoMode: false,
+    startedWithoutHost: false,
     autoFinish: true,
     autoStartsAt: 0,
     autoStartTimer: null,
@@ -1925,6 +1930,7 @@ function resetQuizState(room) {
   quiz.active = false;
   quiz.phase = "idle";
   quiz.autoMode = false;
+  quiz.startedWithoutHost = false;
   quiz.autoFinish = true;
   quiz.autoStartsAt = 0;
   quiz.hostId = room?.hostId ?? null;
@@ -2081,6 +2087,14 @@ function isRoomHost(room, socketId) {
   return String(room.hostId ?? "") === String(socketId);
 }
 
+function roomHasActiveHostController(room) {
+  if (!room?.hostId || !room?.players) {
+    return false;
+  }
+  const hostPlayer = room.players.get(String(room.hostId ?? ""));
+  return isPlayerHostController(room, hostPlayer);
+}
+
 function pickNextHostId(room) {
   if (!room?.players || room.players.size <= 0) {
     return null;
@@ -2105,7 +2119,11 @@ function updateHost(room) {
   const previousHostId = room.hostId;
   room.hostId = pickNextHostId(room);
   normalizeHostParticipationState(room);
-  return previousHostId !== room.hostId;
+  const changed = previousHostId !== room.hostId;
+  if (changed) {
+    maybeResetOfflineQuizOnHostTakeover(room, "host-reassigned");
+  }
+  return changed;
 }
 
 function buildQuizLeaderboard(room) {
@@ -2682,6 +2700,96 @@ function resetPlayersForQuestionRewind(room, reason = "quiz-prev-reset") {
   }
 }
 
+function resetRoomToWaitingState(room, reason = "quiz-reset") {
+  if (!room) {
+    return;
+  }
+
+  const gate = ensureRoomEntryGate(room);
+  clearEntryAdmissionTimer(room);
+  gate.portalOpen = false;
+  gate.openedAt = 0;
+  gate.lastAdmissionAt = 0;
+  gate.pendingAdmissionIds = [];
+  gate.nextPriorityIds = [];
+
+  const participants = [];
+  for (const player of room.players.values()) {
+    if (!player) {
+      continue;
+    }
+
+    initializePlayerForQuiz(player, true);
+    player.awaitingAdmission = false;
+    player.admitted = true;
+    removeNextPriorityPlayer(room, player.id);
+
+    if (isPlayerHostModerator(room, player)) {
+      player.lastChoiceReason = "spectator";
+      relocatePlayerToSpectatorZone(room, player, `${reason}-host`);
+      continue;
+    }
+
+    player.lastChoiceReason = null;
+    participants.push(player);
+  }
+
+  for (let index = 0; index < participants.length; index += 1) {
+    const player = participants[index];
+    const spawn = buildAdmissionSpawnPoint(index, participants.length);
+    setPlayerAuthoritativeState(player, {
+      x: spawn.x,
+      y: spawn.y,
+      z: spawn.z,
+      yaw: 0,
+      pitch: 0
+    });
+    const targetSocket = io?.sockets?.sockets?.get(player.id);
+    if (targetSocket) {
+      targetSocket.emit("player:correct", {
+        state: player.state,
+        reason
+      });
+    }
+  }
+}
+
+function resetQuizForHostTakeover(room, reason = "host-takeover") {
+  if (!room) {
+    return false;
+  }
+
+  const quiz = getRoomQuiz(room);
+  clearQuizLockTimer(quiz);
+  resetQuizState(room);
+  resetRoomToWaitingState(room, reason);
+
+  io.to(room.code).emit("quiz:reset", {
+    reason,
+    hostId: room.hostId ?? null,
+    resetAt: Date.now()
+  });
+  emitRoomUpdate(room);
+  emitQuizScore(room, "host-takeover-reset");
+  return true;
+}
+
+function maybeResetOfflineQuizOnHostTakeover(room, reason = "host-takeover") {
+  if (!room) {
+    return false;
+  }
+  const quiz = getRoomQuiz(room);
+  const isOfflineDriven = quiz.startedWithoutHost === true;
+  const needsReset = Boolean(quiz.active) || String(quiz.phase ?? "idle") !== "idle";
+  if (!isOfflineDriven || !needsReset) {
+    return false;
+  }
+  if (!roomHasActiveHostController(room)) {
+    return false;
+  }
+  return resetQuizForHostTakeover(room, reason);
+}
+
 function rewindQuizToPreviousQuestion(room, lockSecondsOverride = null) {
   if (!room) {
     return { ok: false, error: "room missing" };
@@ -2862,11 +2970,13 @@ function startQuiz(room, hostSocketId, payload = {}) {
     ? sanitizeQuizLockSeconds(payload.lockSeconds)
     : sanitizeQuizLockSeconds(questions[0]?.timeLimitSeconds);
   const autoMode = payload.autoMode !== false;
+  const startedWithoutHost = payload.startedWithoutHost === true;
   const autoFinish = Object.prototype.hasOwnProperty.call(payload ?? {}, "autoFinish")
     ? payload.autoFinish !== false
     : quizConfig?.endPolicy?.autoFinish !== false;
-  const resolvedHostId =
-    hostSocketId && room.players.has(hostSocketId)
+  const resolvedHostId = startedWithoutHost
+    ? null
+    : hostSocketId && room.players.has(hostSocketId)
       ? hostSocketId
       : room.hostId && room.players.has(room.hostId)
         ? room.hostId
@@ -2875,6 +2985,7 @@ function startQuiz(room, hostSocketId, payload = {}) {
   quiz.active = true;
   quiz.phase = "start";
   quiz.autoMode = autoMode;
+  quiz.startedWithoutHost = startedWithoutHost;
   quiz.autoFinish = autoFinish;
   quiz.autoStartsAt = 0;
   quiz.hostId = resolvedHostId;
@@ -2939,6 +3050,10 @@ function reconcileQuizAfterRosterChange(room, reason = "roster-change") {
 
   if (!quiz.hostId || !room.players.has(quiz.hostId)) {
     quiz.hostId = room.hostId ?? pickNextHostId(room);
+  }
+
+  if (maybeResetOfflineQuizOnHostTakeover(room, `${reason}-host-takeover`)) {
+    return;
   }
 
   if (!quiz.active) {
@@ -3090,8 +3205,10 @@ function joinRoom(socket, room, nameOverride = null) {
       const quizState = getRoomQuiz(room);
       quizState.hostId = socket.id;
       normalizeHostParticipationState(room);
-      emitRoomUpdate(room);
-      emitQuizScore(room, "owner-claim");
+      if (!maybeResetOfflineQuizOnHostTakeover(room, "owner-join-claim")) {
+        emitRoomUpdate(room);
+        emitQuizScore(room, "owner-claim");
+      }
     }
     const quiz = getRoomQuiz(room);
     const gate = ensureRoomEntryGate(room);
@@ -3180,9 +3297,10 @@ function joinRoom(socket, room, nameOverride = null) {
     updateHost(room);
   }
   if (!quiz.hostId || socket.data.ownerClaim === true) {
-    quiz.hostId = room.hostId ?? socket.id;
+    quiz.hostId = room.hostId ?? null;
   }
   normalizeHostParticipationState(room);
+  maybeResetOfflineQuizOnHostTakeover(room, "owner-joined");
 
   const joined = room.players.get(socket.id);
   if (joined) {
@@ -3502,6 +3620,64 @@ io.on("connection", (socket) => {
     ack(ackFn, started);
   });
 
+  socket.on("quiz:offline-start", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+
+    if (roomHasActiveHostController(room)) {
+      ack(ackFn, { ok: false, error: "host present" });
+      return;
+    }
+
+    const gate = ensureRoomEntryGate(room);
+    if (gate.portalOpen || gate.admissionStartsAt > Date.now() || countWaitingPlayers(room) > 0) {
+      clearEntryAdmissionTimer(room);
+      gate.portalOpen = false;
+      gate.openedAt = 0;
+      gate.lastAdmissionAt = 0;
+      gate.pendingAdmissionIds = [];
+      gate.nextPriorityIds = [];
+
+      for (const player of room.players.values()) {
+        if (!player) {
+          continue;
+        }
+        if (isPlayerHostController(room, player)) {
+          continue;
+        }
+        if (player.awaitingAdmission !== true || player.admitted === true) {
+          continue;
+        }
+        player.awaitingAdmission = false;
+        player.admitted = false;
+        player.alive = false;
+        player.lastChoice = null;
+        player.lastChoiceReason = "spectator";
+        relocatePlayerToSpectatorZone(room, player, "offline-start-close-gate");
+      }
+    }
+
+    const autoFinish = Object.prototype.hasOwnProperty.call(payload ?? {}, "autoFinish")
+      ? payload.autoFinish !== false
+      : ensureRoomQuizConfig(room)?.endPolicy?.autoFinish !== false;
+    const started = startQuiz(room, null, {
+      questions: payload?.questions,
+      autoMode: false,
+      autoFinish,
+      prepareDelayMs: payload?.prepareDelayMs,
+      startedWithoutHost: true
+    });
+    if (started?.ok) {
+      emitRoomUpdate(room);
+      emitQuizScore(room, "offline-start");
+    }
+    ack(ackFn, started);
+  });
+
   socket.on("quiz:next", (payload = {}, ackFn) => {
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
@@ -3617,12 +3793,16 @@ io.on("connection", (socket) => {
     quiz.hostId = socket.id;
     normalizeHostParticipationState(room);
 
-    emitRoomUpdate(room);
-    emitQuizScore(room, "host-claim");
+    const resetApplied = maybeResetOfflineQuizOnHostTakeover(room, "host-claim");
+    if (!resetApplied) {
+      emitRoomUpdate(room);
+      emitQuizScore(room, "host-claim");
+    }
     ack(ackFn, {
       ok: true,
       hostId: socket.id,
-      changed: String(previousHostId ?? "") !== String(socket.id)
+      changed: String(previousHostId ?? "") !== String(socket.id),
+      resetApplied
     });
   });
 
