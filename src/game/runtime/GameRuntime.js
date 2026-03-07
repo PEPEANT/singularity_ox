@@ -390,6 +390,7 @@ export class GameRuntime {
       survivors: 0,
       myScore: 0
     };
+    this.lastQuizEndEventKey = "";
     this.localQuizAlive = true;
     this.localSpectatorMode = false;
     this.localEliminationDrop = {
@@ -11420,6 +11421,7 @@ export class GameRuntime {
   }
 
   handleQuizStart(payload = {}) {
+    this.lastQuizEndEventKey = "";
     this.quizState.active = true;
     this.quizState.phase = "start";
     this.quizState.autoMode = payload.autoMode !== false;
@@ -11580,6 +11582,18 @@ export class GameRuntime {
   handleQuizScore(payload = {}) {
     const hasOwn = (key) => Object.prototype.hasOwnProperty.call(payload, key);
     const prevPhase = String(this.quizState.phase ?? "idle");
+    const nextPhaseFromPayload = hasOwn("phase")
+      ? String(payload.phase ?? "idle")
+      : prevPhase;
+    const shouldResetEndedPresentation =
+      nextPhaseFromPayload === "idle" &&
+      payload?.active !== true &&
+      prevPhase !== "idle";
+    if (shouldResetEndedPresentation) {
+      const preservedHostId = hasOwn("hostId") ? payload.hostId ?? null : this.quizState.hostId ?? null;
+      this.resetQuizStateLocal();
+      this.quizState.hostId = preservedHostId;
+    }
     if (hasOwn("active")) {
       this.quizState.active = Boolean(payload.active);
     }
@@ -11715,9 +11729,17 @@ export class GameRuntime {
   handleQuizReset(payload = {}) {
     const hasHostId = Object.prototype.hasOwnProperty.call(payload ?? {}, "hostId");
     const nextHostId = hasHostId ? payload.hostId ?? null : this.quizState.hostId ?? null;
+    const reason = String(payload?.reason ?? "").trim().toLowerCase();
+    this.lastQuizEndEventKey = "";
     this.resetQuizStateLocal();
     this.quizState.hostId = nextHostId;
     this.setOfflineStartStatus("");
+    if (reason === "quiz-end-ready") {
+      this.appendChatLine("SYSTEM", "Quiz ended. Returned to waiting state.", "system");
+      this.hud.setStatus(this.getStatusText());
+      this.updateQuizControlUi();
+      return;
+    }
     this.appendChatLine(
       "시스템",
       "호스트가 접속하여 오프라인 진행이 초기화되었습니다. 대기 상태로 전환합니다.",
@@ -11725,6 +11747,57 @@ export class GameRuntime {
     );
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
+  }
+
+  buildQuizEndRanking(entries = []) {
+    const source = Array.isArray(entries) ? entries : [];
+    const normalized = source
+      .map((entry, index) => ({
+        rank: Math.max(1, Math.trunc(Number(entry?.rank) || index + 1)),
+        name: this.formatPlayerName(entry?.name),
+        score: Math.max(0, Math.trunc(Number(entry?.score) || 0)),
+        alive: entry?.alive !== false,
+        spectator: entry?.spectator === true
+      }))
+      .filter((entry) => Boolean(entry.name) && entry.spectator !== true);
+
+    normalized.sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      if (left.alive !== right.alive) {
+        return Number(right.alive) - Number(left.alive);
+      }
+      return String(left.name ?? "").localeCompare(String(right.name ?? ""));
+    });
+
+    let previousScore = null;
+    let currentRank = 0;
+    return normalized.map((entry, index) => {
+      if (previousScore === null || entry.score !== previousScore) {
+        currentRank = index + 1;
+        previousScore = entry.score;
+      }
+      return {
+        rank: currentRank,
+        name: entry.name,
+        score: entry.score
+      };
+    });
+  }
+
+  resolveQuizEndRanking(payload = {}) {
+    const payloadRanking = this.buildQuizEndRanking(
+      Array.isArray(payload?.ranking)
+        ? payload.ranking
+        : Array.isArray(payload?.leaderboard)
+          ? payload.leaderboard
+          : []
+    );
+    if (payloadRanking.length > 0) {
+      return payloadRanking;
+    }
+    return this.buildQuizEndRanking(this.roomRoster);
   }
 
   handleQuizEnd(payload = {}) {
@@ -11738,21 +11811,18 @@ export class GameRuntime {
         ((payloadHostId && payloadHostId === myId) ||
           String(this.quizState.hostId ?? "") === myId)
     );
-    const rankingSource = Array.isArray(payload.ranking)
-      ? payload.ranking
-      : Array.isArray(payload.leaderboard)
-        ? payload.leaderboard
-        : [];
-    const ranking = rankingSource
-      .map((entry, index) => {
-        const rankValue = Math.max(1, Math.trunc(Number(entry?.rank) || index + 1));
-        return {
-          rank: rankValue,
-          name: this.formatPlayerName(entry?.name),
-          score: Math.max(0, Math.trunc(Number(entry?.score) || 0))
-        };
-      })
-      .sort((left, right) => left.rank - right.rank);
+    const ranking = this.resolveQuizEndRanking(payload);
+    const endEventKey = [
+      String(payload?.reason ?? "finished").trim(),
+      Math.max(0, Math.trunc(Number(payload?.endedAt) || 0)),
+      Math.max(0, Math.trunc(Number(payload?.questionIndex) || 0)),
+      Math.max(0, Math.trunc(Number(payload?.totalQuestions) || 0)),
+      ranking.map((entry) => `${entry.rank}:${entry.name}:${entry.score}`).join("|")
+    ].join("::");
+    if (endEventKey && this.lastQuizEndEventKey === endEventKey) {
+      return;
+    }
+    this.lastQuizEndEventKey = endEventKey;
 
     if (ranking.length > 0) {
       const rankingLabel = ranking

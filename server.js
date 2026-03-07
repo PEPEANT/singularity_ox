@@ -3134,6 +3134,11 @@ function finishQuiz(room, reason = "finished") {
   if (QUIZ_AUTO_OPEN_LOBBY_ON_END) {
     resetQuizState(room);
     resetRoomToWaitingState(room, "quiz-end-ready");
+    io.to(room.code).emit("quiz:reset", {
+      reason: "quiz-end-ready",
+      hostId: room.hostId ?? null,
+      resetAt: Date.now()
+    });
     emitRoomUpdate(room);
     emitQuizScore(room, "post-end-ready");
   }
