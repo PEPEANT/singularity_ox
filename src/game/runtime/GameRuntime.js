@@ -3280,50 +3280,122 @@ export class GameRuntime {
       if (target.protocol !== "http:" && target.protocol !== "https:") {
         return null;
       }
+      const zoneHint = this.normalizePortalZoneHint(
+        target.searchParams.get("zone") ?? target.searchParams.get("z") ?? "",
+        ""
+      );
+      const pathname = String(target.pathname ?? "").trim();
+      if (zoneHint && (!pathname || pathname === "/")) {
+        target.pathname = "/";
+        target.search = "";
+        target.hash = "";
+        target.searchParams.set("zone", zoneHint);
+      }
       return target.toString();
     } catch {
       return null;
     }
   }
 
+  normalizePortalZoneHint(rawValue, fallback = "") {
+    const value = String(rawValue ?? "")
+      .trim()
+      .toLowerCase();
+    if (value === "lobby" || value === "fps" || value === "ox") {
+      return value;
+    }
+    if (value.startsWith("lobby")) {
+      return "lobby";
+    }
+    if (value.startsWith("fps")) {
+      return "fps";
+    }
+    if (value.startsWith("ox")) {
+      return "ox";
+    }
+    const fallbackValue = String(fallback ?? "")
+      .trim()
+      .toLowerCase();
+    if (fallbackValue === "lobby" || fallbackValue === "fps" || fallbackValue === "ox") {
+      return fallbackValue;
+    }
+    return "";
+  }
+
+  getPortalLocationSignature(rawTarget = "") {
+    const normalized = this.normalizePortalTargetUrl(rawTarget);
+    if (!normalized) {
+      return null;
+    }
+    try {
+      const target = new URL(normalized, window.location.href);
+      const zone = String(target.searchParams.get("zone") ?? target.searchParams.get("z") ?? "")
+        .trim()
+        .toLowerCase();
+      const room = String(target.searchParams.get("room") ?? target.searchParams.get("code") ?? "")
+        .trim()
+        .toUpperCase();
+      return `${target.origin}${target.pathname}|${zone}|${room}|${target.hash}`;
+    } catch {
+      return null;
+    }
+  }
+
+  isSelfPortalTargetUrl(targetUrl = "") {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    const currentSignature = this.getPortalLocationSignature(window.location.href);
+    const targetSignature = this.getPortalLocationSignature(targetUrl);
+    if (!currentSignature || !targetSignature) {
+      return false;
+    }
+    return currentSignature === targetSignature;
+  }
+
   resolvePortalTargetUrl(defaultTarget = "") {
     const queryTarget = this.normalizePortalTargetUrl(
       this.queryParams.get("portal") ?? this.queryParams.get("next") ?? ""
     );
-    if (queryTarget) {
+    if (queryTarget && !this.isSelfPortalTargetUrl(queryTarget)) {
       return queryTarget;
     }
 
     const queryReturnTarget = this.normalizePortalTargetUrl(
       this.queryParams.get("returnUrl") ?? this.queryParams.get("return") ?? ""
     );
-    if (queryReturnTarget) {
+    if (queryReturnTarget && !this.isSelfPortalTargetUrl(queryReturnTarget)) {
       return queryReturnTarget;
     }
 
     const globalTarget = this.normalizePortalTargetUrl(window.__EMPTINES_PORTAL_TARGET ?? "");
-    if (globalTarget) {
+    if (globalTarget && !this.isSelfPortalTargetUrl(globalTarget)) {
       return globalTarget;
     }
 
-    return this.normalizePortalTargetUrl(defaultTarget ?? "");
+    const configuredTarget = this.normalizePortalTargetUrl(defaultTarget ?? "");
+    if (configuredTarget && !this.isSelfPortalTargetUrl(configuredTarget)) {
+      return configuredTarget;
+    }
+
+    return null;
   }
 
   buildPortalTransferUrl() {
-    if (!this.portalTargetUrl) {
+    const activeTargetUrl = this.normalizePortalTargetUrl(this.portalTargetUrl ?? "");
+    if (!activeTargetUrl) {
       return null;
     }
 
     let target;
     try {
-      target = new URL(this.portalTargetUrl, window.location.href);
+      target = new URL(activeTargetUrl, window.location.href);
     } catch {
       return null;
     }
 
-    const returnUrl = `${window.location.origin}${window.location.pathname}`;
-    target.searchParams.set("returnUrl", returnUrl);
-    target.searchParams.set("return", returnUrl);
+    target.searchParams.delete("returnUrl");
+    target.searchParams.delete("return");
     target.searchParams.set("returnPortal", "ox");
     target.searchParams.set("from", "ox");
     target.searchParams.set("name", this.localPlayerName);

@@ -672,6 +672,31 @@ function sanitizeName(raw) {
   return value || "PLAYER";
 }
 
+function normalizePortalZoneHint(raw, fallback = "") {
+  const value = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (value === "lobby" || value === "fps" || value === "ox") {
+    return value;
+  }
+  if (value.startsWith("lobby")) {
+    return "lobby";
+  }
+  if (value.startsWith("fps")) {
+    return "fps";
+  }
+  if (value.startsWith("ox")) {
+    return "ox";
+  }
+  const fallbackValue = String(fallback ?? "")
+    .trim()
+    .toLowerCase();
+  if (fallbackValue === "lobby" || fallbackValue === "fps" || fallbackValue === "ox") {
+    return fallbackValue;
+  }
+  return "";
+}
+
 function sanitizePortalTargetUrl(raw) {
   const value = String(raw ?? "").trim();
   if (!value) {
@@ -681,6 +706,17 @@ function sanitizePortalTargetUrl(raw) {
     const target = new URL(value);
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       return "";
+    }
+    const zoneHint = normalizePortalZoneHint(
+      target.searchParams.get("zone") ?? target.searchParams.get("z") ?? "",
+      ""
+    );
+    const pathname = String(target.pathname ?? "").trim();
+    if (zoneHint && (!pathname || pathname === "/")) {
+      target.pathname = "/";
+      target.search = "";
+      target.hash = "";
+      target.searchParams.set("zone", zoneHint);
     }
     return target.toString();
   } catch {
