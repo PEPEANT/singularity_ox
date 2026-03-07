@@ -768,6 +768,7 @@ body.mobile-roster-focus #mobile-look-pad {
 }
 
 #quiz-controls select,
+#quiz-controls input[type="number"],
 #billboard-media-file-input,
 #billboard-media-url-input {
   width: 100%;
@@ -783,10 +784,26 @@ body.mobile-roster-focus #mobile-look-pad {
 }
 
 #quiz-controls select:focus,
+#quiz-controls input[type="number"]:focus,
 #billboard-media-file-input:focus,
 #billboard-media-url-input:focus {
   border-color: rgba(203, 233, 255, 0.95);
   box-shadow: 0 0 0 2px rgba(134, 179, 218, 0.22);
+}
+
+.quiz-quick-setup-row {
+  grid-template-columns: minmax(0, 1.5fr) minmax(88px, 0.85fr);
+  gap: 5px;
+}
+
+#quiz-quick-apply-btn {
+  width: 100%;
+  background: linear-gradient(140deg, rgba(36, 68, 40, 0.96), rgba(14, 34, 20, 0.98));
+}
+
+#quiz-category-vote-btn {
+  grid-column: 1 / -1;
+  background: linear-gradient(140deg, rgba(62, 45, 18, 0.96), rgba(34, 24, 10, 0.98));
 }
 
 #billboard-media-file-input {
@@ -1802,6 +1819,120 @@ body.mobile-roster-focus #mobile-look-pad {
   letter-spacing: 0.03em;
 }
 
+#category-vote-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(5, 12, 20, 0.7);
+}
+
+#category-vote-panel {
+  width: min(92vw, 560px);
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid rgba(197, 222, 169, 0.56);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at top, rgba(74, 100, 43, 0.2), transparent 46%),
+    rgba(10, 20, 18, 0.94);
+  box-shadow: 0 18px 40px rgba(2, 7, 10, 0.48);
+  backdrop-filter: blur(7px);
+}
+
+.category-vote-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#category-vote-title {
+  margin: 0;
+  color: #f4ffe8;
+  font: 800 1.18rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.05em;
+}
+
+#category-vote-timer {
+  margin: 0;
+  color: #d9f0b8;
+  font: 800 0.78rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+#category-vote-status {
+  margin: 0;
+  color: #deedcf;
+  font: 700 0.8rem/1.45 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+#category-vote-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.category-vote-option {
+  min-height: 78px;
+  display: grid;
+  gap: 6px;
+  align-content: center;
+  padding: 12px 14px;
+  border: 1px solid rgba(179, 214, 151, 0.44);
+  border-radius: 12px;
+  background: rgba(18, 33, 27, 0.92);
+  color: #f3ffea;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.category-vote-option:hover {
+  transform: translateY(-1px);
+  border-color: rgba(218, 244, 188, 0.82);
+  box-shadow: 0 8px 16px rgba(4, 10, 6, 0.18);
+}
+
+.category-vote-option.selected {
+  border-color: rgba(247, 252, 210, 0.94);
+  background: rgba(42, 64, 36, 0.96);
+  box-shadow: 0 0 0 2px rgba(189, 219, 126, 0.18);
+}
+
+.category-vote-option.winner {
+  border-color: rgba(249, 233, 152, 0.96);
+  background: linear-gradient(145deg, rgba(74, 64, 24, 0.96), rgba(38, 30, 10, 0.96));
+}
+
+.category-vote-option:disabled {
+  cursor: default;
+  opacity: 0.92;
+}
+
+.category-vote-option-label {
+  color: #f6fff0;
+  font: 800 0.9rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+.category-vote-option-meta {
+  color: #bed8a4;
+  font: 700 0.66rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+}
+
+.category-vote-option-votes {
+  color: #fbeeb4;
+  font: 800 0.7rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.06em;
+}
+
 #tool-ui {
   position: fixed;
   left: 50%;
@@ -2416,6 +2547,29 @@ body.mobile-chat-focus #chat-log {
 
   #entry-wait-text {
     font-size: 0.74rem;
+  }
+
+  .category-vote-head {
+    display: grid;
+    gap: 6px;
+  }
+
+  #category-vote-panel {
+    gap: 10px;
+    padding: 14px 12px;
+  }
+
+  #category-vote-title {
+    font-size: 1.02rem;
+  }
+
+  #category-vote-status,
+  #category-vote-timer {
+    font-size: 0.74rem;
+  }
+
+  #category-vote-options {
+    grid-template-columns: 1fr;
   }
 
   #quiz-config-panel,

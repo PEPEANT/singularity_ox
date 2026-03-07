@@ -131,6 +131,46 @@ const BILLBOARD_UPLOAD_MAX_ITEMS = Math.max(
 const BILLBOARD_MEDIA_VISUAL_TYPES = new Set(["none", "video", "image"]);
 const BILLBOARD_PLAYLIST_MAX_ITEMS = 40;
 const ROOM_QUIZ_CONFIG_CACHE_LIMIT = Math.max(24, MAX_ACTIVE_ROOMS * 6);
+const CATEGORY_VOTE_DURATION_MS = Math.max(
+  5000,
+  Math.trunc(Number(process.env.CATEGORY_VOTE_DURATION_MS ?? 12000) || 12000)
+);
+const CATEGORY_VOTE_RESULT_DISPLAY_MS = Math.max(
+  2000,
+  Math.trunc(Number(process.env.CATEGORY_VOTE_RESULT_DISPLAY_MS ?? 4200) || 4200)
+);
+const CATEGORY_VOTE_OPTIONS = Object.freeze([
+  Object.freeze({
+    id: "history-easy",
+    label: "역사기초",
+    difficulty: "쉬움",
+    categoryName: "역사기초"
+  }),
+  Object.freeze({
+    id: "general",
+    label: "일반상식",
+    difficulty: "보통",
+    categoryName: "일반상식"
+  }),
+  Object.freeze({
+    id: "history",
+    label: "역사상식",
+    difficulty: "보통",
+    categoryName: "역사상식"
+  }),
+  Object.freeze({
+    id: "tukgal",
+    label: "특갤",
+    difficulty: "어려움",
+    categoryName: "특갤"
+  }),
+  Object.freeze({
+    id: "chokaguya",
+    label: "초카구야",
+    difficulty: "어려움",
+    categoryName: "초카구야"
+  })
+]);
 const billboardUploadStore = new Map();
 
 const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
@@ -280,6 +320,145 @@ function createQuizState() {
   };
 }
 
+function createCategoryVoteState() {
+  return {
+    active: false,
+    voteId: "",
+    startedAt: 0,
+    endsAt: 0,
+    finishedAt: 0,
+    startedBy: null,
+    durationMs: CATEGORY_VOTE_DURATION_MS,
+    votes: new Map(),
+    winnerOptionId: "",
+    finishReason: "",
+    resultCounts: null,
+    timer: null,
+    clearTimer: null
+  };
+}
+
+function ensureRoomCategoryVote(room) {
+  if (!room || typeof room !== "object") {
+    return createCategoryVoteState();
+  }
+  if (!room.categoryVote || typeof room.categoryVote !== "object") {
+    room.categoryVote = createCategoryVoteState();
+  }
+  if (!(room.categoryVote.votes instanceof Map)) {
+    room.categoryVote.votes = new Map();
+  }
+  return room.categoryVote;
+}
+
+function getCategoryVoteOption(optionId) {
+  const id = String(optionId ?? "").trim();
+  if (!id) {
+    return null;
+  }
+  return CATEGORY_VOTE_OPTIONS.find((option) => option.id === id) ?? null;
+}
+
+function sanitizeCategoryVoteOptionId(optionId) {
+  return getCategoryVoteOption(optionId)?.id ?? null;
+}
+
+function clearCategoryVoteTimer(vote) {
+  if (!vote || typeof vote !== "object") {
+    return;
+  }
+  if (vote.timer) {
+    clearTimeout(vote.timer);
+    vote.timer = null;
+  }
+}
+
+function clearCategoryVoteClearTimer(vote) {
+  if (!vote || typeof vote !== "object") {
+    return;
+  }
+  if (vote.clearTimer) {
+    clearTimeout(vote.clearTimer);
+    vote.clearTimer = null;
+  }
+}
+
+function clearRoomCategoryVote(room) {
+  const vote = ensureRoomCategoryVote(room);
+  clearCategoryVoteTimer(vote);
+  clearCategoryVoteClearTimer(vote);
+  vote.active = false;
+  vote.voteId = "";
+  vote.startedAt = 0;
+  vote.endsAt = 0;
+  vote.finishedAt = 0;
+  vote.startedBy = null;
+  vote.durationMs = CATEGORY_VOTE_DURATION_MS;
+  vote.votes = new Map();
+  vote.winnerOptionId = "";
+  vote.finishReason = "";
+  vote.resultCounts = null;
+}
+
+function countCategoryVoteEligiblePlayers(room) {
+  if (!room?.players) {
+    return 0;
+  }
+  return room.players.size;
+}
+
+function buildCategoryVoteCounts(room, vote) {
+  const counts = Object.create(null);
+  for (const option of CATEGORY_VOTE_OPTIONS) {
+    counts[option.id] = 0;
+  }
+  if (!vote) {
+    return counts;
+  }
+  if (vote.resultCounts && typeof vote.resultCounts === "object") {
+    for (const option of CATEGORY_VOTE_OPTIONS) {
+      counts[option.id] = Math.max(0, Math.trunc(Number(vote.resultCounts?.[option.id]) || 0));
+    }
+    return counts;
+  }
+  for (const [socketId, optionId] of vote.votes.entries()) {
+    if (!room?.players?.has?.(socketId)) {
+      continue;
+    }
+    const sanitized = sanitizeCategoryVoteOptionId(optionId);
+    if (!sanitized) {
+      continue;
+    }
+    counts[sanitized] += 1;
+  }
+  return counts;
+}
+
+function countCategoryVoteVotes(room, vote) {
+  const counts = buildCategoryVoteCounts(room, vote);
+  return CATEGORY_VOTE_OPTIONS.reduce((total, option) => total + Math.max(0, counts[option.id] || 0), 0);
+}
+
+function resolveCategoryVoteWinner(room, vote) {
+  const counts = buildCategoryVoteCounts(room, vote);
+  let winner = null;
+  let winnerVotes = 0;
+  for (const option of CATEGORY_VOTE_OPTIONS) {
+    const count = Math.max(0, Math.trunc(Number(counts[option.id]) || 0));
+    if (count > winnerVotes) {
+      winner = option;
+      winnerVotes = count;
+    }
+  }
+  if (!winner || winnerVotes <= 0) {
+    return null;
+  }
+  return {
+    ...winner,
+    votes: winnerVotes
+  };
+}
+
 function createRoom(code, persistent = false) {
   const room = {
     code,
@@ -297,6 +476,7 @@ function createRoom(code, persistent = false) {
       nextPriorityIds: []
     },
     chatHistory: [],
+    categoryVote: createCategoryVoteState(),
     persistent,
     createdAt: Date.now(),
     quizConfig: {
@@ -2200,8 +2380,207 @@ function resetQuizState(room) {
   quiz.lastResult = null;
 }
 
-function serializeRoom(room) {
-  pruneRoomPlayers(room);
+function buildSerializedCategoryVote(room, viewerSocketId = null) {
+  const vote = ensureRoomCategoryVote(room);
+  const status = vote.active === true ? "active" : vote.voteId ? "finished" : "idle";
+  if (status === "idle") {
+    return null;
+  }
+  const winner = resolveCategoryVoteWinner(room, vote);
+  const counts = buildCategoryVoteCounts(room, vote);
+  const votesCast = countCategoryVoteVotes(room, vote);
+  return {
+    id: String(vote.voteId ?? ""),
+    status,
+    active: status === "active",
+    startedAt: Math.max(0, Math.trunc(Number(vote.startedAt) || 0)),
+    endsAt: Math.max(0, Math.trunc(Number(vote.endsAt) || 0)),
+    finishedAt: Math.max(0, Math.trunc(Number(vote.finishedAt) || 0)),
+    durationMs: Math.max(0, Math.trunc(Number(vote.durationMs) || CATEGORY_VOTE_DURATION_MS)),
+    title: "카테고리 투표",
+    subtitle:
+      status === "active"
+        ? "원하는 퀴즈 카테고리를 골라주세요."
+        : winner
+          ? `${winner.label} 카테고리가 선택되었습니다.`
+          : "투표가 종료되었습니다. 현재 설정을 유지합니다.",
+    eligibleVoters: countCategoryVoteEligiblePlayers(room),
+    votesCast,
+    canVote:
+      status === "active" &&
+      Boolean(viewerSocketId) &&
+      room?.players?.has?.(String(viewerSocketId ?? "")) === true,
+    myVote: viewerSocketId
+      ? sanitizeCategoryVoteOptionId(vote.votes.get(String(viewerSocketId ?? "")))
+      : null,
+    finishReason: String(vote.finishReason ?? "").trim() || null,
+    options: CATEGORY_VOTE_OPTIONS.map((option) => ({
+      id: option.id,
+      label: option.label,
+      difficulty: option.difficulty,
+      categoryName: option.categoryName,
+      votes: status === "finished" ? Math.max(0, Math.trunc(Number(counts[option.id]) || 0)) : null,
+      winner: status === "finished" && option.id === winner?.id
+    })),
+    winner: winner
+      ? {
+          id: winner.id,
+          label: winner.label,
+          difficulty: winner.difficulty,
+          categoryName: winner.categoryName,
+          votes: winner.votes
+        }
+      : null
+  };
+}
+
+function finishCategoryVote(room, reason = "completed") {
+  if (!room) {
+    return { ok: false, error: "room missing" };
+  }
+  const vote = ensureRoomCategoryVote(room);
+  if (vote.active !== true) {
+    return { ok: false, error: "category vote not active" };
+  }
+  clearCategoryVoteTimer(vote);
+  clearCategoryVoteClearTimer(vote);
+  vote.active = false;
+  vote.endsAt = Date.now();
+  vote.finishedAt = vote.endsAt;
+  vote.finishReason = String(reason ?? "completed").trim() || "completed";
+  vote.resultCounts = buildCategoryVoteCounts(room, vote);
+  const winner = resolveCategoryVoteWinner(room, vote);
+  vote.winnerOptionId = winner?.id ?? "";
+  emitRoomUpdate(room);
+  const voteId = String(vote.voteId ?? "");
+  vote.clearTimer = setTimeout(() => {
+    const currentRoom = rooms.get(room.code);
+    if (!currentRoom) {
+      return;
+    }
+    const currentVote = ensureRoomCategoryVote(currentRoom);
+    if (String(currentVote.voteId ?? "") !== voteId) {
+      return;
+    }
+    clearRoomCategoryVote(currentRoom);
+    emitRoomUpdate(currentRoom);
+  }, CATEGORY_VOTE_RESULT_DISPLAY_MS);
+  return {
+    ok: true,
+    vote: buildSerializedCategoryVote(room),
+    winner
+  };
+}
+
+function maybeFinishCategoryVoteIfComplete(room, reason = "completed") {
+  if (!room) {
+    return false;
+  }
+  const vote = ensureRoomCategoryVote(room);
+  if (vote.active !== true) {
+    return false;
+  }
+  const eligiblePlayers = countCategoryVoteEligiblePlayers(room);
+  if (eligiblePlayers <= 0) {
+    clearRoomCategoryVote(room);
+    emitRoomUpdate(room);
+    return true;
+  }
+  if (countCategoryVoteVotes(room, vote) < eligiblePlayers) {
+    return false;
+  }
+  finishCategoryVote(room, reason);
+  return true;
+}
+
+function reconcileCategoryVoteAfterRosterChange(room, reason = "roster-change") {
+  if (!room) {
+    return false;
+  }
+  const vote = ensureRoomCategoryVote(room);
+  let changed = false;
+  for (const socketId of Array.from(vote.votes.keys())) {
+    if (!room.players.has(socketId)) {
+      vote.votes.delete(socketId);
+      changed = true;
+    }
+  }
+  if (vote.active !== true) {
+    return changed;
+  }
+  return maybeFinishCategoryVoteIfComplete(room, reason) || changed;
+}
+
+function startCategoryVote(room, hostSocketId) {
+  if (!room) {
+    return { ok: false, error: "room missing" };
+  }
+  const quiz = getRoomQuiz(room);
+  if (quiz.active) {
+    return { ok: false, error: "quiz already active" };
+  }
+  const vote = ensureRoomCategoryVote(room);
+  if (vote.active === true) {
+    return { ok: false, error: "category vote already active" };
+  }
+  clearRoomCategoryVote(room);
+  vote.active = true;
+  vote.voteId = `vote-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  vote.startedAt = Date.now();
+  vote.endsAt = vote.startedAt + CATEGORY_VOTE_DURATION_MS;
+  vote.startedBy = String(hostSocketId ?? "").trim() || null;
+  vote.durationMs = CATEGORY_VOTE_DURATION_MS;
+  vote.finishReason = "";
+  vote.resultCounts = null;
+  vote.winnerOptionId = "";
+  vote.timer = setTimeout(() => {
+    const currentRoom = rooms.get(room.code);
+    if (!currentRoom) {
+      return;
+    }
+    const currentVote = ensureRoomCategoryVote(currentRoom);
+    if (currentVote.active !== true || String(currentVote.voteId ?? "") !== vote.voteId) {
+      return;
+    }
+    finishCategoryVote(currentRoom, "timeout");
+  }, CATEGORY_VOTE_DURATION_MS);
+  emitRoomUpdate(room);
+  return {
+    ok: true,
+    vote: buildSerializedCategoryVote(room, hostSocketId)
+  };
+}
+
+function castCategoryVote(room, socketId, optionId) {
+  if (!room) {
+    return { ok: false, error: "room missing" };
+  }
+  const vote = ensureRoomCategoryVote(room);
+  if (vote.active !== true) {
+    return { ok: false, error: "category vote not active" };
+  }
+  const sanitizedOptionId = sanitizeCategoryVoteOptionId(optionId);
+  if (!sanitizedOptionId) {
+    return { ok: false, error: "invalid category vote option" };
+  }
+  if (!room.players.has(socketId)) {
+    return { ok: false, error: "player not found" };
+  }
+  vote.votes.set(socketId, sanitizedOptionId);
+  if (!maybeFinishCategoryVoteIfComplete(room, "all-voted")) {
+    emitRoomUpdate(room);
+  }
+  return {
+    ok: true,
+    optionId: sanitizedOptionId,
+    vote: buildSerializedCategoryVote(room, socketId)
+  };
+}
+
+function serializeRoom(room, viewerSocketId = null, skipPrune = false) {
+  if (!skipPrune) {
+    pruneRoomPlayers(room);
+  }
   const gate = ensureRoomEntryGate(room);
   const billboardMedia = ensureRoomBillboardMedia(room);
   const priorityQueue = normalizeEntryGateQueueIds(room, gate.nextPriorityIds);
@@ -2239,7 +2618,8 @@ function serializeRoom(room) {
       chatMuted: player.chatMuted === true,
       lastChoice: player.lastChoice ?? null,
       lastChoiceReason: player.lastChoiceReason ?? null
-    }))
+    })),
+    categoryVote: buildSerializedCategoryVote(room, viewerSocketId)
   };
 }
 
@@ -2278,7 +2658,21 @@ function emitRoomList(target = io) {
 }
 
 function emitRoomUpdate(room) {
-  io.to(room.code).emit("room:update", serializeRoom(room));
+  if (!room?.code) {
+    return;
+  }
+  pruneRoomPlayers(room);
+  const roomSockets = io?.sockets?.adapter?.rooms?.get(room.code);
+  if (!roomSockets || roomSockets.size <= 0) {
+    return;
+  }
+  for (const socketId of roomSockets) {
+    const targetSocket = io?.sockets?.sockets?.get(socketId);
+    if (!targetSocket) {
+      continue;
+    }
+    targetSocket.emit("room:update", serializeRoom(room, socketId, true));
+  }
 }
 
 function getRoomChatHistory(room) {
@@ -2374,6 +2768,7 @@ function updateHost(room) {
   normalizeHostParticipationState(room);
   const changed = previousHostId !== room.hostId;
   if (changed) {
+    clearRoomCategoryVote(room);
     maybeResetOfflineQuizOnHostTakeover(room, "host-reassigned");
   }
   return changed;
@@ -2721,6 +3116,7 @@ function finishQuiz(room, reason = "finished") {
   if (quiz.phase === "ended") {
     return;
   }
+  const shouldAutoRestart = quiz.autoMode !== false;
 
   clearQuizLockTimer(quiz);
   quiz.active = false;
@@ -2734,16 +3130,15 @@ function finishQuiz(room, reason = "finished") {
   io.to(room.code).emit("quiz:end", payload);
   emitQuizScore(room, "end");
 
-  // Keep post-round flow explicit: everyone returns to lobby waiting state after quiz end.
+  // Return everyone to the ready state for the next round instead of leaving them in admission wait.
   if (QUIZ_AUTO_OPEN_LOBBY_ON_END) {
-    const opened = openEntryGate(room);
-    if (opened?.ok) {
-      emitRoomUpdate(room);
-      emitQuizScore(room, "lobby-open-auto");
-    }
+    resetQuizState(room);
+    resetRoomToWaitingState(room, "quiz-end-ready");
+    emitRoomUpdate(room);
+    emitQuizScore(room, "post-end-ready");
   }
 
-  if (quiz.autoMode !== false) {
+  if (shouldAutoRestart) {
     scheduleAutoQuizStart(room, {
       delayMs: QUIZ_AUTO_RESTART_DELAY_MS,
       reason: "auto-restart"
@@ -3014,6 +3409,7 @@ function resetQuizForHostTakeover(room, reason = "host-takeover") {
 
   const quiz = getRoomQuiz(room);
   clearQuizLockTimer(quiz);
+  clearRoomCategoryVote(room);
   resetQuizState(room);
   resetRoomToWaitingState(room, reason);
 
@@ -3199,6 +3595,9 @@ function startQuiz(room, hostSocketId, payload = {}) {
   if (quiz.active) {
     return { ok: false, error: "quiz already active" };
   }
+  if (ensureRoomCategoryVote(room).active === true) {
+    return { ok: false, error: "category vote active" };
+  }
   clearQuizLockTimer(quiz);
   ensureRoomEntryGate(room);
   const quizConfig = ensureRoomQuizConfig(room);
@@ -3348,10 +3747,12 @@ function pruneRoomPlayers(room) {
 
   if (changed) {
     updateHost(room);
+    reconcileCategoryVoteAfterRosterChange(room, "prune");
     reconcileQuizAfterRosterChange(room, "prune");
     if (!room.persistent && room.players.size === 0) {
       rememberRoomQuizConfig(room);
       clearEntryAdmissionTimer(room);
+      clearRoomCategoryVote(room);
       resetQuizState(room);
       rooms.delete(room.code);
     }
@@ -3387,11 +3788,13 @@ function leaveCurrentRoom(socket) {
   removeNextPriorityPlayer(room, socket.id);
   pruneRoomPlayers(room);
   updateHost(room);
+  reconcileCategoryVoteAfterRosterChange(room, "leave");
   reconcileQuizAfterRosterChange(room, "leave");
 
   if (!room.persistent && room.players.size === 0) {
     rememberRoomQuizConfig(room);
     clearEntryAdmissionTimer(room);
+    clearRoomCategoryVote(room);
     resetQuizState(room);
     rooms.delete(room.code);
   }
@@ -3458,6 +3861,7 @@ function joinRoom(socket, room, nameOverride = null) {
       room.hostId = socket.id;
       const quizState = getRoomQuiz(room);
       quizState.hostId = socket.id;
+      clearRoomCategoryVote(room);
       normalizeHostParticipationState(room);
       if (!maybeResetOfflineQuizOnHostTakeover(room, "owner-join-claim")) {
         emitRoomUpdate(room);
@@ -3511,7 +3915,7 @@ function joinRoom(socket, room, nameOverride = null) {
       reason: "join-refresh"
     });
     socket.emit("quiz:config:update", buildQuizConfigPayload(room));
-    return { ok: true, room: serializeRoom(room) };
+    return { ok: true, room: serializeRoom(room, socket.id) };
   }
 
   leaveCurrentRoom(socket);
@@ -3547,6 +3951,7 @@ function joinRoom(socket, room, nameOverride = null) {
 
   if (socket.data.ownerClaim === true) {
     room.hostId = socket.id;
+    clearRoomCategoryVote(room);
   } else {
     updateHost(room);
   }
@@ -3611,7 +4016,7 @@ function joinRoom(socket, room, nameOverride = null) {
     });
   }
 
-  return { ok: true, room: serializeRoom(room) };
+  return { ok: true, room: serializeRoom(room, socket.id) };
 }
 
 const httpServer = createServer(async (req, res) => {
@@ -3932,6 +4337,34 @@ io.on("connection", (socket) => {
     ack(ackFn, started);
   });
 
+  socket.on("quiz:category-vote:start", (ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    if (!isRoomHost(room, socket.id)) {
+      ack(ackFn, { ok: false, error: "host only" });
+      return;
+    }
+    if (ROOM_OWNER_KEY && socket.data.ownerClaim !== true) {
+      ack(ackFn, { ok: false, error: "unauthorized" });
+      return;
+    }
+    ack(ackFn, startCategoryVote(room, socket.id));
+  });
+
+  socket.on("quiz:category-vote:cast", (payload = {}, ackFn) => {
+    const roomCode = socket.data.roomCode;
+    const room = roomCode ? rooms.get(roomCode) : null;
+    if (!room) {
+      ack(ackFn, { ok: false, error: "not in room" });
+      return;
+    }
+    ack(ackFn, castCategoryVote(room, socket.id, payload?.optionId));
+  });
+
   socket.on("quiz:offline-start", (payload = {}, ackFn) => {
     const roomCode = socket.data.roomCode;
     const room = roomCode ? rooms.get(roomCode) : null;
@@ -4103,6 +4536,7 @@ io.on("connection", (socket) => {
     room.hostId = socket.id;
     const quiz = getRoomQuiz(room);
     quiz.hostId = socket.id;
+    clearRoomCategoryVote(room);
     normalizeHostParticipationState(room);
 
     const resetApplied = maybeResetOfflineQuizOnHostTakeover(room, "host-claim");

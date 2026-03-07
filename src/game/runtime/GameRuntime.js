@@ -484,6 +484,10 @@ export class GameRuntime {
     this.quizStopBtnEl = document.getElementById("quiz-stop-btn");
     this.quizConfigBtnEl = document.getElementById("quiz-config-btn");
     this.quizReviewBtnEl = document.getElementById("quiz-review-btn");
+    this.quizQuickCategorySelectEl = document.getElementById("quiz-quick-category-select");
+    this.quizQuickTimeInputEl = document.getElementById("quiz-quick-time-input");
+    this.quizQuickApplyBtnEl = document.getElementById("quiz-quick-apply-btn");
+    this.quizCategoryVoteBtnEl = document.getElementById("quiz-category-vote-btn");
     this.portalLobbyOpenBtnEl = document.getElementById("portal-open-btn");
     this.portalLobbyStartBtnEl = document.getElementById("portal-admit-btn");
     this.quizPrevBtnEl = document.getElementById("quiz-prev-btn");
@@ -527,6 +531,8 @@ export class GameRuntime {
     this.quizCategoryHistorySaveBtnEl = document.getElementById("quiz-category-history-save-btn");
     this.quizCategoryHistoryEasyLoadBtnEl = document.getElementById("quiz-category-history-easy-load-btn");
     this.quizCategoryHistoryEasySaveBtnEl = document.getElementById("quiz-category-history-easy-save-btn");
+    this.quizCategoryGeneralLoadBtnEl = document.getElementById("quiz-category-general-load-btn");
+    this.quizCategoryGeneralSaveBtnEl = document.getElementById("quiz-category-general-save-btn");
     this.quizCategoryChokaguyaLoadBtnEl = document.getElementById("quiz-category-chokaguya-load-btn");
     this.quizCategoryChokaguyaSaveBtnEl = document.getElementById("quiz-category-chokaguya-save-btn");
     this.quizSlotCountInputEl = document.getElementById("quiz-slot-count-input");
@@ -570,6 +576,11 @@ export class GameRuntime {
     this.roundOverlaySubtitleEl = document.getElementById("round-overlay-subtitle");
     this.entryWaitOverlayEl = document.getElementById("entry-wait-overlay");
     this.entryWaitTextEl = document.getElementById("entry-wait-text");
+    this.categoryVoteOverlayEl = document.getElementById("category-vote-overlay");
+    this.categoryVoteTitleEl = document.getElementById("category-vote-title");
+    this.categoryVoteTimerEl = document.getElementById("category-vote-timer");
+    this.categoryVoteStatusEl = document.getElementById("category-vote-status");
+    this.categoryVoteOptionsEl = document.getElementById("category-vote-options");
     this.offlineStartHintEl = document.getElementById("offline-start-hint");
     this.offlineStartHintTextEl = document.getElementById("offline-start-hint-text");
     this.offlineStartTriggerBtnEl = document.getElementById("offline-start-trigger-btn");
@@ -654,6 +665,9 @@ export class GameRuntime {
     this.quizConfigDraftRestoreAttempted = false;
     this.quizReviewItems = [];
     this.quizReviewIndex = 0;
+    this.categoryVoteState = null;
+    this.categoryVoteAppliedResultKey = "";
+    this.categoryVoteAnnouncedStateKey = "";
 
     const hubFlowConfig = this.worldContent?.hubFlow ?? {};
     const bridgeConfig = hubFlowConfig?.bridge ?? {};
@@ -1129,6 +1143,188 @@ export class GameRuntime {
     }
   }
 
+  normalizeCategoryVotePayload(payload = null) {
+    const id = String(payload?.id ?? "").trim();
+    const active = payload?.active === true || String(payload?.status ?? "") === "active";
+    const status = active ? "active" : String(payload?.status ?? "") === "finished" ? "finished" : "";
+    if (!id || !status) {
+      return null;
+    }
+    const options = Array.isArray(payload?.options)
+      ? payload.options
+          .map((option) => {
+            const optionId = String(option?.id ?? "").trim();
+            if (!optionId) {
+              return null;
+            }
+            return {
+              id: optionId,
+              label: String(option?.label ?? optionId).trim() || optionId,
+              difficulty: String(option?.difficulty ?? "").trim(),
+              categoryName: String(option?.categoryName ?? option?.label ?? optionId).trim() || optionId,
+              votes:
+                option?.votes == null
+                  ? null
+                  : Math.max(0, Math.trunc(Number(option?.votes) || 0)),
+              winner: option?.winner === true
+            };
+          })
+          .filter(Boolean)
+      : [];
+    const winnerPayload = payload?.winner && typeof payload.winner === "object" ? payload.winner : null;
+    return {
+      id,
+      status,
+      active,
+      title: String(payload?.title ?? "카테고리 투표").trim() || "카테고리 투표",
+      subtitle: String(payload?.subtitle ?? "").trim(),
+      startedAt: Math.max(0, Math.trunc(Number(payload?.startedAt) || 0)),
+      endsAt: Math.max(0, Math.trunc(Number(payload?.endsAt) || 0)),
+      finishedAt: Math.max(0, Math.trunc(Number(payload?.finishedAt) || 0)),
+      durationMs: Math.max(0, Math.trunc(Number(payload?.durationMs) || 0)),
+      eligibleVoters: Math.max(0, Math.trunc(Number(payload?.eligibleVoters) || 0)),
+      votesCast: Math.max(0, Math.trunc(Number(payload?.votesCast) || 0)),
+      canVote: payload?.canVote === true,
+      myVote: String(payload?.myVote ?? "").trim() || "",
+      finishReason: String(payload?.finishReason ?? "").trim() || "",
+      options,
+      winner: winnerPayload
+        ? {
+            id: String(winnerPayload?.id ?? "").trim(),
+            label: String(winnerPayload?.label ?? "").trim(),
+            difficulty: String(winnerPayload?.difficulty ?? "").trim(),
+            categoryName:
+              String(winnerPayload?.categoryName ?? winnerPayload?.label ?? "").trim() || "",
+            votes: Math.max(0, Math.trunc(Number(winnerPayload?.votes) || 0))
+          }
+        : null
+    };
+  }
+
+  getCategoryVoteCountdownSeconds(vote = this.categoryVoteState) {
+    const endsAt = Math.max(0, Math.trunc(Number(vote?.endsAt) || 0));
+    if (endsAt <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+  }
+
+  updateCategoryVoteTimerUi() {
+    this.resolveUiElements();
+    const vote = this.categoryVoteState;
+    if (!this.categoryVoteTimerEl) {
+      return;
+    }
+    if (!vote) {
+      this.categoryVoteTimerEl.textContent = "남은 시간 0초";
+      return;
+    }
+    if (vote.active) {
+      this.categoryVoteTimerEl.textContent = `남은 시간 ${this.getCategoryVoteCountdownSeconds(vote)}초`;
+      return;
+    }
+    this.tryApplyCategoryVoteWinner(vote);
+    this.categoryVoteTimerEl.textContent = vote?.winner?.label ? "투표 종료" : "선택 없음";
+  }
+
+  renderCategoryVoteOverlay() {
+    this.resolveUiElements();
+    const vote = this.categoryVoteState;
+    const shouldShow = Boolean(vote);
+    this.categoryVoteOverlayEl?.classList.toggle("hidden", !shouldShow);
+    this.categoryVoteOverlayEl?.setAttribute("aria-hidden", shouldShow ? "false" : "true");
+    if (!shouldShow || !vote) {
+      if (this.categoryVoteOptionsEl) {
+        this.categoryVoteOptionsEl.replaceChildren();
+      }
+      return;
+    }
+    if (this.categoryVoteTitleEl) {
+      this.categoryVoteTitleEl.textContent = vote.title;
+    }
+    if (this.categoryVoteStatusEl) {
+      if (vote.active) {
+        this.categoryVoteStatusEl.textContent = `${vote.subtitle} 현재 ${vote.votesCast}/${vote.eligibleVoters}명 참여`;
+      } else if (vote.winner?.label) {
+        this.categoryVoteStatusEl.textContent = `${vote.winner.label} 선택 (${vote.winner.votes}표). 현재 문항 설정에 반영됩니다.`;
+      } else {
+        this.categoryVoteStatusEl.textContent = "투표가 종료되었습니다. 현재 카테고리 설정을 유지합니다.";
+      }
+    }
+    this.updateCategoryVoteTimerUi();
+    if (!this.categoryVoteOptionsEl) {
+      return;
+    }
+    this.categoryVoteOptionsEl.replaceChildren();
+    for (const option of vote.options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "category-vote-option";
+      button.dataset.optionId = option.id;
+      if (option.id === vote.myVote) {
+        button.classList.add("selected");
+      }
+      if (option.winner) {
+        button.classList.add("winner");
+      }
+      button.disabled = !vote.active || !vote.canVote;
+
+      const label = document.createElement("span");
+      label.className = "category-vote-option-label";
+      label.textContent = option.label;
+      button.appendChild(label);
+
+      const meta = document.createElement("span");
+      meta.className = "category-vote-option-meta";
+      meta.textContent = vote.active
+        ? option.id === vote.myVote
+          ? `${option.difficulty} · 투표 완료`
+          : option.difficulty
+        : option.difficulty;
+      button.appendChild(meta);
+
+      if (!vote.active && option.votes != null) {
+        const count = document.createElement("span");
+        count.className = "category-vote-option-votes";
+        count.textContent = `${option.votes}표`;
+        button.appendChild(count);
+      }
+
+      this.categoryVoteOptionsEl.appendChild(button);
+    }
+  }
+
+  handleCategoryVoteStateChange(previousVote, nextVote) {
+    const previousId = String(previousVote?.id ?? "").trim();
+    const nextId = String(nextVote?.id ?? "").trim();
+    if (!nextVote) {
+      this.categoryVoteAnnouncedStateKey = "";
+      return;
+    }
+    if (nextVote.active) {
+      const announceKey = `${nextId}:active`;
+      if (this.categoryVoteAnnouncedStateKey !== announceKey) {
+        this.categoryVoteAnnouncedStateKey = announceKey;
+        this.appendChatLine("시스템", "카테고리 투표가 시작되었습니다. 원하는 카테고리를 선택하세요.", "system");
+      }
+      return;
+    }
+    const resultKey = `${nextId}:${nextVote?.winner?.id ?? "none"}:${nextVote.finishedAt}`;
+    if (this.categoryVoteAnnouncedStateKey !== resultKey) {
+      this.categoryVoteAnnouncedStateKey = resultKey;
+      this.appendChatLine(
+        "시스템",
+        nextVote?.winner?.label
+          ? `카테고리 투표 종료: ${nextVote.winner.label} (${nextVote.winner.votes}표)`
+          : "카테고리 투표 종료: 득표가 없어 현재 카테고리를 유지합니다.",
+        "system"
+      );
+    }
+    if (previousId !== nextId || previousVote?.status !== nextVote.status) {
+      this.tryApplyCategoryVoteWinner(nextVote);
+    }
+  }
+
   getOfflineStartCategoryLabel(categoryId) {
     const id = String(categoryId ?? "").trim();
     if (id === "tukgal") {
@@ -1139,6 +1335,9 @@ export class GameRuntime {
     }
     if (id === "history-easy") {
       return "역사기초";
+    }
+    if (id === "general") {
+      return "일반상식";
     }
     if (id === "chokaguya") {
       return "초카구야";
@@ -1193,6 +1392,8 @@ export class GameRuntime {
       button = this.quizCategoryHistoryLoadBtnEl ?? null;
     } else if (id === "history-easy") {
       button = this.quizCategoryHistoryEasyLoadBtnEl ?? null;
+    } else if (id === "general") {
+      button = this.quizCategoryGeneralLoadBtnEl ?? null;
     } else if (id === "chokaguya") {
       button = this.quizCategoryChokaguyaLoadBtnEl ?? null;
     }
@@ -7973,11 +8174,31 @@ export class GameRuntime {
     this.quizCategoryHistoryEasySaveBtnEl?.addEventListener("click", () => {
       this.saveQuizCategory("역사기초");
     });
+    this.quizCategoryGeneralLoadBtnEl?.addEventListener("click", () => {
+      this.loadQuizCategory("일반상식");
+    });
+    this.quizCategoryGeneralSaveBtnEl?.addEventListener("click", () => {
+      this.saveQuizCategory("일반상식");
+    });
     this.quizCategoryChokaguyaLoadBtnEl?.addEventListener("click", () => {
       this.loadQuizCategory("초카구야");
     });
     this.quizCategoryChokaguyaSaveBtnEl?.addEventListener("click", () => {
       this.saveQuizCategory("초카구야");
+    });
+    this.quizQuickApplyBtnEl?.addEventListener("click", () => {
+      this.requestQuickQuizSetupApply();
+    });
+    this.quizCategoryVoteBtnEl?.addEventListener("click", () => {
+      this.requestCategoryVoteStart();
+    });
+    this.categoryVoteOptionsEl?.addEventListener("click", (event) => {
+      const optionButton = event.target?.closest?.(".category-vote-option[data-option-id]");
+      if (!optionButton) {
+        return;
+      }
+      const optionId = String(optionButton.dataset.optionId ?? "").trim();
+      this.requestCategoryVoteCast(optionId);
     });
     this.billboardMediaApplyBtnEl?.addEventListener("click", () => {
       this.requestBillboardMediaApply(false);
@@ -8096,6 +8317,18 @@ export class GameRuntime {
     }
     if (!this.quizReviewBtnEl) {
       this.quizReviewBtnEl = document.getElementById("quiz-review-btn");
+    }
+    if (!this.quizQuickCategorySelectEl) {
+      this.quizQuickCategorySelectEl = document.getElementById("quiz-quick-category-select");
+    }
+    if (!this.quizQuickTimeInputEl) {
+      this.quizQuickTimeInputEl = document.getElementById("quiz-quick-time-input");
+    }
+    if (!this.quizQuickApplyBtnEl) {
+      this.quizQuickApplyBtnEl = document.getElementById("quiz-quick-apply-btn");
+    }
+    if (!this.quizCategoryVoteBtnEl) {
+      this.quizCategoryVoteBtnEl = document.getElementById("quiz-category-vote-btn");
     }
     if (!this.portalLobbyOpenBtnEl) {
       this.portalLobbyOpenBtnEl = document.getElementById("portal-open-btn");
@@ -8226,6 +8459,12 @@ export class GameRuntime {
     if (!this.quizCategoryHistoryEasySaveBtnEl) {
       this.quizCategoryHistoryEasySaveBtnEl = document.getElementById("quiz-category-history-easy-save-btn");
     }
+    if (!this.quizCategoryGeneralLoadBtnEl) {
+      this.quizCategoryGeneralLoadBtnEl = document.getElementById("quiz-category-general-load-btn");
+    }
+    if (!this.quizCategoryGeneralSaveBtnEl) {
+      this.quizCategoryGeneralSaveBtnEl = document.getElementById("quiz-category-general-save-btn");
+    }
     if (!this.quizCategoryChokaguyaLoadBtnEl) {
       this.quizCategoryChokaguyaLoadBtnEl = document.getElementById("quiz-category-chokaguya-load-btn");
     }
@@ -8349,6 +8588,21 @@ export class GameRuntime {
     }
     if (!this.entryWaitTextEl) {
       this.entryWaitTextEl = document.getElementById("entry-wait-text");
+    }
+    if (!this.categoryVoteOverlayEl) {
+      this.categoryVoteOverlayEl = document.getElementById("category-vote-overlay");
+    }
+    if (!this.categoryVoteTitleEl) {
+      this.categoryVoteTitleEl = document.getElementById("category-vote-title");
+    }
+    if (!this.categoryVoteTimerEl) {
+      this.categoryVoteTimerEl = document.getElementById("category-vote-timer");
+    }
+    if (!this.categoryVoteStatusEl) {
+      this.categoryVoteStatusEl = document.getElementById("category-vote-status");
+    }
+    if (!this.categoryVoteOptionsEl) {
+      this.categoryVoteOptionsEl = document.getElementById("category-vote-options");
     }
     if (!this.offlineStartHintEl) {
       this.offlineStartHintEl = document.getElementById("offline-start-hint");
@@ -10404,6 +10658,10 @@ export class GameRuntime {
     if (room && Object.prototype.hasOwnProperty.call(room, "billboardMedia")) {
       this.applyBillboardMediaState(room.billboardMedia ?? {});
     }
+    const previousCategoryVote = this.categoryVoteState;
+    this.categoryVoteState = this.normalizeCategoryVotePayload(room?.categoryVote);
+    this.renderCategoryVoteOverlay();
+    this.handleCategoryVoteStateChange(previousCategoryVote, this.categoryVoteState);
     const seen = new Set();
     let localSeen = false;
     let localHostSpectator = false;
@@ -10831,6 +11089,7 @@ export class GameRuntime {
     });
     this.measurePerformanceSection("hud", () => this.updateHud(delta));
     this.measurePerformanceSection("roundOverlay", () => this.updateRoundOverlay(delta));
+    this.measurePerformanceSection("categoryVote", () => this.updateCategoryVoteTimerUi());
   }
 
   hasLocalMovementIntent() {
@@ -11705,6 +11964,10 @@ export class GameRuntime {
       "no room capacity available": "현재 수용 가능한 방이 없습니다.",
       "no playable players": "참가 플레이어가 없어 시작할 수 없습니다.",
       "players waiting admission": "대기실 인원이 아직 입장하지 않았습니다. 입장 시작을 먼저 눌러주세요.",
+      "category vote active": "카테고리 투표가 진행 중입니다. 투표가 끝난 뒤 시작할 수 있습니다.",
+      "category vote already active": "이미 카테고리 투표가 진행 중입니다.",
+      "category vote not active": "진행 중인 카테고리 투표가 없습니다.",
+      "invalid category vote option": "선택한 카테고리가 올바르지 않습니다.",
       "lobby already open": "이미 포탈 대기실이 열려 있습니다.",
       "lobby not open": "포탈 대기실이 열려 있지 않습니다.",
       "admission already in progress": "이미 입장 카운트다운이 진행 중입니다.",
@@ -12249,6 +12512,144 @@ export class GameRuntime {
     this.setQuizConfigStatus(`'${name}' 카테고리 ${questions.length}개 문항을 불러왔습니다. 저장 버튼으로 서버에 반영하세요.`);
   }
 
+  applyQuickQuizSetup(categoryName, targetSeconds, { saveToServer = true } = {}) {
+    this.resolveUiElements();
+    const resolvedCategoryName = String(categoryName ?? "").trim();
+    if (!resolvedCategoryName) {
+      return false;
+    }
+    const fallbackSeconds = this.normalizeQuizTimeLimitSeconds(
+      this.quizConfig?.questions?.[0]?.timeLimitSeconds,
+      QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+    );
+    const resolvedSeconds = this.normalizeQuizTimeLimitSeconds(targetSeconds, fallbackSeconds);
+    if (this.quizQuickCategorySelectEl) {
+      const optionExists = Array.from(this.quizQuickCategorySelectEl.options).some(
+        (option) => String(option?.value ?? "").trim() === resolvedCategoryName
+      );
+      if (optionExists) {
+        this.quizQuickCategorySelectEl.value = resolvedCategoryName;
+      }
+    }
+    this.loadQuizCategory(resolvedCategoryName);
+    if (this.quizTimeUnifyInputEl) {
+      this.quizTimeUnifyInputEl.value = String(resolvedSeconds);
+    }
+    if (this.quizQuickTimeInputEl) {
+      this.quizQuickTimeInputEl.value = String(resolvedSeconds);
+    }
+    this.applyQuizTimeLimitToAllQuestions();
+    if (saveToServer) {
+      this.requestQuizConfigSave();
+    }
+    return true;
+  }
+
+  requestQuickQuizSetupApply() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("시스템", "오너 토큰이 없어 문항 설정 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("시스템", "오프라인 상태에서는 문항 설정을 적용할 수 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("시스템", "방장만 시작 전 카테고리/시간을 적용할 수 있습니다.", "system");
+      return;
+    }
+    if (this.quizState.active || this.entryGateState?.admissionInProgress === true || this.quizConfigSaving) {
+      return;
+    }
+
+    this.resolveUiElements();
+    const categoryName = String(this.quizQuickCategorySelectEl?.value ?? "특갤").trim() || "특갤";
+    const fallbackSeconds = this.normalizeQuizTimeLimitSeconds(
+      this.quizConfig?.questions?.[0]?.timeLimitSeconds,
+      QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+    );
+    const targetSeconds = this.normalizeQuizTimeLimitSeconds(
+      this.quizQuickTimeInputEl?.value,
+      fallbackSeconds
+    );
+
+    this.applyQuickQuizSetup(categoryName, targetSeconds, { saveToServer: true });
+  }
+
+  tryApplyCategoryVoteWinner(vote = this.categoryVoteState) {
+    const resultKey = `${vote?.id ?? ""}:${vote?.winner?.id ?? "none"}:${vote?.finishedAt ?? 0}`;
+    if (!resultKey || resultKey === "::0" || this.categoryVoteAppliedResultKey === resultKey) {
+      return;
+    }
+    if (!vote?.winner?.categoryName) {
+      this.categoryVoteAppliedResultKey = resultKey;
+      return;
+    }
+    if (!this.ownerAccessEnabled || !this.isLocalHost() || !this.socket || !this.networkConnected) {
+      return;
+    }
+    if (this.quizState.active || this.quizConfigSaving) {
+      return;
+    }
+    const targetSeconds = this.normalizeQuizTimeLimitSeconds(
+      this.quizQuickTimeInputEl?.value,
+      this.quizConfig?.questions?.[0]?.timeLimitSeconds ?? QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+    );
+    this.categoryVoteAppliedResultKey = resultKey;
+    if (this.applyQuickQuizSetup(vote.winner.categoryName, targetSeconds, { saveToServer: true })) {
+      this.appendChatLine(
+        "시스템",
+        `카테고리 투표 결과 '${vote.winner.label}'를 현재 문항 설정에 반영했습니다.`,
+        "system"
+      );
+    }
+  }
+
+  requestCategoryVoteStart() {
+    if (!this.ownerAccessEnabled) {
+      this.appendChatLine("시스템", "오너 토큰이 없어 카테고리 투표 권한이 없습니다.", "system");
+      return;
+    }
+    if (!this.socket || !this.networkConnected) {
+      this.appendChatLine("시스템", "오프라인 상태에서는 카테고리 투표를 시작할 수 없습니다.", "system");
+      return;
+    }
+    if (!this.isLocalHost()) {
+      this.appendChatLine("시스템", "방장만 카테고리 투표를 시작할 수 있습니다.", "system");
+      return;
+    }
+    if (this.quizState.active || this.categoryVoteState?.active) {
+      return;
+    }
+    this.socket.emit("quiz:category-vote:start", (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("시스템", `투표 시작 실패: ${this.translateQuizError(response?.error)}`, "system");
+        return;
+      }
+      if (response?.vote) {
+        this.categoryVoteState = this.normalizeCategoryVotePayload(response.vote);
+        this.renderCategoryVoteOverlay();
+      }
+    });
+  }
+
+  requestCategoryVoteCast(optionId) {
+    const targetOptionId = String(optionId ?? "").trim();
+    if (!targetOptionId || !this.socket || !this.networkConnected || !this.categoryVoteState?.active) {
+      return;
+    }
+    this.socket.emit("quiz:category-vote:cast", { optionId: targetOptionId }, (response = {}) => {
+      if (!response?.ok) {
+        this.appendChatLine("시스템", `투표 반영 실패: ${this.translateQuizError(response?.error)}`, "system");
+        return;
+      }
+      if (response?.vote) {
+        this.categoryVoteState = this.normalizeCategoryVotePayload(response.vote);
+        this.renderCategoryVoteOverlay();
+      }
+    });
+  }
+
   getQuizCategoryBuiltinEndPolicy(name) {
     if (name !== "초카구야") {
       return null;
@@ -12386,6 +12787,130 @@ export class GameRuntime {
           text: "조선 시대 전통 화폐 이름은 엽전이다.",
           answer: "O",
           explanation: "엽전(葉錢)은 조선 시대부터 근대까지 사용된 구리·청동 주화이다.",
+          timeLimitSeconds: 30
+        }
+      ];
+    }
+    if (name === "일반상식") {
+      return [
+        {
+          text: "호주의 수도는 시드니이다.",
+          answer: "X",
+          explanation: "호주의 수도는 시드니가 아니라 캔버라다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "지구에서 가장 넓은 대양은 태평양이다.",
+          answer: "O",
+          explanation: "태평양은 지구 표면의 약 3분의 1을 덮는 가장 큰 대양이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "빛년(light-year)은 시간을 뜻하는 단위다.",
+          answer: "X",
+          explanation: "빛년은 빛이 1년 동안 이동한 거리를 뜻하는 거리 단위다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "대한민국의 화폐 단위는 원(Won)이다.",
+          answer: "O",
+          explanation: "대한민국 법정통화의 기본 단위는 원이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "브라질의 수도는 리우데자네이루이다.",
+          answer: "X",
+          explanation: "브라질의 수도는 브라질리아다. 리우데자네이루는 대표적인 대도시다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "표준 대기압 기준에서 물은 섭씨 100도에서 끓는다.",
+          answer: "O",
+          explanation: "해수면 기준 1기압에서 물의 끓는점은 100도다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "만리장성은 달에서 맨눈으로 쉽게 보인다.",
+          answer: "X",
+          explanation: "달에서 만리장성을 맨눈으로 본다는 말은 잘못 알려진 상식이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "인간의 몸에는 보통 206개의 뼈가 있다.",
+          answer: "O",
+          explanation: "성인 기준으로 일반적으로 206개의 뼈를 가진다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "UN 본부는 스위스 제네바에 있다.",
+          answer: "X",
+          explanation: "유엔 본부는 미국 뉴욕에 있다. 제네바에는 유엔 유럽본부가 있다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "인플레이션은 전반적인 물가 수준이 오르는 현상을 뜻한다.",
+          answer: "O",
+          explanation: "인플레이션은 화폐가치 하락과 함께 전반적인 물가가 지속적으로 상승하는 현상이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "컴퓨터의 RAM은 전원이 꺼져도 내용이 그대로 보존되는 저장장치다.",
+          answer: "X",
+          explanation: "RAM은 휘발성 메모리라 전원이 꺼지면 저장 내용이 사라진다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "에베레스트산은 네팔과 중국(티베트) 국경에 있다.",
+          answer: "O",
+          explanation: "에베레스트는 네팔과 중국 티베트 자치구의 경계선에 위치한다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "대한민국의 국회는 단원제이다.",
+          answer: "O",
+          explanation: "대한민국 국회는 상원과 하원으로 나뉘지 않는 단원제다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "지구는 태양을 한 바퀴 도는 데 약 24시간이 걸린다.",
+          answer: "X",
+          explanation: "약 24시간은 지구 자전 주기이고, 공전 주기는 약 365일이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "바이러스는 항생제로 치료하는 것이 일반적이다.",
+          answer: "X",
+          explanation: "항생제는 세균 감염에 쓰이며, 바이러스성 질환에는 보통 직접 효과가 없다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "인터넷 주소에서 '.kr'은 대한민국 국가 도메인이다.",
+          answer: "O",
+          explanation: "'.kr'은 한국을 뜻하는 국가 코드 최상위 도메인(ccTLD)이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "아르헨티나의 수도는 부에노스아이레스이다.",
+          answer: "O",
+          explanation: "부에노스아이레스는 아르헨티나의 수도이자 최대 도시다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "금성은 태양계에서 태양과 가장 가까운 행성이다.",
+          answer: "X",
+          explanation: "태양과 가장 가까운 행성은 수성이다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "1바이트는 8비트다.",
+          answer: "O",
+          explanation: "현대 컴퓨팅에서 1바이트는 일반적으로 8비트를 뜻한다.",
+          timeLimitSeconds: 30
+        },
+        {
+          text: "GDP는 한 나라에서 일정 기간 생산된 최종 재화와 서비스의 가치를 뜻한다.",
+          answer: "O",
+          explanation: "GDP(국내총생산)는 한 국가 경제 규모를 보여주는 대표 지표다.",
           timeLimitSeconds: 30
         }
       ];
@@ -12921,6 +13446,13 @@ export class GameRuntime {
     if (!this.quizOppositeBillboardEnabled) {
       this.quizOppositeBillboardResultVisible = false;
     }
+    if (this.quizQuickTimeInputEl) {
+      const nextSeconds = this.normalizeQuizTimeLimitSeconds(
+        this.quizConfig?.questions?.[0]?.timeLimitSeconds,
+        QUIZ_DEFAULT_TIME_LIMIT_SECONDS
+      );
+      this.quizQuickTimeInputEl.value = String(nextSeconds);
+    }
     this.applyOppositeBillboardMode();
     if (!this.quizConfigModalEl?.classList.contains("hidden")) {
       this.renderQuizConfigEditor();
@@ -13106,6 +13638,7 @@ export class GameRuntime {
     const countdownSeconds = this.getAdmissionCountdownSeconds();
     const admissionInProgress =
       this.entryGateState?.admissionInProgress === true || countdownSeconds > 0;
+    const categoryVoteActive = this.categoryVoteState?.active === true;
     if (this.quizHostBtnEl) {
       const canClaimHost = this.ownerAccessEnabled;
       this.quizHostBtnEl.classList.toggle("hidden", !canClaimHost || isHost);
@@ -13143,11 +13676,53 @@ export class GameRuntime {
         !canUseModeration || selectedModerationTarget?.chatMuted !== true;
     }
     this.quizStartBtnEl &&
-      (this.quizStartBtnEl.disabled = !canControl || active || waitingPlayers > 0 || admissionInProgress);
+      (this.quizStartBtnEl.disabled =
+        !canControl || active || waitingPlayers > 0 || admissionInProgress || categoryVoteActive);
     this.quizStopBtnEl && (this.quizStopBtnEl.disabled = !canControl || !active);
     if (this.quizConfigBtnEl) {
       this.quizConfigBtnEl.disabled =
-        !canControl || active || admissionInProgress || this.quizConfigLoading || this.quizConfigSaving;
+        !canControl ||
+        active ||
+        admissionInProgress ||
+        categoryVoteActive ||
+        this.quizConfigLoading ||
+        this.quizConfigSaving;
+    }
+    if (this.quizQuickCategorySelectEl) {
+      this.quizQuickCategorySelectEl.disabled =
+        !canControl ||
+        active ||
+        admissionInProgress ||
+        categoryVoteActive ||
+        this.quizConfigLoading ||
+        this.quizConfigSaving;
+    }
+    if (this.quizQuickTimeInputEl) {
+      this.quizQuickTimeInputEl.disabled =
+        !canControl ||
+        active ||
+        admissionInProgress ||
+        categoryVoteActive ||
+        this.quizConfigLoading ||
+        this.quizConfigSaving;
+    }
+    if (this.quizQuickApplyBtnEl) {
+      this.quizQuickApplyBtnEl.disabled =
+        !canControl ||
+        active ||
+        admissionInProgress ||
+        categoryVoteActive ||
+        this.quizConfigLoading ||
+        this.quizConfigSaving;
+    }
+    if (this.quizCategoryVoteBtnEl) {
+      this.quizCategoryVoteBtnEl.disabled =
+        !canControl ||
+        active ||
+        admissionInProgress ||
+        categoryVoteActive ||
+        this.quizConfigLoading ||
+        this.quizConfigSaving;
     }
     if (this.quizReviewBtnEl) {
       this.quizReviewBtnEl.disabled = this.quizReviewItems.length <= 0;
@@ -13209,7 +13784,11 @@ export class GameRuntime {
       if (active) {
         this.quizControlsNoteEl.textContent = `모드: 수동(호스팅) | 단계: ${phaseKor} | 문항 ${Math.max(0, this.quizState.questionIndex)}/${Math.max(0, this.quizState.totalQuestions)} | 종료 ${this.quizState.autoFinish ? "자동" : "수동"}`;
       } else {
-        if (admissionInProgress) {
+        if (categoryVoteActive) {
+          const voteSeconds = this.getCategoryVoteCountdownSeconds();
+          this.quizControlsNoteEl.textContent =
+            `모드: 수동(호스팅) | 카테고리 투표 진행 중 ${voteSeconds}초 | 참여 ${this.categoryVoteState?.votesCast ?? 0}/${this.categoryVoteState?.eligibleVoters ?? 0}`;
+        } else if (admissionInProgress) {
           this.quizControlsNoteEl.textContent =
             countdownSeconds > 0
               ? `모드: 수동(호스팅) | 입장 카운트다운 ${countdownSeconds}초`

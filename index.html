@@ -83,6 +83,31 @@
       <details class="quiz-controls-section" open aria-label="문항 설정">
         <summary class="quiz-controls-section-title">문항</summary>
         <div class="quiz-controls-section-body">
+          <div class="quiz-controls-row quiz-quick-setup-row">
+            <select id="quiz-quick-category-select" aria-label="빠른 카테고리 선택">
+              <option value="특갤">특갤</option>
+              <option value="역사상식">역사상식</option>
+              <option value="역사기초">역사기초</option>
+              <option value="일반상식">일반상식</option>
+              <option value="초카구야">초카구야</option>
+            </select>
+            <input
+              id="quiz-quick-time-input"
+              type="number"
+              min="15"
+              max="3600"
+              step="1"
+              value="30"
+              aria-label="문항당 시간(초)"
+            />
+          </div>
+          <div class="quiz-controls-row">
+            <button id="quiz-quick-apply-btn" type="button">카테고리/시간 적용</button>
+          </div>
+          <div class="quiz-controls-row">
+            <button id="quiz-category-vote-btn" type="button">카테고리 투표 시작</button>
+          </div>
+          <p class="quiz-controls-static-copy">시작 전에 누르면 현재 문항 설정에 바로 반영됩니다.</p>
           <div class="quiz-controls-row">
             <button id="quiz-config-btn" type="button">문항/종료 설정</button>
             <button id="quiz-review-btn" type="button">해설 보기</button>
@@ -305,6 +330,17 @@
       </div>
     </div>
 
+    <div id="category-vote-overlay" class="hidden" aria-live="polite" aria-hidden="true">
+      <div id="category-vote-panel">
+        <div class="category-vote-head">
+          <h2 id="category-vote-title">카테고리 투표</h2>
+          <p id="category-vote-timer">남은 시간 0초</p>
+        </div>
+        <p id="category-vote-status">원하는 퀴즈 카테고리를 선택하세요.</p>
+        <div id="category-vote-options" role="group" aria-label="카테고리 투표 선택지"></div>
+      </div>
+    </div>
+
     <div id="offline-start-hint" class="hidden" aria-live="polite">
       <p id="offline-start-hint-text">현재 카테고리 OX를 10초 뒤 시작할 수 있습니다.</p>
       <button id="offline-start-trigger-btn" type="button">현재 카테고리 시작</button>
@@ -329,6 +365,7 @@
           <button class="offline-start-category-btn" data-category="tukgal" type="button">특갤</button>
           <button class="offline-start-category-btn" data-category="history" type="button">역사상식</button>
           <button class="offline-start-category-btn" data-category="history-easy" type="button">역사기초</button>
+          <button class="offline-start-category-btn" data-category="general" type="button">일반상식</button>
           <button class="offline-start-category-btn" data-category="chokaguya" type="button">초카구야</button>
         </div>
         <p id="offline-start-selected-category">선택 카테고리: -</p>
@@ -372,6 +409,9 @@
           <span class="quiz-toolbar-sep"></span>
           <button id="quiz-category-history-easy-load-btn" type="button">역사기초 불러오기</button>
           <button id="quiz-category-history-easy-save-btn" type="button">역사기초로 저장</button>
+          <span class="quiz-toolbar-sep"></span>
+          <button id="quiz-category-general-load-btn" type="button">일반상식 불러오기</button>
+          <button id="quiz-category-general-save-btn" type="button">일반상식으로 저장</button>
           <span class="quiz-toolbar-sep"></span>
           <button id="quiz-category-chokaguya-load-btn" type="button">초카구야 불러오기</button>
           <button id="quiz-category-chokaguya-save-btn" type="button">초카구야로 저장</button>
