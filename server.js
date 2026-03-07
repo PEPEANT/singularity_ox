@@ -17,12 +17,26 @@ function parseCorsOrigins(rawValue) {
   return list.length > 0 ? list : "*";
 }
 
-function writeJson(res, statusCode, payload) {
+function writeJson(res, statusCode, payload, extraHeaders = {}) {
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store"
+    "cache-control": "no-store",
+    ...(extraHeaders && typeof extraHeaders === "object" ? extraHeaders : {})
   });
   res.end(JSON.stringify(payload));
+}
+
+function buildBillboardCorsHeaders(req, extraHeaders = {}) {
+  const requestOrigin = String(req?.headers?.origin ?? "").trim();
+  const allowOrigin = requestOrigin || "*";
+  return {
+    "access-control-allow-origin": allowOrigin,
+    "access-control-allow-methods": "GET,HEAD,POST,OPTIONS",
+    "access-control-allow-headers": "content-type, x-owner-key, x-upload-filename, range",
+    "access-control-expose-headers": "accept-ranges, content-length, content-range, content-type",
+    "access-control-max-age": "86400",
+    ...(extraHeaders && typeof extraHeaders === "object" ? extraHeaders : {})
+  };
 }
 
 async function probeExistingServer(port) {
@@ -1084,7 +1098,10 @@ function getBillboardUploadEntry(uploadId = "") {
 function writeBillboardUploadResponse(req, res, entry) {
   const buffer = entry?.buffer;
   if (!Buffer.isBuffer(buffer)) {
-    res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    res.writeHead(
+      404,
+      buildBillboardCorsHeaders(req, { "content-type": "text/plain; charset=utf-8" })
+    );
     res.end("Not found");
     return;
   }
@@ -1103,18 +1120,24 @@ function writeBillboardUploadResponse(req, res, entry) {
     const start = Math.max(0, Math.trunc(Number(startRaw) || 0));
     const end = endRaw ? Math.min(totalBytes - 1, Math.trunc(Number(endRaw) || totalBytes - 1)) : totalBytes - 1;
     if (start > end || start >= totalBytes) {
-      res.writeHead(416, {
-        "content-range": `bytes */${totalBytes}`
-      });
+      res.writeHead(
+        416,
+        buildBillboardCorsHeaders(req, {
+          "content-range": `bytes */${totalBytes}`
+        })
+      );
       res.end();
       return;
     }
     const chunk = buffer.subarray(start, end + 1);
-    res.writeHead(206, {
-      ...headers,
-      "content-length": chunk.length,
-      "content-range": `bytes ${start}-${end}/${totalBytes}`
-    });
+    res.writeHead(
+      206,
+      buildBillboardCorsHeaders(req, {
+        ...headers,
+        "content-length": chunk.length,
+        "content-range": `bytes ${start}-${end}/${totalBytes}`
+      })
+    );
     if (req.method === "HEAD") {
       res.end();
       return;
@@ -1123,10 +1146,13 @@ function writeBillboardUploadResponse(req, res, entry) {
     return;
   }
 
-  res.writeHead(200, {
-    ...headers,
-    "content-length": totalBytes
-  });
+  res.writeHead(
+    200,
+    buildBillboardCorsHeaders(req, {
+      ...headers,
+      "content-length": totalBytes
+    })
+  );
   if (req.method === "HEAD") {
     res.end();
     return;
@@ -4027,11 +4053,19 @@ function joinRoom(socket, room, nameOverride = null) {
 const httpServer = createServer(async (req, res) => {
   const method = String(req.method ?? "GET").trim().toUpperCase();
   const requestUrl = new URL(String(req.url ?? "/"), "http://localhost");
+  const isBillboardUploadRoute =
+    requestUrl.pathname === "/uploads/billboard" || requestUrl.pathname.startsWith("/uploads/billboard/");
+
+  if (isBillboardUploadRoute && method === "OPTIONS") {
+    res.writeHead(204, buildBillboardCorsHeaders(req));
+    res.end();
+    return;
+  }
 
   if (requestUrl.pathname === "/uploads/billboard" && method === "POST") {
     const ownerKey = String(req.headers?.["x-owner-key"] ?? "").trim();
     if (ROOM_OWNER_KEY && !hasOwnerAccess(ownerKey)) {
-      writeJson(res, 403, { ok: false, error: "unauthorized" });
+      writeJson(res, 403, { ok: false, error: "unauthorized" }, buildBillboardCorsHeaders(req));
       return;
     }
     try {
@@ -4039,28 +4073,43 @@ const httpServer = createServer(async (req, res) => {
       const contentType = String(req.headers?.["content-type"] ?? "").trim();
       const uploadKind = inferBillboardUploadKind(contentType, fileName);
       if (uploadKind === "none") {
-        writeJson(res, 415, { ok: false, error: "unsupported media type" });
+        writeJson(
+          res,
+          415,
+          { ok: false, error: "unsupported media type" },
+          buildBillboardCorsHeaders(req)
+        );
         return;
       }
       const buffer = await readRequestBodyBuffer(req, BILLBOARD_UPLOAD_MAX_BYTES);
       if (!Buffer.isBuffer(buffer) || buffer.length <= 0) {
-        writeJson(res, 400, { ok: false, error: "empty upload" });
+        writeJson(res, 400, { ok: false, error: "empty upload" }, buildBillboardCorsHeaders(req));
         return;
       }
       const entry = storeBillboardUpload(buffer, contentType, fileName);
-      writeJson(res, 200, {
-        ok: true,
-        url: buildBillboardUploadPath(entry),
-        kind: uploadKind,
-        bytes: entry.size
-      });
+      writeJson(
+        res,
+        200,
+        {
+          ok: true,
+          url: buildBillboardUploadPath(entry),
+          kind: uploadKind,
+          bytes: entry.size
+        },
+        buildBillboardCorsHeaders(req)
+      );
       return;
     } catch (error) {
       const statusCode = Number(error?.statusCode) || 500;
-      writeJson(res, statusCode, {
-        ok: false,
-        error: statusCode === 413 ? "upload too large" : "upload failed"
-      });
+      writeJson(
+        res,
+        statusCode,
+        {
+          ok: false,
+          error: statusCode === 413 ? "upload too large" : "upload failed"
+        },
+        buildBillboardCorsHeaders(req)
+      );
       return;
     }
   }
@@ -4070,7 +4119,10 @@ const httpServer = createServer(async (req, res) => {
     const uploadId = parts[2] ?? "";
     const entry = getBillboardUploadEntry(uploadId);
     if (!entry) {
-      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.writeHead(
+        404,
+        buildBillboardCorsHeaders(req, { "content-type": "text/plain; charset=utf-8" })
+      );
       res.end("Not found");
       return;
     }

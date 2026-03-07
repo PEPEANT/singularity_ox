@@ -1322,11 +1322,17 @@ body.mobile-roster-focus #mobile-look-pad {
   gap: 6px;
 }
 
+#quiz-review-summary,
 #quiz-review-index,
 #quiz-review-question,
 #quiz-review-answer,
 #quiz-review-explanation {
   margin: 0;
+}
+
+#quiz-review-summary {
+  color: #f5dc8f;
+  font: 800 0.68rem/1.3 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
 }
 
 #quiz-review-index {

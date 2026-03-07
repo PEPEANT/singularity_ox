@@ -566,6 +566,7 @@ export class GameRuntime {
     this.quizReviewCloseBtnEl = document.getElementById("quiz-review-close-btn");
     this.quizReviewPrevBtnEl = document.getElementById("quiz-review-prev-btn");
     this.quizReviewNextBtnEl = document.getElementById("quiz-review-next-btn");
+    this.quizReviewSummaryEl = document.getElementById("quiz-review-summary");
     this.quizReviewIndexEl = document.getElementById("quiz-review-index");
     this.quizReviewQuestionEl = document.getElementById("quiz-review-question");
     this.quizReviewAnswerEl = document.getElementById("quiz-review-answer");
@@ -666,6 +667,9 @@ export class GameRuntime {
     this.quizConfigDraftRestoreAttempted = false;
     this.quizReviewItems = [];
     this.quizReviewIndex = 0;
+    this.quizReviewSummaryText = "";
+    this.quizEndPresentationUntil = 0;
+    this.quizEndReviewAutoOpenTimer = null;
     this.categoryVoteState = null;
     this.categoryVoteAppliedResultKey = "";
     this.categoryVoteAnnouncedStateKey = "";
@@ -4665,6 +4669,47 @@ export class GameRuntime {
     };
   }
 
+  getBillboardMediaServiceOrigin() {
+    if (typeof window === "undefined") {
+      return "";
+    }
+    try {
+      const endpoint = String(this.socketEndpoint ?? this.resolveSocketEndpoint() ?? "").trim();
+      if (endpoint) {
+        return new URL(endpoint, window.location.href).origin;
+      }
+      return window.location.origin;
+    } catch {
+      return window.location.origin;
+    }
+  }
+
+  buildBillboardMediaServiceUrl(pathname = "/") {
+    if (typeof window === "undefined") {
+      return "";
+    }
+    try {
+      return new URL(String(pathname ?? "/"), `${this.getBillboardMediaServiceOrigin()}/`).toString();
+    } catch {
+      return "";
+    }
+  }
+
+  resolveBillboardMediaUrl(rawUrl = "") {
+    const sanitized = sanitizeBillboardMediaUrl(rawUrl);
+    if (!sanitized) {
+      return "";
+    }
+    if (!sanitized.startsWith("/uploads/billboard/")) {
+      return sanitized;
+    }
+    try {
+      return new URL(sanitized, `${this.getBillboardMediaServiceOrigin()}/`).toString();
+    } catch {
+      return sanitized;
+    }
+  }
+
   buildDefaultBillboardMediaRuntimeEntry() {
     return {
       texture: null,
@@ -4720,7 +4765,7 @@ export class GameRuntime {
         : rawItem && typeof rawItem === "object"
           ? rawItem
           : {};
-    const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
+    const visualUrl = this.resolveBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
     if (!visualUrl) {
       return { visualType: "none", visualUrl: "", audioUrl: "" };
     }
@@ -4734,7 +4779,7 @@ export class GameRuntime {
         : inferredType === "video" || inferredType === "image"
           ? inferredType
           : "video";
-    const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+    const audioUrl = this.resolveBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
     return { visualType, visualUrl, audioUrl };
   }
 
@@ -4768,8 +4813,8 @@ export class GameRuntime {
       .trim()
       .toLowerCase();
     const visualType = requestedType === "video" || requestedType === "image" ? requestedType : "none";
-    const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
-    const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+    const visualUrl = this.resolveBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
+    const audioUrl = this.resolveBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
     const playbackPlaying = (entry.playbackPlaying ?? fallback.playbackPlaying ?? true) !== false;
     const rawPlaybackOffset = Number(
       entry.playbackOffsetSeconds ?? entry.offsetSeconds ?? fallback.playbackOffsetSeconds ?? 0
@@ -5362,7 +5407,7 @@ export class GameRuntime {
   }
 
   buildBillboardMediaPayloadFromUploadedFile(uploadUrl = "", file = null) {
-    const resolvedUrl = sanitizeBillboardMediaUrl(uploadUrl);
+    const resolvedUrl = this.resolveBillboardMediaUrl(uploadUrl);
     if (!resolvedUrl) {
       return null;
     }
@@ -5395,7 +5440,7 @@ export class GameRuntime {
     if (!(file instanceof File)) {
       return "";
     }
-    const endpoint = new URL("/uploads/billboard", window.location.href).toString();
+    const endpoint = this.buildBillboardMediaServiceUrl("/uploads/billboard");
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -5409,7 +5454,7 @@ export class GameRuntime {
     if (!response.ok || !payload?.ok) {
       throw new Error(String(payload?.error ?? `upload-failed-${response.status}`));
     }
-    return sanitizeBillboardMediaUrl(payload?.url ?? "");
+    return this.resolveBillboardMediaUrl(payload?.url ?? "");
   }
 
   async handleBillboardMediaFileUpload(selectedFile) {
@@ -8553,6 +8598,9 @@ export class GameRuntime {
     if (!this.quizReviewNextBtnEl) {
       this.quizReviewNextBtnEl = document.getElementById("quiz-review-next-btn");
     }
+    if (!this.quizReviewSummaryEl) {
+      this.quizReviewSummaryEl = document.getElementById("quiz-review-summary");
+    }
     if (!this.quizReviewIndexEl) {
       this.quizReviewIndexEl = document.getElementById("quiz-review-index");
     }
@@ -11345,7 +11393,32 @@ export class GameRuntime {
     }
   }
 
-  resetQuizStateLocal() {
+  clearQuizEndReviewAutoOpenTimer() {
+    if (this.quizEndReviewAutoOpenTimer !== null && typeof window !== "undefined") {
+      window.clearTimeout(this.quizEndReviewAutoOpenTimer);
+    }
+    this.quizEndReviewAutoOpenTimer = null;
+  }
+
+  hasActiveQuizEndPresentation() {
+    return Number(this.quizEndPresentationUntil ?? 0) > Date.now();
+  }
+
+  buildQuizReviewSummaryText(ranking = []) {
+    const source = Array.isArray(ranking) ? ranking.filter(Boolean) : [];
+    if (source.length <= 0) {
+      return "Final ranking is unavailable.";
+    }
+    const winner = source[0];
+    const rest = source
+      .slice(1, 3)
+      .map((entry) => `#${entry.rank} ${entry.name} ${entry.score} pts`)
+      .join(" / ");
+    const winnerLabel = `1st ${winner.name} ${winner.score} pts`;
+    return rest ? `${winnerLabel} / ${rest}` : winnerLabel;
+  }
+
+  resetQuizStateLocal({ preserveEndPresentation = false } = {}) {
     this.quizState.active = false;
     this.quizState.phase = "idle";
     this.quizState.autoMode = false;
@@ -11371,10 +11444,14 @@ export class GameRuntime {
     this.spectatorFollowIndex = -1;
     this.resetTrapdoors();
     this.centerBillboardLastCountdown = null;
-    this.hideRoundOverlay();
     this.closeOfflineStartModal();
-    this.closeQuizReviewModal();
     this.setOppositeBillboardResultVisible(false);
+    if (!preserveEndPresentation) {
+      this.quizEndPresentationUntil = 0;
+      this.quizReviewSummaryText = "";
+      this.clearQuizEndReviewAutoOpenTimer();
+      this.hideRoundOverlay();
+      this.closeQuizReviewModal();
     this.renderCenterBillboard({
       layout: "explanation",
       kicker: "문제 전광판",
@@ -11383,6 +11460,7 @@ export class GameRuntime {
       footer: ""
     });
     this.renderQuizProgressBillboard(true);
+    }
     this.updateQuizControlUi();
   }
 
@@ -11419,6 +11497,9 @@ export class GameRuntime {
 
   handleQuizStart(payload = {}) {
     this.lastQuizEndEventKey = "";
+    this.quizEndPresentationUntil = 0;
+    this.quizReviewSummaryText = "";
+    this.clearQuizEndReviewAutoOpenTimer();
     this.quizState.active = true;
     this.quizState.phase = "start";
     this.quizState.autoMode = payload.autoMode !== false;
@@ -11588,7 +11669,9 @@ export class GameRuntime {
       prevPhase !== "idle";
     if (shouldResetEndedPresentation) {
       const preservedHostId = hasOwn("hostId") ? payload.hostId ?? null : this.quizState.hostId ?? null;
-      this.resetQuizStateLocal();
+      this.resetQuizStateLocal({
+        preserveEndPresentation: this.hasActiveQuizEndPresentation()
+      });
       this.quizState.hostId = preservedHostId;
     }
     if (hasOwn("active")) {
@@ -11728,7 +11811,9 @@ export class GameRuntime {
     const nextHostId = hasHostId ? payload.hostId ?? null : this.quizState.hostId ?? null;
     const reason = String(payload?.reason ?? "").trim().toLowerCase();
     this.lastQuizEndEventKey = "";
-    this.resetQuizStateLocal();
+    this.resetQuizStateLocal({
+      preserveEndPresentation: reason === "quiz-end-ready" && this.hasActiveQuizEndPresentation()
+    });
     this.quizState.hostId = nextHostId;
     this.setOfflineStartStatus("");
     if (reason === "quiz-end-ready") {
@@ -11809,6 +11894,10 @@ export class GameRuntime {
           String(this.quizState.hostId ?? "") === myId)
     );
     const ranking = this.resolveQuizEndRanking(payload);
+    this.quizReviewSummaryText = this.buildQuizReviewSummaryText(ranking);
+    this.quizEndPresentationUntil =
+      Date.now() + Math.max(3200, Math.round(ROUND_OVERLAY_SETTINGS.endDurationSeconds * 1000));
+    this.clearQuizEndReviewAutoOpenTimer();
     const endEventKey = [
       String(payload?.reason ?? "finished").trim(),
       Math.max(0, Math.trunc(Number(payload?.endedAt) || 0)),
@@ -11870,16 +11959,25 @@ export class GameRuntime {
         footer: ""
       });
     }
+    if (isHost) {
+      this.showRoundOverlay({
+        title: "Game finished",
+        subtitle: this.quizReviewSummaryText,
+        fireworks: true,
+        durationSeconds: ROUND_OVERLAY_SETTINGS.endDurationSeconds
+      });
+    }
 
     this.renderQuizProgressBillboard(true);
     this.hud.setStatus(this.getStatusText());
     this.updateQuizControlUi();
-    if (!isHost && this.quizReviewItems.length > 0) {
-      window.setTimeout(() => {
-        if (this.quizState.phase === "ended" && this.quizReviewItems.length > 0) {
+    if (this.quizReviewItems.length > 0 || this.quizReviewSummaryText) {
+      this.quizEndReviewAutoOpenTimer = window.setTimeout(() => {
+        this.quizEndReviewAutoOpenTimer = null;
+        if (this.hasActiveQuizEndPresentation() || this.quizState.phase === "ended") {
           this.openQuizReviewModal();
         }
-      }, 900);
+      }, 450);
     }
   }
   syncQuizBillboard(force = false) {
@@ -11892,6 +11990,10 @@ export class GameRuntime {
         footer: ""
       });
     };
+
+    if (!this.quizState.active && this.hasActiveQuizEndPresentation()) {
+      return;
+    }
 
     if (!this.quizState.active) {
       const autoSeconds = this.getAutoStartCountdownSeconds();
@@ -13547,6 +13649,9 @@ export class GameRuntime {
     const safeIndex = Math.max(0, Math.min(total - 1, this.quizReviewIndex));
     this.quizReviewIndex = safeIndex;
     const current = total > 0 ? this.quizReviewItems[safeIndex] : null;
+    if (this.quizReviewSummaryEl) {
+      this.quizReviewSummaryEl.textContent = this.quizReviewSummaryText || "순위 요약이 없습니다.";
+    }
     if (this.quizReviewIndexEl) {
       this.quizReviewIndexEl.textContent = total > 0 ? `${safeIndex + 1} / ${total}` : "0 / 0";
     }
@@ -13571,7 +13676,9 @@ export class GameRuntime {
 
   openQuizReviewModal() {
     this.resolveUiElements();
-    if (!Array.isArray(this.quizReviewItems) || this.quizReviewItems.length <= 0) {
+    const hasReviewItems = Array.isArray(this.quizReviewItems) && this.quizReviewItems.length > 0;
+    const hasSummary = String(this.quizReviewSummaryText ?? "").trim().length > 0;
+    if (!hasReviewItems && !hasSummary) {
       this.appendChatLine("시스템", "표시할 해설 데이터가 없습니다.", "system");
       return;
     }
