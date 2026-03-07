@@ -3739,8 +3739,8 @@ const io = new Server(httpServer, {
     methods: ["GET", "POST"]
   },
   transports: ["websocket", "polling"],
-  pingInterval: 5000,
-  pingTimeout: 5000
+  pingInterval: 15000,
+  pingTimeout: 20000
 });
 
 const roomTickInterval = setInterval(() => {

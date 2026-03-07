@@ -978,27 +978,24 @@ export class GameRuntime {
     if (this.quizState.active) {
       return false;
     }
-    if (this.entryGateState?.portalOpen === true || this.entryGateState?.admissionInProgress === true) {
-      return false;
-    }
     return true;
   }
 
   getOfflineStartUnavailableReason() {
     if (this.hasHostControllerPresent()) {
-      return "호스트가 접속 중이라 자동 시작을 사용할 수 없습니다.";
+      return "호스트가 접속 중이라 호스트 없는 시작을 사용할 수 없습니다.";
     }
     if (!this.networkConnected || !this.socket) {
-      return "서버 연결 중입니다.";
+      return "서버 연결을 확인해 주세요.";
+    }
+    if (this.isLobbyBlockingGameplay()) {
+      return "입장 화면을 닫고 중앙 원기둥으로 이동해 주세요.";
+    }
+    if (this.localAdmissionWaiting) {
+      return "입장 처리 중입니다. 잠시 후 다시 시도해 주세요.";
     }
     if (this.quizState.active) {
       return "퀴즈 진행 중에는 사용할 수 없습니다.";
-    }
-    if (this.entryGateState?.admissionInProgress === true) {
-      return "입장 처리 중에는 사용할 수 없습니다.";
-    }
-    if (this.entryGateState?.portalOpen === true) {
-      return "포탈 대기 상태에서는 사용할 수 없습니다.";
     }
     return "지금은 사용할 수 없습니다.";
   }
@@ -1388,18 +1385,20 @@ export class GameRuntime {
     }
     this.requestOfflineStartCurrentCategory();
     return true;
-    if (this.offlineStartNearby !== true) {
-      return false;
+  }
+
+  requestSocketReconnect() {
+    if (!this.socket || this.networkConnected || this.redirectInFlight || this.disconnectedByKick) {
+      return;
     }
-    if (!this.canUseOfflineStartTrigger()) {
-      const reason = this.getOfflineStartUnavailableReason();
-      this.setOfflineStartStatus(reason, true);
-      this.appendChatLine("시스템", reason, "system");
-        this.appendChatLine("시스템", reason, "system");
-      return true;
+    if (typeof this.socket.connect !== "function") {
+      return;
     }
-    this.openOfflineStartModal();
-    return true;
+    try {
+      this.socket.connect();
+    } catch {
+      // Keep the built-in reconnection loop as fallback.
+    }
   }
 
   clearHubFlowWorld() {
@@ -7633,6 +7632,8 @@ export class GameRuntime {
     });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState !== "hidden") {
+        this.resumeMediaAudioContext();
+        this.requestSocketReconnect();
         return;
       }
       this.keys.clear();
@@ -7647,6 +7648,13 @@ export class GameRuntime {
       this.setRosterTabVisible(false);
       this.chalkDrawingActive = false;
       this.chalkLastStamp = null;
+    });
+    window.addEventListener("pageshow", () => {
+      this.resumeMediaAudioContext();
+      this.requestSocketReconnect();
+    });
+    window.addEventListener("online", () => {
+      this.requestSocketReconnect();
     });
 
     this.renderer.domElement.addEventListener("click", (event) => {
@@ -10053,7 +10061,7 @@ export class GameRuntime {
 
     const ioOptions = {
       transports: ["websocket", "polling"],
-      timeout: 3200,
+      timeout: 10000,
       reconnection: true,
       reconnectionDelay: 900,
       reconnectionDelayMax: 5000
