@@ -3879,9 +3879,6 @@ export class GameRuntime {
     target.searchParams.set("from", "ox");
     target.searchParams.set("name", this.localPlayerName);
     this.applyOwnerAccessToSearchParams(target.searchParams);
-    if (this.socketEndpoint) {
-      target.searchParams.set("server", this.socketEndpoint);
-    }
     return target.toString();
   }
 
