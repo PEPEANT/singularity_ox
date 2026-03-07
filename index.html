@@ -17,10 +17,10 @@
         <p>세로 화면에서는 플레이할 수 없습니다.</p>
       </div>
     </div>
-    <button id="settings-btn" class="hidden" type="button" aria-label="설정" aria-haspopup="true" aria-expanded="false">
+    <button id="settings-btn" class="hidden" type="button" aria-label="옵션" aria-haspopup="true" aria-expanded="false">
       ⚙
     </button>
-    <div id="settings-panel" class="hidden" role="dialog" aria-label="모바일 설정">
+    <div id="settings-panel" class="hidden" role="dialog" aria-label="게임 옵션">
       <div class="sp-row">
         <span class="sp-label">그래픽</span>
         <div class="sp-quality-btns">
@@ -36,8 +36,9 @@
         </div>
       </div>
       <div class="sp-row">
-        <button id="sp-fullscreen-btn" type="button">전체 화면 전환</button>
+        <button id="sp-fullscreen-btn" type="button">전체화면 켜기</button>
       </div>
+      <p id="sp-version" aria-label="버전">버전 0.1</p>
     </div>
 
     <div id="hud-ui" aria-label="상태 정보">
@@ -108,16 +109,21 @@
         <select id="billboard-media-preset-select">
           <option value="none">미디어 없음</option>
           <option value="gemini-image">기본 이미지 (Gemini)</option>
+          <option value="sample-video">기본 비디오 (WebM)</option>
           <option value="sample-mp3">기본 오디오 (MP3)</option>
         </select>
         <input
           id="billboard-media-url-input"
           type="url"
-          placeholder="커스텀 미디어/MP3 URL (선택)"
+          placeholder="커스텀 MP4/WebM/이미지/MP3 URL (선택)"
           autocomplete="off"
         />
+      </div>
+      <div class="quiz-controls-row billboard-media-actions-row">
         <button id="billboard-media-apply-btn" type="button">전광판 적용</button>
-        <button id="billboard-media-clear-btn" type="button">중지</button>
+        <button id="billboard-media-play-btn" type="button">재생</button>
+        <button id="billboard-media-pause-btn" type="button">일시정지</button>
+        <button id="billboard-media-clear-btn" type="button">비우기</button>
       </div>
       <div class="quiz-controls-row billboard-playlist-row">
         <label for="billboard-playlist-input">후면 전광판 MP4 목록 (한 줄 1개, 입력 순서대로 재생)</label>
@@ -272,8 +278,8 @@
     </div>
 
     <div id="offline-start-hint" class="hidden" aria-live="polite">
-      <p id="offline-start-hint-text">중앙 시작 버튼 근처입니다.</p>
-      <button id="offline-start-trigger-btn" type="button">오프라인 OX 시작</button>
+      <p id="offline-start-hint-text">현재 카테고리 OX를 10초 뒤 시작할 수 있습니다.</p>
+      <button id="offline-start-trigger-btn" type="button">현재 카테고리 시작</button>
     </div>
 
     <div
@@ -289,7 +295,7 @@
           <button id="offline-start-close-btn" type="button">닫기</button>
         </div>
         <p id="offline-start-note">
-          현재 OX 대회장 인원만으로 즉시 시작합니다. 시작 후 중도 입장은 불가합니다.
+          현재 OX 대회장 인원만으로 10초 후 시작합니다. 시작 후 중도 입장은 불가합니다.
         </p>
         <div class="offline-start-category-grid">
           <button class="offline-start-category-btn" data-category="tukgal" type="button">특갤</button>

@@ -764,6 +764,9 @@ function createDefaultBillboardMediaEntry() {
     visualType: "none",
     visualUrl: "",
     audioUrl: "",
+    playbackPlaying: true,
+    playbackOffsetSeconds: 0,
+    playbackSyncAt: 0,
     playlist: [],
     playlistIndex: 0,
     playlistEnabled: false,
@@ -840,6 +843,13 @@ function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null, option
     : String(fallback.visualType ?? "none");
   const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
   const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+  const playbackPlaying = (entry.playbackPlaying ?? fallback.playbackPlaying ?? true) !== false;
+  const rawPlaybackOffset = Number(
+    entry.playbackOffsetSeconds ?? entry.offsetSeconds ?? fallback.playbackOffsetSeconds ?? 0
+  );
+  const playbackOffsetSeconds = Number.isFinite(rawPlaybackOffset) ? Math.max(0, rawPlaybackOffset) : 0;
+  const rawPlaybackSyncAt = Number(entry.playbackSyncAt ?? entry.syncAt ?? fallback.playbackSyncAt ?? 0);
+  const playbackSyncAt = Number.isFinite(rawPlaybackSyncAt) ? Math.max(0, Math.trunc(rawPlaybackSyncAt)) : 0;
   const fallbackPlaylist = allowPlaylist ? sanitizeBillboardPlaylist(fallback.playlist ?? []) : [];
   const playlist = allowPlaylist
     ? sanitizeBillboardPlaylist(entry.playlist ?? fallbackPlaylist, fallbackPlaylist)
@@ -867,6 +877,9 @@ function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null, option
       visualType: active.visualType,
       visualUrl: active.visualUrl,
       audioUrl: active.audioUrl,
+      playbackPlaying,
+      playbackOffsetSeconds,
+      playbackSyncAt,
       playlist,
       playlistIndex,
       playlistEnabled: true,
@@ -879,6 +892,9 @@ function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null, option
       visualType: "none",
       visualUrl: "",
       audioUrl,
+      playbackPlaying,
+      playbackOffsetSeconds: 0,
+      playbackSyncAt: 0,
       playlist,
       playlistIndex,
       playlistEnabled: false,
@@ -891,6 +907,9 @@ function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null, option
       visualType: "none",
       visualUrl: "",
       audioUrl,
+      playbackPlaying,
+      playbackOffsetSeconds: 0,
+      playbackSyncAt: 0,
       playlist,
       playlistIndex,
       playlistEnabled: false,
@@ -902,6 +921,9 @@ function sanitizeBillboardMediaEntry(rawEntry = {}, fallbackEntry = null, option
     visualType,
     visualUrl,
     audioUrl,
+    playbackPlaying,
+    playbackOffsetSeconds,
+    playbackSyncAt,
     playlist,
     playlistIndex,
     playlistEnabled: false,
@@ -3039,7 +3061,8 @@ function startQuiz(room, hostSocketId, payload = {}) {
 
   for (const player of room.players.values()) {
     initializePlayerForQuiz(player, true);
-    if (isPlayerHostModerator(room, player)) {
+    const hostModerator = !startedWithoutHost && isPlayerHostModerator(room, player);
+    if (hostModerator) {
       player.admitted = true;
       player.awaitingAdmission = false;
       player.lastChoiceReason = "spectator";

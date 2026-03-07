@@ -127,10 +127,15 @@ const QUIZ_CONFIG_DRAFT_STORAGE_PREFIX = "singularity_ox.quiz_config_draft.v1";
 const QUIZ_CATEGORY_STORAGE_PREFIX = "singularity_ox.quiz_category.v1";
 const QUIZ_CONFIG_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 21;
 const LAST_ROOM_CODE_STORAGE_KEY = "singularity_ox.last_room_code.v1";
+const OWNER_ACCESS_STORAGE_KEY = "singularity_ox.owner_access_key.v1";
+const LOBBY_JOIN_ACK_TIMEOUT_MS = 9000;
+const LOBBY_JOIN_AUTO_RETRY_LIMIT = 2;
+const LOBBY_JOIN_AUTO_RETRY_DELAY_MS = 500;
 const QUIZ_MIN_TIME_LIMIT_SECONDS = 15;
 const QUIZ_MAX_TIME_LIMIT_SECONDS = 3600;
 const QUIZ_DEFAULT_TIME_LIMIT_SECONDS = 30;
 const OFFLINE_START_INTERACT_DISTANCE = 4.2;
+const OFFLINE_START_PREPARE_DELAY_MS = 10000;
 const CHAT_BUBBLE_MIN_LIFETIME_MS = 9000;
 const MOBILE_CHAT_PREVIEW_MIN_LIFETIME_MS = 7000;
 const GRAPHICS_QUALITY_STORAGE_KEY = "singularity_ox.graphics_quality.v1";
@@ -268,9 +273,10 @@ export class GameRuntime {
     this.megaAdTextLastSignature = "";
     this.billboardMediaState = this.buildDefaultBillboardMediaState();
     this.billboardMediaRuntime = {
-      board1: { texture: null, videoEl: null, audioEl: null, sourceTag: "", videoEndedHandler: null },
-      board2: { texture: null, videoEl: null, audioEl: null, sourceTag: "", videoEndedHandler: null }
+      board1: this.buildDefaultBillboardMediaRuntimeEntry(),
+      board2: this.buildDefaultBillboardMediaRuntimeEntry()
     };
+    this.mediaAudioContext = null;
     this.chalkLayer = null;
     this.chalkStampGeometry = null;
     this.chalkStampTexture = null;
@@ -360,13 +366,7 @@ export class GameRuntime {
       lastLogAt: 0
     };
     this.lastLookInputAt = 0;
-    this.ownerAccessKey = String(
-      this.queryParams.get("owner") ??
-        this.queryParams.get("owner_key") ??
-        this.queryParams.get("hostKey") ??
-        this.queryParams.get("host_key") ??
-        ""
-    ).trim();
+    this.ownerAccessKey = this.resolveOwnerAccessKey();
     this.ownerAccessEnabled = this.ownerAccessKey.length > 0;
     this.localPlayerName = this.formatPlayerName(this.queryParams.get("name") ?? "플레이어");
     this.pendingPlayerNameSync = false;
@@ -539,6 +539,8 @@ export class GameRuntime {
     this.billboardMediaPresetSelectEl = document.getElementById("billboard-media-preset-select");
     this.billboardMediaUrlInputEl = document.getElementById("billboard-media-url-input");
     this.billboardMediaApplyBtnEl = document.getElementById("billboard-media-apply-btn");
+    this.billboardMediaPlayBtnEl = document.getElementById("billboard-media-play-btn");
+    this.billboardMediaPauseBtnEl = document.getElementById("billboard-media-pause-btn");
     this.billboardMediaClearBtnEl = document.getElementById("billboard-media-clear-btn");
     this.billboardPlaylistInputEl = document.getElementById("billboard-playlist-input");
     this.billboardPlaylistLoadBtnEl = document.getElementById("billboard-playlist-load-btn");
@@ -659,6 +661,8 @@ export class GameRuntime {
     this.lobbyVisible = false;
     this.lobbyNameConfirmed = false;
     this.lobbyJoinInFlight = false;
+    this.lobbyJoinRequestSeq = 0;
+    this.lobbyJoinAutoRetryRemaining = 0;
     this.lobbyLastRooms = [];
     this.gatewayParticipantLimit = 50;
     this.flowStage = this.hubFlowEnabled ? "bridge_approach" : "city_live";
@@ -694,6 +698,8 @@ export class GameRuntime {
     this.portalCooldownSeconds = parseSeconds(portalConfig?.cooldownSeconds, 60, 8);
     this.portalWarningSeconds = parseSeconds(portalConfig?.warningSeconds, 16, 4);
     this.portalOpenSeconds = parseSeconds(portalConfig?.openSeconds, 24, 5);
+    this.portalAlwaysOpen = portalConfig?.alwaysOpen === true;
+    this.portalConfiguredTargetUrl = this.resolveConfiguredPortalTargetUrl(portalConfig?.targetUrl ?? "");
     this.portalTargetUrl = this.resolvePortalTargetUrl(portalConfig?.targetUrl ?? "");
     this.portalPhase = this.hubFlowEnabled ? "cooldown" : "idle";
     this.portalPhaseClock = this.portalCooldownSeconds;
@@ -963,24 +969,24 @@ export class GameRuntime {
     if (this.isLobbyBlockingGameplay() || this.localAdmissionWaiting) {
       return false;
     }
+    if (this.hasHostControllerPresent()) {
+      return false;
+    }
     if (this.quizState.active) {
       return false;
     }
     if (this.entryGateState?.portalOpen === true || this.entryGateState?.admissionInProgress === true) {
       return false;
     }
-    if (this.hasHostControllerPresent()) {
-      return false;
-    }
     return true;
   }
 
   getOfflineStartUnavailableReason() {
+    if (this.hasHostControllerPresent()) {
+      return "호스트가 접속 중이라 자동 시작을 사용할 수 없습니다.";
+    }
     if (!this.networkConnected || !this.socket) {
       return "서버 연결 중입니다.";
-    }
-    if (this.hasHostControllerPresent()) {
-      return "호스트 접속 중: 오프라인 버튼 비활성화";
     }
     if (this.quizState.active) {
       return "퀴즈 진행 중에는 사용할 수 없습니다.";
@@ -1012,10 +1018,19 @@ export class GameRuntime {
     const hintText = canUse
       ? "중앙 버튼 사용 가능: E 키 또는 버튼을 눌러 카테고리를 선택하세요."
       : this.getOfflineStartUnavailableReason();
-    if (this.offlineStartHintMessage !== hintText) {
-      this.offlineStartHintMessage = hintText;
-      this.offlineStartHintTextEl.textContent = hintText;
+    let displayHintText = hintText;
+    if (this.offlineStartRequestInFlight) {
+      displayHintText = "현재 카테고리 OX를 10초 준비 후 시작하는 중입니다.";
+    } else if (canUse) {
+      displayHintText = "현재 카테고리 OX를 10초 뒤 시작합니다. E 키 또는 버튼을 누르세요.";
     }
+    if (this.offlineStartHintMessage !== displayHintText) {
+      this.offlineStartHintMessage = displayHintText;
+      this.offlineStartHintTextEl.textContent = displayHintText;
+    }
+    this.offlineStartTriggerBtnEl.textContent = this.offlineStartRequestInFlight
+      ? "시작 요청 중..."
+      : "현재 카테고리 시작";
     this.offlineStartTriggerBtnEl.disabled = !canUse || this.offlineStartRequestInFlight;
   }
 
@@ -1274,7 +1289,8 @@ export class GameRuntime {
       {
         category: this.offlineStartSelectedCategoryId.slice(0, 24),
         questions: [selectedQuestion],
-        autoFinish: selectedConfig?.endPolicy?.autoFinish !== false
+        autoFinish: selectedConfig?.endPolicy?.autoFinish !== false,
+        prepareDelayMs: OFFLINE_START_PREPARE_DELAY_MS
       },
       (response = {}) => {
         this.offlineStartRequestInFlight = false;
@@ -1295,17 +1311,88 @@ export class GameRuntime {
     );
   }
 
+  requestOfflineStartCurrentCategory() {
+    if (!this.socket || !this.networkConnected) {
+      const message = "오프라인 시작 실패: 서버 연결을 확인하세요.";
+      this.setOfflineStartStatus(message, true);
+      this.appendChatLine("시스템", message, "system");
+      return;
+    }
+    if (!this.canUseOfflineStartTrigger()) {
+      const reason = this.getOfflineStartUnavailableReason();
+      this.setOfflineStartStatus(reason, true);
+      this.appendChatLine("시스템", reason, "system");
+      return;
+    }
+    if (this.offlineStartRequestInFlight) {
+      return;
+    }
+
+    const selectedConfig = this.normalizeQuizConfigPayload(this.quizConfig ?? {});
+    const questions = Array.isArray(selectedConfig?.questions) ? selectedConfig.questions : [];
+    if (questions.length <= 0) {
+      const message = "현재 카테고리에 시작할 문항이 없습니다.";
+      this.setOfflineStartStatus(message, true);
+      this.appendChatLine("시스템", message, "system");
+      return;
+    }
+
+    this.offlineStartRequestInFlight = true;
+    this.setOfflineStartStatus("현재 카테고리 시작을 요청하는 중입니다.");
+    this.updateOfflineStartHintUi();
+
+    this.socket.emit(
+      "quiz:offline-start",
+      {
+        questions,
+        autoFinish: selectedConfig?.endPolicy?.autoFinish !== false,
+        prepareDelayMs: OFFLINE_START_PREPARE_DELAY_MS
+      },
+      (response = {}) => {
+        this.offlineStartRequestInFlight = false;
+        this.updateOfflineStartHintUi();
+        if (!response?.ok) {
+          const message = `시작 실패: ${this.translateQuizError(response?.error ?? "unknown")}`;
+          this.setOfflineStartStatus(message, true);
+          this.appendChatLine("시스템", message, "system");
+          return;
+        }
+
+        this.quizConfig = selectedConfig;
+        this.persistQuizConfigDraft({ immediate: true, updateState: true });
+        this.setOfflineStartStatus("현재 카테고리 OX가 10초 준비 후 시작됩니다.");
+        this.appendChatLine(
+          "시스템",
+          `현재 카테고리 ${questions.length}문항 OX를 10초 준비 후 시작합니다.`,
+          "system"
+        );
+        if (this.isOfflineStartModalOpen()) {
+          this.closeOfflineStartModal();
+        }
+      }
+    );
+  }
+
   tryOpenOfflineStartFromWorld() {
-    const nearby = this.offlineStartNearby === true;
-    if (!nearby && !this.isOfflineStartModalOpen()) {
+    if (this.offlineStartNearby !== true) {
       return false;
     }
     if (!this.canUseOfflineStartTrigger()) {
       const reason = this.getOfflineStartUnavailableReason();
       this.setOfflineStartStatus(reason, true);
-      if (nearby) {
+      this.appendChatLine("시스템", reason, "system");
+      return true;
+    }
+    this.requestOfflineStartCurrentCategory();
+    return true;
+    if (this.offlineStartNearby !== true) {
+      return false;
+    }
+    if (!this.canUseOfflineStartTrigger()) {
+      const reason = this.getOfflineStartUnavailableReason();
+      this.setOfflineStartStatus(reason, true);
+      this.appendChatLine("시스템", reason, "system");
         this.appendChatLine("시스템", reason, "system");
-      }
       return true;
     }
     this.openOfflineStartModal();
@@ -1879,6 +1966,12 @@ export class GameRuntime {
       this.flowStage = "city_live";
       this.hubFlowUiEl?.classList.add("hidden");
       this.hideNicknameGate();
+      if (this.portalTargetUrl) {
+        const portalFrontSpawn = this.getPortalFrontSpawnPoint();
+        this.playerPosition.copy(portalFrontSpawn);
+        this.yaw = this.getLookYaw(this.playerPosition, this.portalFloorPosition);
+        this.pitch = -0.03;
+      }
       this.lastSafePosition.copy(this.playerPosition);
       return;
     }
@@ -2025,15 +2118,30 @@ export class GameRuntime {
     }
 
     const rawName = String(this.lobbyNameInputEl?.value ?? this.localPlayerName ?? "").trim();
-    if (rawName.length < 2) {
-      this.setLobbyStatus("닉네임은 최소 2자 이상이어야 합니다.", true);
-      return;
+    const nextName = rawName || this.createGuestPlayerName();
+
+    this.localPlayerName = this.formatPlayerName(nextName);
+    if (this.lobbyNameInputEl) {
+      this.lobbyNameInputEl.value = this.localPlayerName;
+    }
+    this.lobbyNameConfirmed = true;
+    this.lobbyJoinAutoRetryRemaining = LOBBY_JOIN_AUTO_RETRY_LIMIT;
+    this.pendingPlayerNameSync = true;
+    this.setLobbyStatus("Preparing matchmaking connection...");
+
+    if (!this.socket) {
+      this.connectNetwork({
+        endpoint: this.socketEndpoint ?? this.resolveSocketEndpoint() ?? "",
+        auth: this.socketAuth
+      });
+    } else if (!this.networkConnected && typeof this.socket.connect === "function") {
+      try {
+        this.socket.connect();
+      } catch {
+        // Keep join pending and rely on built-in reconnection flow.
+      }
     }
 
-    this.localPlayerName = this.formatPlayerName(rawName);
-    this.lobbyNameConfirmed = true;
-    this.pendingPlayerNameSync = true;
-    this.setLobbyStatus("매치 서버 연결을 준비하는 중...");
     this.syncPlayerNameIfConnected();
   }
 
@@ -3081,6 +3189,16 @@ export class GameRuntime {
   }
 
   updatePortalPhase(delta) {
+    if (this.portalAlwaysOpen) {
+      this.portalPhase = "open";
+      if (this.portalTargetUrl) {
+        this.setFlowHeadline("포탈 가동", "항상 활성화됨: 즉시 진입 가능합니다.");
+      } else {
+        this.setFlowHeadline("포탈 가동 / 대상 없음", "포탈 링크를 설정해야 이동할 수 있습니다.");
+      }
+      return;
+    }
+
     this.portalPhaseClock = Math.max(0, this.portalPhaseClock - delta);
     if (this.portalPhase === "cooldown") {
       this.setFlowHeadline("도시 운영 중", `다음 포탈 이벤트까지 ${Math.ceil(this.portalPhaseClock)}초`);
@@ -3124,14 +3242,27 @@ export class GameRuntime {
       return;
     }
     this.portalPulseClock += delta;
+    const activeTargetUrl = this.resolveActivePortalTargetUrl(
+      this.portalTargetUrl,
+      this.portalConfiguredTargetUrl
+    );
     const portalLinked =
-      Boolean(this.portalTargetUrl) &&
-      (this.entryGateState?.portalOpen === true || this.isLobbyReturnPortalTarget());
+      Boolean(activeTargetUrl) &&
+      (this.portalAlwaysOpen === true ||
+        this.entryGateState?.portalOpen === true ||
+        this.isLobbyReturnPortalTarget(activeTargetUrl));
     this.portalPhase = portalLinked ? "open" : "idle";
     this.updatePortalVisual();
     if (portalLinked && !this.portalTransitioning && this.isPlayerInPortalZone()) {
       this.triggerPortalTransfer();
     }
+  }
+
+  getPortalFrontSpawnPoint() {
+    const portalX = Number(this.portalFloorPosition?.x) || 0;
+    const portalZ = Number(this.portalFloorPosition?.z) || 0;
+    const spawnOffset = Math.max(2.6, (Number(this.portalRadius) || 4.4) + 1.2);
+    return new THREE.Vector3(portalX, GAME_CONSTANTS.PLAYER_HEIGHT, portalZ - spawnOffset);
   }
 
   updatePortalVisual() {
@@ -3322,6 +3453,15 @@ export class GameRuntime {
     return "";
   }
 
+  getPortalReturnMarker(params = this.queryParams) {
+    if (!params || typeof params.get !== "function") {
+      return "";
+    }
+    return String(params.get("returnPortal") ?? params.get("portalReturn") ?? "")
+      .trim()
+      .toLowerCase();
+  }
+
   getPortalLocationSignature(rawTarget = "") {
     const normalized = this.normalizePortalTargetUrl(rawTarget);
     if (!normalized) {
@@ -3353,21 +3493,7 @@ export class GameRuntime {
     return currentSignature === targetSignature;
   }
 
-  resolvePortalTargetUrl(defaultTarget = "") {
-    const queryTarget = this.normalizePortalTargetUrl(
-      this.queryParams.get("portal") ?? this.queryParams.get("next") ?? ""
-    );
-    if (queryTarget && !this.isSelfPortalTargetUrl(queryTarget)) {
-      return queryTarget;
-    }
-
-    const queryReturnTarget = this.normalizePortalTargetUrl(
-      this.queryParams.get("returnUrl") ?? this.queryParams.get("return") ?? ""
-    );
-    if (queryReturnTarget && !this.isSelfPortalTargetUrl(queryReturnTarget)) {
-      return queryReturnTarget;
-    }
-
+  resolveConfiguredPortalTargetUrl(defaultTarget = "") {
     const globalTarget = this.normalizePortalTargetUrl(window.__EMPTINES_PORTAL_TARGET ?? "");
     if (globalTarget && !this.isSelfPortalTargetUrl(globalTarget)) {
       return globalTarget;
@@ -3381,8 +3507,159 @@ export class GameRuntime {
     return null;
   }
 
+  resolveActivePortalTargetUrl(targetUrl = "", fallbackTarget = this.portalConfiguredTargetUrl) {
+    const rawText = String(targetUrl ?? "").trim();
+    if (!rawText) {
+      return null;
+    }
+
+    const normalized = this.normalizePortalTargetUrl(rawText);
+    if (normalized && !this.isSelfPortalTargetUrl(normalized)) {
+      return normalized;
+    }
+
+    const fallback = this.normalizePortalTargetUrl(fallbackTarget ?? "");
+    if (fallback && !this.isSelfPortalTargetUrl(fallback)) {
+      return fallback;
+    }
+
+    return null;
+  }
+
+  resolvePortalTargetUrl(defaultTarget = "") {
+    const queryTarget = this.normalizePortalTargetUrl(
+      this.queryParams.get("portal") ?? this.queryParams.get("next") ?? ""
+    );
+    if (queryTarget && !this.isSelfPortalTargetUrl(queryTarget)) {
+      return queryTarget;
+    }
+
+    const configuredTarget = this.resolveConfiguredPortalTargetUrl(defaultTarget);
+    if (this.getPortalReturnMarker() === "ox" && configuredTarget) {
+      return configuredTarget;
+    }
+
+    const queryReturnTarget = this.normalizePortalTargetUrl(
+      this.queryParams.get("returnUrl") ?? this.queryParams.get("return") ?? ""
+    );
+    // Ignore nested return URLs that resolve back to the same OX view.
+    if (queryReturnTarget && !this.isSelfPortalTargetUrl(queryReturnTarget)) {
+      return queryReturnTarget;
+    }
+
+    return configuredTarget;
+  }
+
+  extractOwnerAccessKeyFromRawUrl(rawUrl = "") {
+    const text = String(rawUrl ?? "").trim();
+    if (!text || typeof window === "undefined") {
+      return "";
+    }
+    try {
+      const parsed = new URL(text, window.location.href);
+      return String(
+        parsed.searchParams.get("owner") ??
+          parsed.searchParams.get("owner_key") ??
+          parsed.searchParams.get("hostKey") ??
+          parsed.searchParams.get("host_key") ??
+          ""
+      ).trim();
+    } catch {
+      return "";
+    }
+  }
+
+  readOwnerAccessKeyFromParams(params = this.queryParams) {
+    if (!params || typeof params.get !== "function") {
+      return "";
+    }
+    const directKey = String(
+      params.get("owner") ??
+        params.get("owner_key") ??
+        params.get("hostKey") ??
+        params.get("host_key") ??
+        ""
+    ).trim();
+    if (directKey) {
+      return directKey;
+    }
+
+    const nestedCandidates = [
+      params.get("returnUrl"),
+      params.get("return"),
+      params.get("portal"),
+      params.get("next")
+    ];
+    for (const candidate of nestedCandidates) {
+      const nestedKey = this.extractOwnerAccessKeyFromRawUrl(candidate);
+      if (nestedKey) {
+        return nestedKey;
+      }
+    }
+    return "";
+  }
+
+  loadPersistedOwnerAccessKey() {
+    if (typeof window === "undefined") {
+      return "";
+    }
+    try {
+      return String(window.sessionStorage?.getItem?.(OWNER_ACCESS_STORAGE_KEY) ?? "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  persistOwnerAccessKey(ownerKeyRaw = "") {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const ownerKey = String(ownerKeyRaw ?? "").trim();
+    try {
+      if (ownerKey) {
+        window.sessionStorage?.setItem?.(OWNER_ACCESS_STORAGE_KEY, ownerKey);
+      } else {
+        window.sessionStorage?.removeItem?.(OWNER_ACCESS_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage failures (private mode, blocked storage).
+    }
+  }
+
+  resolveOwnerAccessKey() {
+    const ownerKeyFromQuery = this.readOwnerAccessKeyFromParams(this.queryParams);
+    if (ownerKeyFromQuery) {
+      this.persistOwnerAccessKey(ownerKeyFromQuery);
+      return ownerKeyFromQuery;
+    }
+    return this.loadPersistedOwnerAccessKey();
+  }
+
+  applyOwnerAccessToSearchParams(searchParams) {
+    if (!searchParams || typeof searchParams.set !== "function") {
+      return;
+    }
+    const hostFlagRaw = String(
+      this.queryParams?.get?.("host") ?? this.queryParams?.get?.("isHost") ?? ""
+    )
+      .trim()
+      .toLowerCase();
+    const hostFlagEnabled = hostFlagRaw === "1" || hostFlagRaw === "true" || hostFlagRaw === "yes";
+    const ownerKey = String(this.ownerAccessKey ?? "").trim();
+    if (!hostFlagEnabled && !ownerKey) {
+      return;
+    }
+    searchParams.set("host", "1");
+    if (ownerKey) {
+      searchParams.set("hostKey", ownerKey);
+    }
+  }
+
   buildPortalTransferUrl() {
-    const activeTargetUrl = this.normalizePortalTargetUrl(this.portalTargetUrl ?? "");
+    const activeTargetUrl = this.resolveActivePortalTargetUrl(
+      this.portalTargetUrl,
+      this.portalConfiguredTargetUrl
+    );
     if (!activeTargetUrl) {
       return null;
     }
@@ -3394,11 +3671,10 @@ export class GameRuntime {
       return null;
     }
 
-    target.searchParams.delete("returnUrl");
-    target.searchParams.delete("return");
     target.searchParams.set("returnPortal", "ox");
     target.searchParams.set("from", "ox");
     target.searchParams.set("name", this.localPlayerName);
+    this.applyOwnerAccessToSearchParams(target.searchParams);
     if (this.socketEndpoint) {
       target.searchParams.set("server", this.socketEndpoint);
     }
@@ -3406,12 +3682,15 @@ export class GameRuntime {
   }
 
   isLobbyReturnPortalTarget(targetUrl = this.portalTargetUrl) {
-    const text = String(targetUrl ?? "").trim();
-    if (!text) {
+    const activeTargetUrl = this.resolveActivePortalTargetUrl(
+      targetUrl,
+      this.portalConfiguredTargetUrl
+    );
+    if (!activeTargetUrl) {
       return false;
     }
     try {
-      const parsed = new URL(text, window.location.href);
+      const parsed = new URL(activeTargetUrl, window.location.href);
       const zone = String(parsed.searchParams.get("zone") ?? parsed.searchParams.get("z") ?? "")
         .trim()
         .toLowerCase();
@@ -3422,13 +3701,20 @@ export class GameRuntime {
   }
 
   isPortalTransferAllowed() {
-    if (!this.portalTargetUrl) {
+    const activeTargetUrl = this.resolveActivePortalTargetUrl(
+      this.portalTargetUrl,
+      this.portalConfiguredTargetUrl
+    );
+    if (!activeTargetUrl) {
       return false;
+    }
+    if (this.portalAlwaysOpen) {
+      return true;
     }
     if (this.hubFlowEnabled) {
       return this.portalPhase === "open";
     }
-    if (this.isLobbyReturnPortalTarget()) {
+    if (this.isLobbyReturnPortalTarget(activeTargetUrl)) {
       return true;
     }
     return this.entryGateState?.portalOpen === true;
@@ -3506,20 +3792,66 @@ export class GameRuntime {
       joinPayload.ownerKey = this.ownerAccessKey;
     }
 
-    this.socket.emit("room:quick-join", joinPayload, (response = {}) => {
+    const joinRequestSeq = this.lobbyEnabled ? this.lobbyJoinRequestSeq + 1 : 0;
+    if (this.lobbyEnabled) {
+      this.lobbyJoinRequestSeq = joinRequestSeq;
+    }
+
+    let resolved = false;
+    const finishJoinRequest = () => {
+      if (resolved) {
+        return false;
+      }
+      if (this.lobbyEnabled && this.lobbyJoinRequestSeq !== joinRequestSeq) {
+        return false;
+      }
+      resolved = true;
       if (this.lobbyEnabled) {
         this.lobbyJoinInFlight = false;
         if (this.lobbyJoinBtnEl) {
           this.lobbyJoinBtnEl.disabled = false;
         }
       }
+      return true;
+    };
+
+    const joinAckTimeout = this.lobbyEnabled
+      ? window.setTimeout(() => {
+          if (!finishJoinRequest()) {
+            return;
+          }
+          this.pendingPlayerNameSync = true;
+          if (this.lobbyJoinAutoRetryRemaining > 0 && this.networkConnected) {
+            this.lobbyJoinAutoRetryRemaining -= 1;
+            this.setLobbyStatus("Join response delayed. Retrying automatically...");
+            window.setTimeout(() => {
+              if (this.pendingPlayerNameSync && !this.redirectInFlight) {
+                this.syncPlayerNameIfConnected();
+              }
+            }, LOBBY_JOIN_AUTO_RETRY_DELAY_MS);
+            return;
+          }
+          this.setLobbyStatus("Join response delayed. Please press Join again.", true);
+        }, LOBBY_JOIN_ACK_TIMEOUT_MS)
+      : null;
+
+    this.socket.emit("room:quick-join", joinPayload, (response = {}) => {
+      if (joinAckTimeout !== null) {
+        window.clearTimeout(joinAckTimeout);
+      }
+      if (!finishJoinRequest()) {
+        return;
+      }
       if (!response?.ok) {
         if (this.lobbyEnabled) {
+          this.lobbyJoinAutoRetryRemaining = 0;
           const message = this.translateQuizError(response?.error || "입장 실패");
           this.setLobbyStatus(`입장 실패: ${message}`, true);
         }
         return;
       }
+      this.lobbyJoinAutoRetryRemaining = 0;
+
       if (response?.redirect) {
         if (this.lobbyEnabled) {
           this.setLobbyStatus("매치 서버로 이동 중...");
@@ -4114,6 +4446,9 @@ export class GameRuntime {
       visualType: "none",
       visualUrl: "",
       audioUrl: "",
+      playbackPlaying: true,
+      playbackOffsetSeconds: 0,
+      playbackSyncAt: 0,
       playlist: [],
       playlistIndex: 0,
       playlistEnabled: false,
@@ -4126,6 +4461,50 @@ export class GameRuntime {
     return {
       board1: this.buildDefaultBillboardMediaEntry(),
       board2: this.buildDefaultBillboardMediaEntry()
+    };
+  }
+
+  buildDefaultBillboardMediaRuntimeEntry() {
+    return {
+      texture: null,
+      videoEl: null,
+      audioEl: null,
+      sourceTag: "",
+      videoEndedHandler: null,
+      videoFrameCanvas: null,
+      videoFrameContext: null,
+      videoFrameClock: 0,
+      videoFrameInterval: 0,
+      audioFx: {
+        video: null,
+        audio: null
+      }
+    };
+  }
+
+  getBillboardVideoOptimizationProfile(boardKey = "board1") {
+    const quality = this.normalizeGraphicsQuality(this.graphicsQuality);
+    const baseWidth = boardKey === "board2" ? OPPOSITE_BILLBOARD_BASE_WIDTH : CENTER_BILLBOARD_BASE_WIDTH;
+    const baseHeight = boardKey === "board2" ? OPPOSITE_BILLBOARD_BASE_HEIGHT : CENTER_BILLBOARD_BASE_HEIGHT;
+
+    let scale = 1;
+    let fps = 30;
+    if (this.mobileEnabled) {
+      scale = 0.42;
+      fps = 15;
+    } else if (quality === "low") {
+      scale = 0.5;
+      fps = 18;
+    } else if (quality === "medium") {
+      scale = 0.7;
+      fps = 24;
+    }
+
+    return {
+      useProxy: this.mobileEnabled || quality !== "high",
+      width: Math.max(256, Math.round(baseWidth * scale)),
+      height: Math.max(144, Math.round(baseHeight * scale)),
+      frameInterval: 1 / Math.max(12, fps)
     };
   }
 
@@ -4190,6 +4569,15 @@ export class GameRuntime {
     const visualType = requestedType === "video" || requestedType === "image" ? requestedType : "none";
     const visualUrl = sanitizeBillboardMediaUrl(entry.visualUrl ?? entry.url ?? fallback.visualUrl ?? "");
     const audioUrl = sanitizeBillboardMediaUrl(entry.audioUrl ?? entry.audio ?? fallback.audioUrl ?? "");
+    const playbackPlaying = (entry.playbackPlaying ?? fallback.playbackPlaying ?? true) !== false;
+    const rawPlaybackOffset = Number(
+      entry.playbackOffsetSeconds ?? entry.offsetSeconds ?? fallback.playbackOffsetSeconds ?? 0
+    );
+    const playbackOffsetSeconds = Number.isFinite(rawPlaybackOffset)
+      ? Math.max(0, rawPlaybackOffset)
+      : 0;
+    const rawPlaybackSyncAt = Number(entry.playbackSyncAt ?? entry.syncAt ?? fallback.playbackSyncAt ?? 0);
+    const playbackSyncAt = Number.isFinite(rawPlaybackSyncAt) ? Math.max(0, Math.trunc(rawPlaybackSyncAt)) : 0;
     const fallbackPlaylist = allowPlaylist ? this.normalizeBillboardPlaylist(fallback.playlist ?? []) : [];
     const playlist = allowPlaylist
       ? this.normalizeBillboardPlaylist(entry.playlist ?? fallbackPlaylist, fallbackPlaylist)
@@ -4217,6 +4605,9 @@ export class GameRuntime {
         visualType: active.visualType,
         visualUrl: active.visualUrl,
         audioUrl: active.audioUrl,
+        playbackPlaying,
+        playbackOffsetSeconds,
+        playbackSyncAt,
         playlist,
         playlistIndex,
         playlistEnabled: true,
@@ -4229,6 +4620,9 @@ export class GameRuntime {
         visualType: "none",
         visualUrl: "",
         audioUrl,
+        playbackPlaying,
+        playbackOffsetSeconds: 0,
+        playbackSyncAt: 0,
         playlist,
         playlistIndex,
         playlistEnabled: false,
@@ -4240,6 +4634,9 @@ export class GameRuntime {
       visualType,
       visualUrl,
       audioUrl,
+      playbackPlaying,
+      playbackOffsetSeconds,
+      playbackSyncAt,
       playlist,
       playlistIndex,
       playlistEnabled: false,
@@ -4269,6 +4666,9 @@ export class GameRuntime {
       String(entry?.visualType ?? "none"),
       String(entry?.visualUrl ?? ""),
       String(entry?.audioUrl ?? ""),
+      entry?.playbackPlaying !== false ? "1" : "0",
+      Number(Number(entry?.playbackOffsetSeconds) || 0).toFixed(2),
+      String(Math.max(0, Math.trunc(Number(entry?.playbackSyncAt) || 0))),
       entry?.playlistEnabled === true ? "1" : "0",
       entry?.playlistAutoAdvance !== false ? "1" : "0",
       entry?.playlistPlaying !== false ? "1" : "0",
@@ -4285,6 +4685,55 @@ export class GameRuntime {
     ].join("~");
   }
 
+  getBillboardRuntimePlaybackOffsetSeconds(boardKey = "board1") {
+    const runtime = this.billboardMediaRuntime?.[boardKey];
+    if (!runtime) {
+      return 0;
+    }
+    const videoTime = Number(runtime.videoEl?.currentTime);
+    if (Number.isFinite(videoTime) && videoTime >= 0) {
+      return videoTime;
+    }
+    const audioTime = Number(runtime.audioEl?.currentTime);
+    if (Number.isFinite(audioTime) && audioTime >= 0) {
+      return audioTime;
+    }
+    return 0;
+  }
+
+  getBillboardSyncedMediaTime(entry = {}, mediaEl = null) {
+    let targetTime = Math.max(0, Number(entry?.playbackOffsetSeconds) || 0);
+    const playbackPlaying = entry?.playbackPlaying !== false;
+    const playbackSyncAt = Math.max(0, Math.trunc(Number(entry?.playbackSyncAt) || 0));
+    if (playbackPlaying && playbackSyncAt > 0) {
+      targetTime += Math.max(0, Date.now() - playbackSyncAt) / 1000;
+    }
+    const duration = Number(mediaEl?.duration);
+    if (!Number.isFinite(duration) || duration <= 0.01) {
+      return targetTime;
+    }
+    const loops = mediaEl?.loop === true;
+    if (loops) {
+      return ((targetTime % duration) + duration) % duration;
+    }
+    return THREE.MathUtils.clamp(targetTime, 0, Math.max(0, duration - 0.05));
+  }
+
+  syncBillboardMediaElementTime(entry = {}, mediaEl = null) {
+    if (!mediaEl || mediaEl.readyState < 1) {
+      return;
+    }
+    const targetTime = this.getBillboardSyncedMediaTime(entry, mediaEl);
+    const currentTime = Number(mediaEl.currentTime);
+    if (!Number.isFinite(currentTime) || Math.abs(currentTime - targetTime) > 0.35) {
+      try {
+        mediaEl.currentTime = targetTime;
+      } catch {
+        // Ignore seek failures for not-yet-seekable streams.
+      }
+    }
+  }
+
   updateBillboardMediaPlaybackState(boardKey, entry = {}) {
     const runtime = this.billboardMediaRuntime?.[boardKey];
     if (!runtime) {
@@ -4293,11 +4742,14 @@ export class GameRuntime {
     const playlist = Array.isArray(entry?.playlist) ? entry.playlist : [];
     const playlistEnabled = boardKey === "board2" && entry?.playlistEnabled === true && playlist.length > 0;
     const playlistAutoAdvance = playlistEnabled && entry?.playlistAutoAdvance === true;
+    const playbackPlaying = entry?.playbackPlaying !== false;
     const playlistPlaying = !playlistEnabled || entry?.playlistPlaying !== false;
-    const useEndedAdvance = playlistAutoAdvance && playlist.length > 1;
+    const shouldPlay = playbackPlaying && playlistPlaying;
+    const useEndedAdvance = shouldPlay && playlistAutoAdvance && playlist.length > 1;
 
     if (runtime.videoEl) {
       runtime.videoEl.loop = !useEndedAdvance;
+      this.syncBillboardMediaElementTime(entry, runtime.videoEl);
       if (useEndedAdvance) {
         if (!runtime.videoEndedHandler) {
           runtime.videoEndedHandler = () => {
@@ -4309,7 +4761,8 @@ export class GameRuntime {
         runtime.videoEl.removeEventListener("ended", runtime.videoEndedHandler);
         runtime.videoEndedHandler = null;
       }
-      if (playlistPlaying) {
+      this.resumeMediaAudioContext();
+      if (shouldPlay) {
         runtime.videoEl.play().catch(() => {});
       } else {
         runtime.videoEl.pause();
@@ -4319,7 +4772,9 @@ export class GameRuntime {
     }
 
     if (runtime.audioEl) {
-      if (playlistPlaying) {
+      this.syncBillboardMediaElementTime(entry, runtime.audioEl);
+      this.resumeMediaAudioContext();
+      if (shouldPlay) {
         runtime.audioEl.play().catch(() => {});
       } else {
         runtime.audioEl.pause();
@@ -4327,10 +4782,144 @@ export class GameRuntime {
     }
   }
 
+  getMediaAudioContext() {
+    if (this.mediaAudioContext) {
+      return this.mediaAudioContext;
+    }
+    if (typeof window === "undefined") {
+      return null;
+    }
+    const AudioContextCtor = window.AudioContext ?? window.webkitAudioContext;
+    if (typeof AudioContextCtor !== "function") {
+      return null;
+    }
+    try {
+      this.mediaAudioContext = new AudioContextCtor();
+    } catch {
+      this.mediaAudioContext = null;
+    }
+    return this.mediaAudioContext;
+  }
+
+  resumeMediaAudioContext() {
+    const context = this.getMediaAudioContext();
+    if (!context || context.state !== "suspended") {
+      return;
+    }
+    context.resume().catch(() => {});
+  }
+
+  disconnectBillboardAudioFxNodes(fx = null) {
+    if (!fx) {
+      return;
+    }
+    try {
+      fx.source?.disconnect?.();
+    } catch {}
+    try {
+      fx.dryGain?.disconnect?.();
+    } catch {}
+    try {
+      fx.delay?.disconnect?.();
+    } catch {}
+    try {
+      fx.wetGain?.disconnect?.();
+    } catch {}
+    try {
+      fx.feedbackGain?.disconnect?.();
+    } catch {}
+  }
+
+  attachBillboardAudioFx(boardKey, channelKey, mediaEl) {
+    const runtime = this.billboardMediaRuntime?.[boardKey];
+    if (!runtime || !mediaEl) {
+      return;
+    }
+    const context = this.getMediaAudioContext();
+    if (!context) {
+      return;
+    }
+
+    const existingFx = runtime.audioFx?.[channelKey] ?? null;
+    if (existingFx?.element === mediaEl) {
+      return;
+    }
+    if (existingFx) {
+      this.disconnectBillboardAudioFxNodes(existingFx);
+      runtime.audioFx[channelKey] = null;
+    }
+
+    try {
+      const source = context.createMediaElementSource(mediaEl);
+      const dryGain = context.createGain();
+      const wetGain = context.createGain();
+      const delay = context.createDelay(0.5);
+      const feedbackGain = context.createGain();
+
+      dryGain.connect(context.destination);
+      source.connect(dryGain);
+      source.connect(delay);
+      delay.connect(wetGain);
+      wetGain.connect(context.destination);
+      delay.connect(feedbackGain);
+      feedbackGain.connect(delay);
+
+      delay.delayTime.value = 0.18;
+      wetGain.gain.value = 0.14;
+      feedbackGain.gain.value = 0.2;
+
+      runtime.audioFx[channelKey] = {
+        element: mediaEl,
+        source,
+        dryGain,
+        wetGain,
+        delay,
+        feedbackGain
+      };
+    } catch {
+      runtime.audioFx[channelKey] = null;
+    }
+  }
+
+  updateBillboardVideoProxyTexture(boardKey, delta) {
+    const runtime = this.billboardMediaRuntime?.[boardKey];
+    if (!runtime?.videoEl || !runtime?.videoFrameCanvas || !runtime?.videoFrameContext || !runtime?.texture) {
+      return;
+    }
+    runtime.videoFrameClock += Math.max(0, Number(delta) || 0);
+    if (runtime.videoFrameClock < runtime.videoFrameInterval) {
+      return;
+    }
+    runtime.videoFrameClock = 0;
+    if (runtime.videoEl.readyState < 2) {
+      return;
+    }
+    runtime.videoFrameContext.drawImage(
+      runtime.videoEl,
+      0,
+      0,
+      runtime.videoFrameCanvas.width,
+      runtime.videoFrameCanvas.height
+    );
+    runtime.texture.needsUpdate = true;
+  }
+
+  updateBillboardVideoTextures(delta) {
+    this.updateBillboardVideoProxyTexture("board1", delta);
+    this.updateBillboardVideoProxyTexture("board2", delta);
+  }
+
   releaseBillboardMediaChannel(boardKey) {
     const runtime = this.billboardMediaRuntime?.[boardKey];
     if (!runtime) {
       return;
+    }
+    for (const channelKey of ["video", "audio"]) {
+      const fx = runtime.audioFx?.[channelKey] ?? null;
+      if (fx) {
+        this.disconnectBillboardAudioFxNodes(fx);
+        runtime.audioFx[channelKey] = null;
+      }
     }
     if (runtime.videoEl && runtime.videoEndedHandler) {
       runtime.videoEl.removeEventListener("ended", runtime.videoEndedHandler);
@@ -4352,6 +4941,10 @@ export class GameRuntime {
       runtime.texture.dispose?.();
       runtime.texture = null;
     }
+    runtime.videoFrameCanvas = null;
+    runtime.videoFrameContext = null;
+    runtime.videoFrameClock = 0;
+    runtime.videoFrameInterval = 0;
     runtime.sourceTag = "";
   }
 
@@ -4387,7 +4980,10 @@ export class GameRuntime {
           playlist,
           playlistIndex: nextIndex,
           playlistEnabled: true,
-          playlistPlaying: true
+          playlistPlaying: true,
+          playbackPlaying: true,
+          playbackOffsetSeconds: 0,
+          playbackSyncAt: Date.now()
         },
         board2,
         "board2"
@@ -4418,15 +5014,39 @@ export class GameRuntime {
       video.crossOrigin = "anonymous";
       video.setAttribute("playsinline", "");
       video.setAttribute("webkit-playsinline", "");
-
-      const videoTexture = new THREE.VideoTexture(video);
-      videoTexture.colorSpace = THREE.SRGBColorSpace;
-      videoTexture.minFilter = THREE.LinearFilter;
-      videoTexture.magFilter = THREE.LinearFilter;
-      videoTexture.generateMipmaps = false;
       runtime.videoEl = video;
-      runtime.texture = videoTexture;
-      runtime.sourceTag = `video:${visualUrl}`;
+      const optimization = this.getBillboardVideoOptimizationProfile(boardKey);
+      if (optimization.useProxy) {
+        const canvas = document.createElement("canvas");
+        canvas.width = optimization.width;
+        canvas.height = optimization.height;
+        const context = canvas.getContext("2d", { alpha: false, desynchronized: true });
+        if (context) {
+          context.fillStyle = "#000";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          const canvasTexture = new THREE.CanvasTexture(canvas);
+          canvasTexture.colorSpace = THREE.SRGBColorSpace;
+          canvasTexture.minFilter = THREE.LinearFilter;
+          canvasTexture.magFilter = THREE.LinearFilter;
+          canvasTexture.generateMipmaps = false;
+          runtime.videoFrameCanvas = canvas;
+          runtime.videoFrameContext = context;
+          runtime.videoFrameClock = optimization.frameInterval;
+          runtime.videoFrameInterval = optimization.frameInterval;
+          runtime.texture = canvasTexture;
+          runtime.sourceTag = `video-proxy:${visualUrl}`;
+        }
+      }
+      if (!runtime.texture) {
+        const videoTexture = new THREE.VideoTexture(video);
+        videoTexture.colorSpace = THREE.SRGBColorSpace;
+        videoTexture.minFilter = THREE.LinearFilter;
+        videoTexture.magFilter = THREE.LinearFilter;
+        videoTexture.generateMipmaps = false;
+        runtime.texture = videoTexture;
+        runtime.sourceTag = `video:${visualUrl}`;
+      }
+      this.attachBillboardAudioFx(boardKey, "video", video);
     } else if (visualType === "image" && visualUrl) {
       const texture = this.textureLoader.load(
         visualUrl,
@@ -4450,7 +5070,9 @@ export class GameRuntime {
       audio.src = audioUrl;
       audio.loop = true;
       audio.preload = "auto";
+      audio.crossOrigin = "anonymous";
       runtime.audioEl = audio;
+      this.attachBillboardAudioFx(boardKey, "audio", audio);
     }
 
     this.applyUiVolumeToMedia();
@@ -4481,9 +5103,22 @@ export class GameRuntime {
     this.refreshBillboardPlaylistUi();
   }
 
+  refreshBillboardMediaForQualityChange() {
+    for (const boardKey of ["board1", "board2"]) {
+      const entry = this.billboardMediaState?.[boardKey] ?? null;
+      if (!entry || String(entry.visualType ?? "none") !== "video") {
+        continue;
+      }
+      this.setupBillboardMediaChannel(boardKey, entry);
+    }
+    this.applyCenterBillboardMode();
+    this.applyOppositeBillboardMode();
+  }
+
   buildBillboardMediaPayloadFromUi(clearOnly = false) {
     const target = String(this.billboardTargetSelectEl?.value ?? "board1").trim().toLowerCase();
     const board = target === "board2" ? "board2" : "board1";
+    const syncAt = Date.now();
     if (clearOnly) {
       return {
         target: board,
@@ -4491,6 +5126,9 @@ export class GameRuntime {
           visualType: "none",
           visualUrl: "",
           audioUrl: "",
+          playbackPlaying: false,
+          playbackOffsetSeconds: 0,
+          playbackSyncAt: 0,
           playlistEnabled: false,
           playlistPlaying: false
         }
@@ -4508,6 +5146,9 @@ export class GameRuntime {
             visualType: "none",
             visualUrl: "",
             audioUrl: customUrl,
+            playbackPlaying: true,
+            playbackOffsetSeconds: 0,
+            playbackSyncAt: syncAt,
             playlistEnabled: false,
             playlistPlaying: false
           }
@@ -4523,6 +5164,9 @@ export class GameRuntime {
           visualType,
           visualUrl: customUrl,
           audioUrl: "",
+          playbackPlaying: true,
+          playbackOffsetSeconds: 0,
+          playbackSyncAt: syncAt,
           playlistEnabled: false,
           playlistPlaying: false
         }
@@ -4536,6 +5180,24 @@ export class GameRuntime {
           visualType: "image",
           visualUrl: BILLBOARD_PRESET_IMAGE_URL,
           audioUrl: "",
+          playbackPlaying: true,
+          playbackOffsetSeconds: 0,
+          playbackSyncAt: syncAt,
+          playlistEnabled: false,
+          playlistPlaying: false
+        }
+      };
+    }
+    if (preset === "sample-video") {
+      return {
+        target: board,
+        media: {
+          visualType: "video",
+          visualUrl: NPC_GREETING_VIDEO_URL,
+          audioUrl: "",
+          playbackPlaying: true,
+          playbackOffsetSeconds: 0,
+          playbackSyncAt: syncAt,
           playlistEnabled: false,
           playlistPlaying: false
         }
@@ -4548,6 +5210,9 @@ export class GameRuntime {
           visualType: "none",
           visualUrl: "",
           audioUrl: BILLBOARD_PRESET_AUDIO_URL,
+          playbackPlaying: true,
+          playbackOffsetSeconds: 0,
+          playbackSyncAt: syncAt,
           playlistEnabled: false,
           playlistPlaying: false
         }
@@ -4559,6 +5224,9 @@ export class GameRuntime {
         visualType: "none",
         visualUrl: "",
         audioUrl: "",
+        playbackPlaying: false,
+        playbackOffsetSeconds: 0,
+        playbackSyncAt: 0,
         playlistEnabled: false,
         playlistPlaying: false
       }
@@ -4603,6 +5271,44 @@ export class GameRuntime {
         this.applyBillboardMediaState(response.media);
       }
       this.appendChatLine("시스템", "전광판 미디어를 반영했습니다.", "system");
+    });
+  }
+
+  requestBillboardMediaPlaybackControl(action = "play") {
+    const command = String(action ?? "").trim().toLowerCase();
+    const target = String(this.billboardTargetSelectEl?.value ?? "board1").trim().toLowerCase();
+    const boardKey = target === "board2" ? "board2" : "board1";
+    const current = this.normalizeBillboardMediaEntry(this.billboardMediaState?.[boardKey] ?? {}, null, boardKey);
+
+    if (boardKey === "board2" && current?.playlistEnabled === true && Array.isArray(current?.playlist) && current.playlist.length > 0) {
+      this.requestBillboardPlaylistControl(command);
+      return;
+    }
+
+    const hasPlayableMedia =
+      (String(current?.visualType ?? "none") === "video" && Boolean(String(current?.visualUrl ?? ""))) ||
+      Boolean(String(current?.audioUrl ?? ""));
+    if (!hasPlayableMedia) {
+      this.appendChatLine("System", "Apply a video or audio source before using playback controls.", "system");
+      return;
+    }
+
+    const shouldPlay = command !== "pause";
+    const payload = {
+      target: boardKey,
+      media: this.normalizeBillboardMediaEntry(
+        {
+          ...current,
+          playbackPlaying: shouldPlay,
+          playbackOffsetSeconds: this.getBillboardRuntimePlaybackOffsetSeconds(boardKey),
+          playbackSyncAt: Date.now()
+        },
+        current,
+        boardKey
+      )
+    };
+    this.sendBillboardMediaPayload(payload, {
+      successMessage: shouldPlay ? "Billboard playback started." : "Billboard playback paused."
     });
   }
 
@@ -4699,7 +5405,10 @@ export class GameRuntime {
         playlistIndex: 0,
         playlistEnabled: true,
         playlistAutoAdvance: autoAdvance,
-        playlistPlaying: true
+        playlistPlaying: true,
+        playbackPlaying: true,
+        playbackOffsetSeconds: 0,
+        playbackSyncAt: Date.now()
       })
     };
     this.sendBillboardMediaPayload(payload, {
@@ -4748,21 +5457,30 @@ export class GameRuntime {
     let nextPlaying = current?.playlistPlaying !== false;
     let nextEnabled = current?.playlistEnabled === true;
     const autoAdvance = this.billboardPlaylistAutoInputEl?.checked !== false;
+    let nextPlaybackPlaying = current?.playbackPlaying !== false;
+    let nextPlaybackOffsetSeconds = this.getBillboardRuntimePlaybackOffsetSeconds("board2");
+    let nextPlaybackSyncAt = Date.now();
 
     if (command === "play") {
       nextEnabled = true;
       nextPlaying = true;
+      nextPlaybackPlaying = true;
     } else if (command === "pause") {
       nextEnabled = true;
       nextPlaying = false;
+      nextPlaybackPlaying = false;
     } else if (command === "next") {
       nextIndex = (nextIndex + 1) % playlist.length;
       nextEnabled = true;
       nextPlaying = true;
+      nextPlaybackPlaying = true;
+      nextPlaybackOffsetSeconds = 0;
     } else if (command === "prev") {
       nextIndex = (nextIndex - 1 + playlist.length) % playlist.length;
       nextEnabled = true;
       nextPlaying = true;
+      nextPlaybackPlaying = true;
+      nextPlaybackOffsetSeconds = 0;
     } else if (command === "select") {
       const requestedIndex = Math.trunc(Number(this.billboardPlaylistIndexSelectEl?.value));
       if (!Number.isFinite(requestedIndex) || requestedIndex < 0 || requestedIndex >= playlist.length) {
@@ -4774,6 +5492,8 @@ export class GameRuntime {
       nextIndex = requestedIndex;
       nextEnabled = true;
       nextPlaying = true;
+      nextPlaybackPlaying = true;
+      nextPlaybackOffsetSeconds = 0;
     } else {
       if (!silentFailure) {
         this.appendChatLine("System", "Unknown playlist command.", "system");
@@ -4788,7 +5508,10 @@ export class GameRuntime {
         playlistIndex: nextIndex,
         playlistEnabled: nextEnabled,
         playlistAutoAdvance: autoAdvance,
-        playlistPlaying: nextPlaying
+        playlistPlaying: nextPlaying,
+        playbackPlaying: nextPlaybackPlaying,
+        playbackOffsetSeconds: nextPlaybackOffsetSeconds,
+        playbackSyncAt: nextPlaybackSyncAt
       })
     };
     const successMessageMap = {
@@ -6633,6 +7356,7 @@ export class GameRuntime {
 
     window.addEventListener("keydown", (event) => {
       this.kickMegaAdVideoPlayback();
+      this.resumeMediaAudioContext();
       if (this.isTextInputTarget(event.target)) {
         if (event.code === "Escape") {
           this.setChatOpen(false);
@@ -6772,8 +7496,16 @@ export class GameRuntime {
       this.chalkLastStamp = null;
     });
 
-    this.renderer.domElement.addEventListener("click", () => {
+    this.renderer.domElement.addEventListener("click", (event) => {
       this.kickMegaAdVideoPlayback();
+      this.resumeMediaAudioContext();
+      if (this.offlineStartNearby === true) {
+        const handled = this.tryOpenOfflineStartFromWorld();
+        if (handled) {
+          event?.preventDefault?.();
+          return;
+        }
+      }
       this.tryPointerLock();
     });
     this.renderer.domElement.addEventListener("mousedown", (event) => {
@@ -7089,6 +7821,12 @@ export class GameRuntime {
     this.billboardMediaApplyBtnEl?.addEventListener("click", () => {
       this.requestBillboardMediaApply(false);
     });
+    this.billboardMediaPlayBtnEl?.addEventListener("click", () => {
+      this.requestBillboardMediaPlaybackControl("play");
+    });
+    this.billboardMediaPauseBtnEl?.addEventListener("click", () => {
+      this.requestBillboardMediaPlaybackControl("pause");
+    });
     this.billboardMediaClearBtnEl?.addEventListener("click", () => {
       this.requestBillboardMediaApply(true);
     });
@@ -7365,6 +8103,12 @@ export class GameRuntime {
     }
     if (!this.billboardMediaApplyBtnEl) {
       this.billboardMediaApplyBtnEl = document.getElementById("billboard-media-apply-btn");
+    }
+    if (!this.billboardMediaPlayBtnEl) {
+      this.billboardMediaPlayBtnEl = document.getElementById("billboard-media-play-btn");
+    }
+    if (!this.billboardMediaPauseBtnEl) {
+      this.billboardMediaPauseBtnEl = document.getElementById("billboard-media-pause-btn");
     }
     if (!this.billboardMediaClearBtnEl) {
       this.billboardMediaClearBtnEl = document.getElementById("billboard-media-clear-btn");
@@ -8763,7 +9507,7 @@ export class GameRuntime {
 
   syncSettingsPanelUi() {
     this.resolveUiElements();
-    const visible = this.mobileEnabled && !this.isMobilePortraitLocked() && !this.chatOpen;
+    const visible = !this.isMobilePortraitLocked();
     if (!visible) {
       this.settingsPanelOpen = false;
     }
@@ -8780,8 +9524,8 @@ export class GameRuntime {
       this.settingsFullscreenBtnEl.classList.toggle("hidden", !fullscreenSupported);
       if (fullscreenSupported) {
         this.settingsFullscreenBtnEl.textContent = this.isFullscreenActive()
-          ? "전체 화면 해제"
-          : "전체 화면 전환";
+          ? "전체화면 끄기"
+          : "전체화면 켜기";
       }
     }
     if (this.settingsVolumeSliderEl) {
@@ -8833,6 +9577,9 @@ export class GameRuntime {
       this.setupPostProcessing();
     }
     this.applyGraphicsPostProcessingProfile();
+    if (changed) {
+      this.refreshBillboardMediaForQualityChange();
+    }
     this.syncSettingsPanelUi();
     if (changed && this._initialized) {
       this.appendChatLine("SYSTEM", this.buildGraphicsQualityStatusLabel(), "system", {
@@ -9009,10 +9756,18 @@ export class GameRuntime {
         continue;
       }
       if (runtime.videoEl) {
-        runtime.videoEl.volume = volume;
+        runtime.videoEl.volume = runtime.audioFx?.video ? 1 : volume;
       }
       if (runtime.audioEl) {
-        runtime.audioEl.volume = volume;
+        runtime.audioEl.volume = runtime.audioFx?.audio ? 1 : volume;
+      }
+      for (const channelKey of ["video", "audio"]) {
+        const fx = runtime.audioFx?.[channelKey] ?? null;
+        if (!fx) {
+          continue;
+        }
+        fx.dryGain.gain.value = volume;
+        fx.wetGain.gain.value = volume * 0.18;
       }
     }
   }
@@ -9366,7 +10121,6 @@ export class GameRuntime {
     }
 
     const { protocol, hostname } = window.location;
-
     if (protocol === "file:") {
       return "http://localhost:3001";
     }
@@ -9907,7 +10661,10 @@ export class GameRuntime {
     this.measurePerformanceSection("emitSync", () => this.emitLocalSync(delta));
     this.measurePerformanceSection("dynamicResolution", () => this.updateDynamicResolution(delta));
     this.measurePerformanceSection("shadowRefresh", () => this.updateShadowMapRefresh(delta));
-    this.measurePerformanceSection("billboard", () => this.updateQuizBillboardPulse(delta));
+    this.measurePerformanceSection("billboard", () => {
+      this.updateBillboardVideoTextures(delta);
+      this.updateQuizBillboardPulse(delta);
+    });
     this.measurePerformanceSection("hud", () => this.updateHud(delta));
     this.measurePerformanceSection("roundOverlay", () => this.updateRoundOverlay(delta));
   }
@@ -12260,6 +13017,8 @@ export class GameRuntime {
     this.billboardMediaPresetSelectEl && (this.billboardMediaPresetSelectEl.disabled = !canControl);
     this.billboardMediaUrlInputEl && (this.billboardMediaUrlInputEl.disabled = !canControl);
     this.billboardMediaApplyBtnEl && (this.billboardMediaApplyBtnEl.disabled = !canControl);
+    this.billboardMediaPlayBtnEl && (this.billboardMediaPlayBtnEl.disabled = !canControl);
+    this.billboardMediaPauseBtnEl && (this.billboardMediaPauseBtnEl.disabled = !canControl);
     this.billboardMediaClearBtnEl && (this.billboardMediaClearBtnEl.disabled = !canControl);
     this.billboardPlaylistInputEl && (this.billboardPlaylistInputEl.disabled = !canControl);
     this.billboardPlaylistLoadBtnEl && (this.billboardPlaylistLoadBtnEl.disabled = !canControl);
@@ -12643,7 +13402,7 @@ export class GameRuntime {
   }
 
   applyPortalTarget(targetUrl, { announce = false } = {}) {
-    const normalized = this.normalizePortalTargetUrl(targetUrl ?? "");
+    const normalized = this.resolveActivePortalTargetUrl(targetUrl ?? "", this.portalConfiguredTargetUrl);
     this.portalTargetUrl = normalized;
     if (this.portalTargetInputEl) {
       const nextValue = this.portalTargetUrl ?? "";
@@ -12988,6 +13747,11 @@ export class GameRuntime {
       }
     }
     return null;
+  }
+
+  createGuestPlayerName() {
+    const suffix = Math.floor(1000 + Math.random() * 9000);
+    return `GUEST_${suffix}`;
   }
 
   formatPlayerName(rawName) {

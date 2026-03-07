@@ -424,6 +424,15 @@ body.mobile-orientation-lock #offline-start-modal {
   background: rgba(20, 48, 74, 0.92);
 }
 
+#sp-version {
+  margin: 2px 1px 0;
+  text-align: right;
+  color: rgba(188, 218, 242, 0.86);
+  font: 700 0.54rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .sp-volume-row {
   display: flex;
   align-items: center;
@@ -734,6 +743,11 @@ body.mobile-roster-focus #mobile-look-pad {
   gap: 5px;
 }
 
+.billboard-media-actions-row {
+  grid-template-columns: repeat(2, 1fr);
+  gap: 5px;
+}
+
 #billboard-playlist-input {
   width: 100%;
   min-height: 84px;
@@ -793,6 +807,8 @@ body.mobile-roster-focus #mobile-look-pad {
 }
 
 #billboard-media-apply-btn,
+#billboard-media-play-btn,
+#billboard-media-pause-btn,
 #billboard-media-clear-btn {
   height: 32px;
 }

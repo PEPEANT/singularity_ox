@@ -303,6 +303,7 @@ export const BASE_VOID_PACK = {
         cooldownSeconds: 60,
         warningSeconds: 16,
         openSeconds: 24,
+        alwaysOpen: true,
         targetUrl: "https://emptines-chat-2.onrender.com/?zone=lobby"
       }
     },
