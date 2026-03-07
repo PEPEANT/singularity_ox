@@ -654,7 +654,7 @@ body.mobile-roster-focus #mobile-look-pad {
 }
 
 .quiz-controls-head {
-  margin-bottom: 2px;
+  margin-bottom: 1px;
   color: #caf0ff;
   font: 800 0.64rem/1.2 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
   letter-spacing: 0.16em;
@@ -666,13 +666,57 @@ body.mobile-roster-focus #mobile-look-pad {
   right: 14px;
   z-index: 38;
   display: grid;
-  gap: 6px;
-  min-width: 210px;
-  padding: 10px 11px;
+  gap: 8px;
+  min-width: 246px;
+  max-width: 312px;
+  padding: 11px 12px;
   border: 1px solid rgba(172, 213, 246, 0.62);
   border-radius: 11px;
   background: rgba(10, 23, 37, 0.76);
   backdrop-filter: blur(5px);
+}
+
+.quiz-controls-section {
+  display: block;
+  padding: 8px;
+  border: 1px solid rgba(166, 205, 236, 0.32);
+  border-radius: 10px;
+  background: rgba(8, 20, 32, 0.54);
+}
+
+.quiz-controls-section-title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  color: rgba(206, 235, 255, 0.9);
+  font: 800 0.54rem/1.1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.quiz-controls-section-title::-webkit-details-marker {
+  display: none;
+}
+
+.quiz-controls-section-title::after {
+  content: "+";
+  flex: 0 0 auto;
+  color: rgba(182, 220, 245, 0.82);
+  font: 800 0.8rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+.quiz-controls-section[open] .quiz-controls-section-title::after {
+  content: "-";
+}
+
+.quiz-controls-section-body {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .quiz-controls-row {
@@ -684,6 +728,13 @@ body.mobile-roster-focus #mobile-look-pad {
 .quiz-host-btn {
   grid-column: 1 / -1;
   background: linear-gradient(140deg, rgba(30, 62, 92, 0.96), rgba(12, 28, 44, 0.98));
+}
+
+.quiz-controls-static-copy {
+  margin: 0;
+  color: rgba(196, 225, 248, 0.82);
+  font: 700 0.58rem/1.45 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.03em;
 }
 
 #quiz-controls button {
@@ -713,12 +764,8 @@ body.mobile-roster-focus #mobile-look-pad {
   background: linear-gradient(140deg, rgba(34, 70, 42, 0.96), rgba(14, 33, 20, 0.98));
 }
 
-.portal-controls-row {
-  grid-template-columns: 1fr;
-  gap: 5px;
-}
-
 #quiz-controls select,
+#billboard-media-file-input,
 #billboard-media-url-input {
   width: 100%;
   height: 33px;
@@ -733,9 +780,26 @@ body.mobile-roster-focus #mobile-look-pad {
 }
 
 #quiz-controls select:focus,
+#billboard-media-file-input:focus,
 #billboard-media-url-input:focus {
   border-color: rgba(203, 233, 255, 0.95);
   box-shadow: 0 0 0 2px rgba(134, 179, 218, 0.22);
+}
+
+#billboard-media-file-input {
+  padding: 5px 7px;
+}
+
+#billboard-media-file-input::file-selector-button {
+  margin-right: 8px;
+  height: 22px;
+  border: 1px solid rgba(170, 211, 243, 0.68);
+  border-radius: 6px;
+  background: rgba(20, 44, 68, 0.98);
+  color: #e7f5ff;
+  font: 800 0.58rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+  letter-spacing: 0.05em;
+  cursor: pointer;
 }
 
 .billboard-media-row {
@@ -811,28 +875,6 @@ body.mobile-roster-focus #mobile-look-pad {
 #billboard-media-pause-btn,
 #billboard-media-clear-btn {
   height: 32px;
-}
-
-#portal-target-input {
-  width: 100%;
-  height: 33px;
-  padding: 0 9px;
-  border: 1px solid rgba(171, 208, 238, 0.66);
-  border-radius: 8px;
-  background: rgba(10, 26, 42, 0.92);
-  color: #edf6ff;
-  font: 700 0.65rem/1 "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
-  letter-spacing: 0.02em;
-  outline: none;
-}
-
-#portal-target-input::placeholder {
-  color: rgba(188, 215, 238, 0.64);
-}
-
-#portal-target-input:focus {
-  border-color: rgba(203, 233, 255, 0.95);
-  box-shadow: 0 0 0 2px rgba(134, 179, 218, 0.22);
 }
 
 #quiz-controls-note {
@@ -2201,12 +2243,8 @@ body.mobile-chat-focus #chat-log {
     font-size: 0.6rem;
   }
 
-  #portal-target-input {
-    height: 31px;
-    font-size: 0.62rem;
-  }
-
   #quiz-controls select,
+  #billboard-media-file-input,
   #billboard-media-url-input {
     height: 31px;
     font-size: 0.61rem;

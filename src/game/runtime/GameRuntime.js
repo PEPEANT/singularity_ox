@@ -136,6 +136,7 @@ const QUIZ_MAX_TIME_LIMIT_SECONDS = 3600;
 const QUIZ_DEFAULT_TIME_LIMIT_SECONDS = 30;
 const OFFLINE_START_INTERACT_DISTANCE = 4.2;
 const OFFLINE_START_PREPARE_DELAY_MS = 10000;
+const BILLBOARD_MEDIA_UPLOAD_MAX_BYTES = 16 * 1024 * 1024;
 const CHAT_BUBBLE_MIN_LIFETIME_MS = 9000;
 const MOBILE_CHAT_PREVIEW_MIN_LIFETIME_MS = 7000;
 const GRAPHICS_QUALITY_STORAGE_KEY = "singularity_ox.graphics_quality.v1";
@@ -537,6 +538,7 @@ export class GameRuntime {
     this.quizConfigStatusEl = document.getElementById("quiz-config-status");
     this.billboardTargetSelectEl = document.getElementById("billboard-target-select");
     this.billboardMediaPresetSelectEl = document.getElementById("billboard-media-preset-select");
+    this.billboardMediaFileInputEl = document.getElementById("billboard-media-file-input");
     this.billboardMediaUrlInputEl = document.getElementById("billboard-media-url-input");
     this.billboardMediaApplyBtnEl = document.getElementById("billboard-media-apply-btn");
     this.billboardMediaPlayBtnEl = document.getElementById("billboard-media-play-btn");
@@ -552,6 +554,7 @@ export class GameRuntime {
     this.billboardPlaylistIndexSelectEl = document.getElementById("billboard-playlist-index-select");
     this.billboardPlaylistSelectBtnEl = document.getElementById("billboard-playlist-select-btn");
     this.billboardPlaylistOptionsSignature = "";
+    this.billboardMediaUploadInFlight = false;
     this.quizReviewModalEl = document.getElementById("quiz-review-modal");
     this.quizReviewCloseBtnEl = document.getElementById("quiz-review-close-btn");
     this.quizReviewPrevBtnEl = document.getElementById("quiz-review-prev-btn");
@@ -5115,9 +5118,144 @@ export class GameRuntime {
     this.applyOppositeBillboardMode();
   }
 
-  buildBillboardMediaPayloadFromUi(clearOnly = false) {
+  getSelectedBillboardBoardKey() {
     const target = String(this.billboardTargetSelectEl?.value ?? "board1").trim().toLowerCase();
-    const board = target === "board2" ? "board2" : "board1";
+    return target === "board2" ? "board2" : "board1";
+  }
+
+  buildBillboardMediaPayloadForBoard(boardKey = "board1", media = {}) {
+    const board = boardKey === "board2" ? "board2" : "board1";
+    const syncAt = Date.now();
+    const visualType = String(media?.visualType ?? "none").trim().toLowerCase();
+    const visualUrl = sanitizeBillboardMediaUrl(media?.visualUrl ?? "");
+    const audioUrl = sanitizeBillboardMediaUrl(media?.audioUrl ?? "");
+    return {
+      target: board,
+      media: {
+        visualType: visualType === "image" || visualType === "video" ? visualType : "none",
+        visualUrl,
+        audioUrl,
+        playbackPlaying: visualType !== "none" || Boolean(audioUrl),
+        playbackOffsetSeconds: 0,
+        playbackSyncAt: visualType !== "none" || audioUrl ? syncAt : 0,
+        playlistEnabled: false,
+        playlistPlaying: false
+      }
+    };
+  }
+
+  clearSelectedBillboardMediaFile() {
+    if (this.billboardMediaFileInputEl) {
+      this.billboardMediaFileInputEl.value = "";
+    }
+  }
+
+  getSelectedBillboardMediaFile() {
+    const fileList = this.billboardMediaFileInputEl?.files;
+    if (!fileList || fileList.length <= 0) {
+      return null;
+    }
+    return fileList[0] ?? null;
+  }
+
+  isSupportedBillboardAudioUrl(rawUrl = "", fallbackName = "") {
+    const target = String(rawUrl || fallbackName || "").trim().toLowerCase();
+    return /\.(mp3|wav|ogg|m4a)(\?.*)?$/.test(target);
+  }
+
+  buildBillboardMediaPayloadFromUploadedFile(uploadUrl = "", file = null) {
+    const resolvedUrl = sanitizeBillboardMediaUrl(uploadUrl);
+    if (!resolvedUrl) {
+      return null;
+    }
+    const board = this.getSelectedBillboardBoardKey();
+    const fileType = String(file?.type ?? "").trim().toLowerCase();
+    const fileName = String(file?.name ?? "").trim();
+    if (fileType.startsWith("audio/") || this.isSupportedBillboardAudioUrl(resolvedUrl, fileName)) {
+      return this.buildBillboardMediaPayloadForBoard(board, {
+        visualType: "none",
+        visualUrl: "",
+        audioUrl: resolvedUrl
+      });
+    }
+    const visualType = fileType.startsWith("image/")
+      ? "image"
+      : fileType.startsWith("video/")
+        ? "video"
+        : inferBillboardVisualTypeFromUrl(fileName || resolvedUrl);
+    if (visualType !== "image" && visualType !== "video") {
+      return null;
+    }
+    return this.buildBillboardMediaPayloadForBoard(board, {
+      visualType,
+      visualUrl: resolvedUrl,
+      audioUrl: ""
+    });
+  }
+
+  async uploadBillboardMediaFile(file) {
+    if (!(file instanceof File)) {
+      return "";
+    }
+    const endpoint = new URL("/uploads/billboard", window.location.href).toString();
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": String(file.type ?? "").trim() || "application/octet-stream",
+        "x-owner-key": String(this.ownerAccessKey ?? "").trim(),
+        "x-upload-filename": encodeURIComponent(String(file.name ?? "billboard-media.bin"))
+      },
+      body: file
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(String(payload?.error ?? `upload-failed-${response.status}`));
+    }
+    return sanitizeBillboardMediaUrl(payload?.url ?? "");
+  }
+
+  async handleBillboardMediaFileUpload(selectedFile) {
+    if (!(selectedFile instanceof File)) {
+      return;
+    }
+    if (!this.canControlBillboardMedia()) {
+      return;
+    }
+    if (this.billboardMediaUploadInFlight) {
+      return;
+    }
+    if (selectedFile.size > BILLBOARD_MEDIA_UPLOAD_MAX_BYTES) {
+      this.appendChatLine(
+        "System",
+        `Selected media file is too large. Limit: ${Math.round(BILLBOARD_MEDIA_UPLOAD_MAX_BYTES / (1024 * 1024))} MB.`,
+        "system"
+      );
+      return;
+    }
+    this.billboardMediaUploadInFlight = true;
+    this.updateQuizControlUi();
+    try {
+      const uploadUrl = await this.uploadBillboardMediaFile(selectedFile);
+      const uploadedPayload = this.buildBillboardMediaPayloadFromUploadedFile(uploadUrl, selectedFile);
+      if (!uploadedPayload) {
+        this.appendChatLine("System", "Only mp4/webm/png/jpg/webp/mp3 files are supported.", "system");
+        return;
+      }
+      this.sendBillboardMediaPayload(uploadedPayload, {
+        successMessage: "Billboard media uploaded and applied."
+      });
+      this.clearSelectedBillboardMediaFile();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? "upload failed");
+      this.appendChatLine("System", `Billboard upload failed: ${message}`, "system");
+    } finally {
+      this.billboardMediaUploadInFlight = false;
+      this.updateQuizControlUi();
+    }
+  }
+
+  buildBillboardMediaPayloadFromUi(clearOnly = false) {
+    const board = this.getSelectedBillboardBoardKey();
     const syncAt = Date.now();
     if (clearOnly) {
       return {
@@ -5234,13 +5372,28 @@ export class GameRuntime {
   }
 
   requestBillboardMediaApply(clearOnly = false) {
+    if (clearOnly) {
+      this.clearSelectedBillboardMediaFile();
+      const clearPayload = this.buildBillboardMediaPayloadFromUi(true);
+      this.sendBillboardMediaPayload(clearPayload, {
+        successMessage: "Billboard media cleared."
+      });
+      return;
+    }
+
+    const selectedFile = this.getSelectedBillboardMediaFile();
+    if (selectedFile) {
+      void this.handleBillboardMediaFileUpload(selectedFile);
+      return;
+    }
+
     const nextPayload = this.buildBillboardMediaPayloadFromUi(clearOnly);
     if (!nextPayload) {
       this.appendChatLine("System", "Only supported media URLs can be applied (mp4/webm/png/jpg/mp3).", "system");
       return;
     }
     this.sendBillboardMediaPayload(nextPayload, {
-      successMessage: clearOnly ? "Billboard media cleared." : "Billboard media applied."
+      successMessage: "Billboard media applied."
     });
     return;
 
@@ -8097,6 +8250,9 @@ export class GameRuntime {
     }
     if (!this.billboardMediaPresetSelectEl) {
       this.billboardMediaPresetSelectEl = document.getElementById("billboard-media-preset-select");
+    }
+    if (!this.billboardMediaFileInputEl) {
+      this.billboardMediaFileInputEl = document.getElementById("billboard-media-file-input");
     }
     if (!this.billboardMediaUrlInputEl) {
       this.billboardMediaUrlInputEl = document.getElementById("billboard-media-url-input");
@@ -13015,8 +13171,11 @@ export class GameRuntime {
     this.portalTargetSaveBtnEl && (this.portalTargetSaveBtnEl.disabled = !canControl);
     this.billboardTargetSelectEl && (this.billboardTargetSelectEl.disabled = !canControl);
     this.billboardMediaPresetSelectEl && (this.billboardMediaPresetSelectEl.disabled = !canControl);
+    this.billboardMediaFileInputEl &&
+      (this.billboardMediaFileInputEl.disabled = !canControl || this.billboardMediaUploadInFlight);
     this.billboardMediaUrlInputEl && (this.billboardMediaUrlInputEl.disabled = !canControl);
-    this.billboardMediaApplyBtnEl && (this.billboardMediaApplyBtnEl.disabled = !canControl);
+    this.billboardMediaApplyBtnEl &&
+      (this.billboardMediaApplyBtnEl.disabled = !canControl || this.billboardMediaUploadInFlight);
     this.billboardMediaPlayBtnEl && (this.billboardMediaPlayBtnEl.disabled = !canControl);
     this.billboardMediaPauseBtnEl && (this.billboardMediaPauseBtnEl.disabled = !canControl);
     this.billboardMediaClearBtnEl && (this.billboardMediaClearBtnEl.disabled = !canControl);

@@ -116,9 +116,22 @@ const CHAT_HISTORY_MAX_ENTRIES = Math.max(
   Math.min(200, Math.trunc(Number(process.env.CHAT_HISTORY_MAX_ENTRIES ?? 80) || 80))
 );
 const BILLBOARD_MEDIA_URL_MAX_LENGTH = 420;
+const BILLBOARD_UPLOAD_MAX_BYTES = Math.max(
+  1024 * 1024,
+  Math.min(48 * 1024 * 1024, Math.trunc(Number(process.env.BILLBOARD_UPLOAD_MAX_BYTES ?? 16 * 1024 * 1024) || 16 * 1024 * 1024))
+);
+const BILLBOARD_UPLOAD_TTL_MS = Math.max(
+  5 * 60 * 1000,
+  Math.trunc(Number(process.env.BILLBOARD_UPLOAD_TTL_MS ?? 6 * 60 * 60 * 1000) || 6 * 60 * 60 * 1000)
+);
+const BILLBOARD_UPLOAD_MAX_ITEMS = Math.max(
+  4,
+  Math.min(64, Math.trunc(Number(process.env.BILLBOARD_UPLOAD_MAX_ITEMS ?? 16) || 16))
+);
 const BILLBOARD_MEDIA_VISUAL_TYPES = new Set(["none", "video", "image"]);
 const BILLBOARD_PLAYLIST_MAX_ITEMS = 40;
 const ROOM_QUIZ_CONFIG_CACHE_LIMIT = Math.max(24, MAX_ACTIVE_ROOMS * 6);
+const billboardUploadStore = new Map();
 
 const FALLBACK_QUIZ_QUESTIONS = Object.freeze([
   Object.freeze({
@@ -757,6 +770,188 @@ function inferBillboardVisualTypeFromUrl(rawUrl) {
     return "image";
   }
   return "none";
+}
+
+function sanitizeBillboardUploadFilename(rawName = "") {
+  const decoded = (() => {
+    try {
+      return decodeURIComponent(String(rawName ?? "").trim());
+    } catch {
+      return String(rawName ?? "").trim();
+    }
+  })();
+  const cleaned = decoded
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 72);
+  return cleaned || `billboard-${Date.now().toString(36)}.bin`;
+}
+
+function inferBillboardUploadKind(contentType = "", fileName = "") {
+  const lowerType = String(contentType ?? "").trim().toLowerCase();
+  const lowerName = String(fileName ?? "").trim().toLowerCase();
+  if (lowerType.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/.test(lowerName)) {
+    return "video";
+  }
+  if (lowerType.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(lowerName)) {
+    return "image";
+  }
+  if (lowerType.startsWith("audio/") || /\.(mp3|wav|ogg|m4a)$/.test(lowerName)) {
+    return "audio";
+  }
+  return "none";
+}
+
+function createBillboardUploadId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildBillboardUploadPath(entry) {
+  if (!entry?.id) {
+    return "";
+  }
+  const safeName = sanitizeBillboardUploadFilename(entry.filename);
+  return `/uploads/billboard/${entry.id}/${encodeURIComponent(safeName)}`;
+}
+
+function purgeExpiredBillboardUploads(now = Date.now()) {
+  for (const [uploadId, entry] of billboardUploadStore.entries()) {
+    if (!entry || Number(entry.expiresAt ?? 0) <= now) {
+      billboardUploadStore.delete(uploadId);
+    }
+  }
+}
+
+function trimBillboardUploadStore(now = Date.now()) {
+  purgeExpiredBillboardUploads(now);
+  if (billboardUploadStore.size <= BILLBOARD_UPLOAD_MAX_ITEMS) {
+    return;
+  }
+  const entries = Array.from(billboardUploadStore.entries()).sort(
+    (left, right) => Number(left[1]?.createdAt ?? 0) - Number(right[1]?.createdAt ?? 0)
+  );
+  while (billboardUploadStore.size > BILLBOARD_UPLOAD_MAX_ITEMS && entries.length > 0) {
+    const [uploadId] = entries.shift();
+    billboardUploadStore.delete(uploadId);
+  }
+}
+
+async function readRequestBodyBuffer(req, maxBytes = BILLBOARD_UPLOAD_MAX_BYTES) {
+  return await new Promise((resolve, reject) => {
+    const chunks = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    req.on("data", (chunk) => {
+      if (settled) {
+        return;
+      }
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        settled = true;
+        const error = new Error("upload-too-large");
+        error.statusCode = 413;
+        req.destroy();
+        reject(error);
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(Buffer.concat(chunks, totalBytes));
+    });
+
+    req.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    });
+  });
+}
+
+function storeBillboardUpload(buffer, contentType = "", fileName = "") {
+  const now = Date.now();
+  const entry = {
+    id: createBillboardUploadId(),
+    buffer,
+    size: buffer.length,
+    contentType: String(contentType ?? "").trim() || "application/octet-stream",
+    filename: sanitizeBillboardUploadFilename(fileName),
+    createdAt: now,
+    expiresAt: now + BILLBOARD_UPLOAD_TTL_MS
+  };
+  billboardUploadStore.set(entry.id, entry);
+  trimBillboardUploadStore(now);
+  return entry;
+}
+
+function getBillboardUploadEntry(uploadId = "") {
+  const id = String(uploadId ?? "").trim();
+  if (!id) {
+    return null;
+  }
+  purgeExpiredBillboardUploads();
+  return billboardUploadStore.get(id) ?? null;
+}
+
+function writeBillboardUploadResponse(req, res, entry) {
+  const buffer = entry?.buffer;
+  if (!Buffer.isBuffer(buffer)) {
+    res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+    return;
+  }
+
+  const totalBytes = buffer.length;
+  const headers = {
+    "accept-ranges": "bytes",
+    "cache-control": "public, max-age=3600",
+    "content-disposition": `inline; filename="${sanitizeBillboardUploadFilename(entry.filename)}"`,
+    "content-type": String(entry.contentType ?? "application/octet-stream"),
+    "x-content-type-options": "nosniff"
+  };
+  const rangeHeader = String(req.headers?.range ?? "").trim();
+  if (rangeHeader.startsWith("bytes=")) {
+    const [startRaw, endRaw] = rangeHeader.replace(/^bytes=/, "").split("-", 2);
+    const start = Math.max(0, Math.trunc(Number(startRaw) || 0));
+    const end = endRaw ? Math.min(totalBytes - 1, Math.trunc(Number(endRaw) || totalBytes - 1)) : totalBytes - 1;
+    if (start > end || start >= totalBytes) {
+      res.writeHead(416, {
+        "content-range": `bytes */${totalBytes}`
+      });
+      res.end();
+      return;
+    }
+    const chunk = buffer.subarray(start, end + 1);
+    res.writeHead(206, {
+      ...headers,
+      "content-length": chunk.length,
+      "content-range": `bytes ${start}-${end}/${totalBytes}`
+    });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    res.end(chunk);
+    return;
+  }
+
+  res.writeHead(200, {
+    ...headers,
+    "content-length": totalBytes
+  });
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+  res.end(buffer);
 }
 
 function createDefaultBillboardMediaEntry() {
@@ -3419,8 +3614,61 @@ function joinRoom(socket, room, nameOverride = null) {
   return { ok: true, room: serializeRoom(room) };
 }
 
-const httpServer = createServer((req, res) => {
-  if (req.url === "/health") {
+const httpServer = createServer(async (req, res) => {
+  const method = String(req.method ?? "GET").trim().toUpperCase();
+  const requestUrl = new URL(String(req.url ?? "/"), "http://localhost");
+
+  if (requestUrl.pathname === "/uploads/billboard" && method === "POST") {
+    const ownerKey = String(req.headers?.["x-owner-key"] ?? "").trim();
+    if (ROOM_OWNER_KEY && !hasOwnerAccess(ownerKey)) {
+      writeJson(res, 403, { ok: false, error: "unauthorized" });
+      return;
+    }
+    try {
+      const fileName = String(req.headers?.["x-upload-filename"] ?? "billboard-media.bin");
+      const contentType = String(req.headers?.["content-type"] ?? "").trim();
+      const uploadKind = inferBillboardUploadKind(contentType, fileName);
+      if (uploadKind === "none") {
+        writeJson(res, 415, { ok: false, error: "unsupported media type" });
+        return;
+      }
+      const buffer = await readRequestBodyBuffer(req, BILLBOARD_UPLOAD_MAX_BYTES);
+      if (!Buffer.isBuffer(buffer) || buffer.length <= 0) {
+        writeJson(res, 400, { ok: false, error: "empty upload" });
+        return;
+      }
+      const entry = storeBillboardUpload(buffer, contentType, fileName);
+      writeJson(res, 200, {
+        ok: true,
+        url: buildBillboardUploadPath(entry),
+        kind: uploadKind,
+        bytes: entry.size
+      });
+      return;
+    } catch (error) {
+      const statusCode = Number(error?.statusCode) || 500;
+      writeJson(res, statusCode, {
+        ok: false,
+        error: statusCode === 413 ? "upload too large" : "upload failed"
+      });
+      return;
+    }
+  }
+
+  if (requestUrl.pathname.startsWith("/uploads/billboard/") && (method === "GET" || method === "HEAD")) {
+    const parts = requestUrl.pathname.split("/").filter(Boolean);
+    const uploadId = parts[2] ?? "";
+    const entry = getBillboardUploadEntry(uploadId);
+    if (!entry) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+      return;
+    }
+    writeBillboardUploadResponse(req, res, entry);
+    return;
+  }
+
+  if (requestUrl.pathname === "/health") {
     const roomsSummary = summarizeRooms();
     const totalPlayers = roomsSummary.reduce((sum, room) => sum + Number(room.count || 0), 0);
     const activeQuizRooms = roomsSummary.filter((room) => room.quizActive).length;
@@ -3463,7 +3711,7 @@ const httpServer = createServer((req, res) => {
     return;
   }
 
-  if (req.url === "/" || req.url === "/status") {
+  if (requestUrl.pathname === "/" || requestUrl.pathname === "/status") {
     writeJson(res, 200, {
       ok: true,
       message: "Emptines realtime sync server is running",
@@ -3499,6 +3747,11 @@ const roomTickInterval = setInterval(() => {
   tickRooms();
 }, SERVER_TICK_INTERVAL_MS);
 roomTickInterval.unref?.();
+
+const billboardUploadPurgeInterval = setInterval(() => {
+  purgeExpiredBillboardUploads();
+}, Math.max(60 * 1000, Math.trunc(BILLBOARD_UPLOAD_TTL_MS / 4)));
+billboardUploadPurgeInterval.unref?.();
 
 io.on("connection", (socket) => {
   socket.data.playerName = `PLAYER_${Math.floor(Math.random() * 9000 + 1000)}`;
